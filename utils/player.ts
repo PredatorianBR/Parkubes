@@ -31,11 +31,14 @@ export const updatePlayerPhysics = (
     stepUpTimer: React.MutableRefObject<number>,
     stumbleTimer: React.MutableRefObject<number>,
     stumbleVelocityRef: React.MutableRefObject<THREE.Vector3>,
-    camera: THREE.Camera // ADDED: Camera for relative movement
+    camera: THREE.Camera, // ADDED: Camera for relative movement
+    lastFallDistRef: React.MutableRefObject<number>
 ) => {
     
     // 1. Calculate Input Direction Relative to Camera
     const inputDir = new THREE.Vector3(0, 0, 0);
+    let isAnalogRunning = false;
+
     if (canMove && !stunned && rollTimer.current <= 0) {
         // Get Camera Direction projected to XZ plane
         const camForward = new THREE.Vector3();
@@ -47,12 +50,30 @@ export const updatePlayerPhysics = (
         const camRight = new THREE.Vector3();
         camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-        if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
-        if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
-        if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
-        if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
+        // Analog Input Priority
+        if (keys.current.analog && (keys.current.analog.x !== 0 || keys.current.analog.y !== 0)) {
+             const joyX = keys.current.analog.x;
+             const joyY = -keys.current.analog.y; // Invert Y (Screen Y is down, World Z is forward/back)
+             
+             // Check magnitude for running
+             const mag = Math.sqrt(joyX*joyX + joyY*joyY);
+             if (mag > 0.9) isAnalogRunning = true;
 
-        if (inputDir.lengthSq() > 0) inputDir.normalize();
+             // In screen space, Up (-Y) means Forward. Right (+X) means Right.
+             inputDir.addScaledVector(camForward, joyY);
+             inputDir.addScaledVector(camRight, joyX);
+        } else {
+            // Keyboard Fallback
+            if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
+            if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
+            if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
+            if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
+        }
+
+        if (inputDir.lengthSq() > 0) {
+            // Clamp magnitude to 1.0 for analog (so diagonal isn't faster, but partial push is slower)
+            if (inputDir.lengthSq() > 1) inputDir.normalize();
+        }
     }
 
     // 2. Handle Stun Timer
@@ -136,7 +157,7 @@ export const updatePlayerPhysics = (
             jump: performJump,  
             charge: isVisualPreJumping, 
             climb: isJumpDown, 
-            run: keys.current['shift'] || false,
+            run: keys.current['shift'] || isAnalogRunning,
             attemptRoll: jumpBufferTimer.current > 0 
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
@@ -174,8 +195,11 @@ export const updatePlayerPhysics = (
     stumbleVelocityRef.current.copy(nextState.stumbleVel); 
 
     // Handle Landing Event
-    if (!wasGrounded && nextState.isGrounded && !nextState.isRolling && !nextState.stunned) {
+    let justLanded = false;
+    if (!wasGrounded && nextState.isGrounded) {
          landingAnimTimer.current = 0.3;
+         lastFallDistRef.current = currentState.airTimeHigh - nextState.pos.y;
+         justLanded = true;
     }
     
     if (landingAnimTimer.current > 0) {
@@ -205,6 +229,8 @@ export const updatePlayerPhysics = (
         isGrounded: nextState.isGrounded,
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
-        stepUpFactor: THREE.MathUtils.clamp(stepUpFactor, 0, 1)
+        stepUpFactor: THREE.MathUtils.clamp(stepUpFactor, 0, 1),
+        fallDistance: lastFallDistRef.current,
+        justLanded
     };
 };

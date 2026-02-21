@@ -403,36 +403,53 @@ const WallAC: React.FC<{ position: THREE.Vector3, scale: [number, number, number
 }
 
 const RoofAC: React.FC<{ position: THREE.Vector3, scale: [number, number, number], color: string, rotation?: number }> = ({ position, scale, color, rotation = 0 }) => {
-    // Fixed Height 3. Width/Depth 2-4.
-    const isWide = scale[0] > 2.5 || scale[2] > 2.5;
+    // scale[0] = width, scale[1] = height, scale[2] = depth
+    const w = scale[0];
+    const h = scale[1];
+    const d = scale[2];
+    
+    // Determine configuration
+    // Use double fans if width is sufficient and significantly wider than depth
+    const useDoubleFan = w >= 2.0 && w >= d * 1.5; 
+
+    let fanRadius = 0;
+    if (useDoubleFan) {
+        // Fits 2 fans along Width
+        // Max radius constrained by Depth (d/2) and Half-Width slot (w/4)
+        fanRadius = Math.min(d / 2, w / 4) * 0.85;
+    } else {
+        // Single fan centered
+        fanRadius = (Math.min(w, d) / 2) * 0.85;
+    }
 
     return (
         <group position={position} rotation={[0, rotation, 0]}>
              <mesh castShadow receiveShadow userData={{ type: 'detail-fade' }}>
-                 <boxGeometry args={scale} />
+                 <boxGeometry args={[w, h, d]} />
                  <meshStandardMaterial color={color} />
              </mesh>
-             {/* Add top detail for roof units */}
-             {isWide ? (
-                 <group position={[0, scale[1]/2 + 0.01, 0]} rotation={[-Math.PI/2, 0, 0]}>
-                    <mesh position={[-scale[0]*0.25, 0, 0]}>
-                        <circleGeometry args={[0.6, 16]} />
+             
+             {useDoubleFan ? (
+                 <group position={[0, h/2 + 0.01, 0]} rotation={[-Math.PI/2, 0, 0]}>
+                    <mesh position={[-w*0.25, 0, 0]}>
+                        <circleGeometry args={[fanRadius, 16]} />
                         <meshStandardMaterial color="#0f172a" />
                     </mesh>
-                    <mesh position={[scale[0]*0.25, 0, 0]}>
-                        <circleGeometry args={[0.6, 16]} />
+                    <mesh position={[w*0.25, 0, 0]}>
+                        <circleGeometry args={[fanRadius, 16]} />
                         <meshStandardMaterial color="#0f172a" />
                     </mesh>
                  </group>
              ) : (
-                <mesh position={[0, scale[1]/2 + 0.01, 0]} rotation={[-Math.PI/2, 0, 0]}>
-                    <circleGeometry args={[0.8, 16]} />
+                <mesh position={[0, h/2 + 0.01, 0]} rotation={[-Math.PI/2, 0, 0]}>
+                    <circleGeometry args={[fanRadius, 16]} />
                     <meshStandardMaterial color="#0f172a" />
                 </mesh>
              )}
+             
              {/* Side Vents */}
-             <mesh position={[0, 0, scale[2]/2 + 0.01]}>
-                  <boxGeometry args={[scale[0] * 0.8, scale[1] * 0.6, 0.05]} />
+             <mesh position={[0, 0, d/2 + 0.01]}>
+                  <boxGeometry args={[w * 0.8, h * 0.6, 0.05]} />
                   <meshStandardMaterial color="#1e293b" />
              </mesh>
         </group>
@@ -1087,14 +1104,15 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
   const stumbleTimer = useRef(0);
   const stumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
   const landingAnimTimer = useRef(0);
+  const lastFallDist = useRef(0);
 
   // Character Refs for direct manipulation (if needed)
   const characterGroup = useRef<THREE.Group>(null!);
-  const staminaGroup = useRef<THREE.Group>(null!);
-  const staminaFill = useRef<THREE.Mesh>(null!);
+  const staminaGroup = useRef<HTMLDivElement>(null!);
+  const staminaFill = useRef<HTMLDivElement>(null!);
 
   // Map Data
-  const [mapData, setMapData] = useState<{ objects: VoxelObject[], oGrid: number[][], bGrid: number[][], wGrid: number[][], spawnPos: THREE.Vector3 } | null>(null);
+  const [mapData, setMapData] = useState<{ objects: VoxelObject[], oGrid: number[][], bGrid: number[][], wGrid: number[][], sGrid: number[][], spawnPos: THREE.Vector3 } | null>(null);
 
   // Character Visual State (for animation props)
   const [visualState, setVisualState] = useState({
@@ -1107,7 +1125,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
       stunned: false,
       isMoving: false,
       stepUpFactor: 0,
-      landingFactor: 0
+      landingFactor: 0,
+      currentSurface: 0,
+      fallDistance: 0,
+      justLanded: false
   });
 
   // Initialization
@@ -1174,7 +1195,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
           stepUpTimer,
           stumbleTimer,
           stumbleVelocity,
-          camera // Pass Camera
+          camera, // Pass Camera
+          lastFallDist
       );
 
       // Update Character Transform
@@ -1198,11 +1220,27 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
       // Update Stamina Bar
       if (staminaFill.current && staminaGroup.current) {
           const s = Math.max(0, stamina.current / 100);
-          staminaFill.current.scale.set(s, 1, 1);
-          staminaFill.current.position.x = -0.725 + (0.725 * s);
-          // Fix: Cast material to MeshBasicMaterial to access color property
-          (staminaFill.current.material as THREE.MeshBasicMaterial).color.setHSL(s * 0.3, 1.0, 0.5);
-          staminaGroup.current.visible = s < 0.99;
+          staminaFill.current.style.width = `${s * 100}%`;
+          
+          if (physicsOutput.effectiveStunned) {
+              staminaFill.current.style.backgroundColor = '#9ca3af';
+          } else {
+              const hue = s * 120; 
+              staminaFill.current.style.backgroundColor = `hsl(${hue}, 100%, 50%)`;
+          }
+
+          staminaGroup.current.style.display = s < 0.99 ? 'block' : 'none';
+      }
+
+      // Determine Surface
+      let currentSurface = 0;
+      if (mapData) {
+          const halfSize = Math.floor(settings.worldSize / 2);
+          const ix = worldToIndex(playerPos.current.x, halfSize, settings.worldSize);
+          const iz = worldToIndex(playerPos.current.z, halfSize, settings.worldSize);
+          if (mapData.sGrid[ix]?.[iz] !== undefined) {
+              currentSurface = mapData.sGrid[ix][iz];
+          }
       }
 
       // Sync Visual State
@@ -1216,7 +1254,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
           stunned: physicsOutput.effectiveStunned,
           isMoving: physicsOutput.pMoving,
           stepUpFactor: physicsOutput.stepUpFactor,
-          landingFactor: physicsOutput.landingFactor
+          landingFactor: physicsOutput.landingFactor,
+          currentSurface: currentSurface,
+          fallDistance: physicsOutput.fallDistance,
+          justLanded: physicsOutput.justLanded
       };
 
       // Simple shallow compare
@@ -1231,6 +1272,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
       else if (newVisualState.isMoving !== visualState.isMoving) changed = true;
       else if (Math.abs(newVisualState.stepUpFactor - visualState.stepUpFactor) > 0.05) changed = true;
       else if (Math.abs(newVisualState.landingFactor - visualState.landingFactor) > 0.05) changed = true;
+      else if (newVisualState.currentSurface !== visualState.currentSurface) changed = true;
+      else if (Math.abs(newVisualState.fallDistance - visualState.fallDistance) > 0.1) changed = true;
+      else if (newVisualState.justLanded !== visualState.justLanded) changed = true;
       
       if (changed) {
           setVisualState(newVisualState);
@@ -1326,6 +1370,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             landingFactor={visualState.landingFactor}
             stunTimerRef={stunTimer}
             rollTimerRef={rollTimer}
+            staminaRef={stamina}
+            currentSurface={visualState.currentSurface}
+            fallDistance={visualState.fallDistance}
+            justLanded={visualState.justLanded}
             overlayContent={null}
         />
     </group>

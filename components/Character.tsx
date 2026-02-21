@@ -6,8 +6,8 @@ import * as THREE from 'three';
 
 interface CharacterProps {
   groupRef: React.RefObject<THREE.Group>;
-  staminaFillRef?: React.RefObject<THREE.Mesh>;
-  staminaGroupRef?: React.RefObject<THREE.Group>;
+  staminaFillRef?: React.RefObject<HTMLDivElement>;
+  staminaGroupRef?: React.RefObject<HTMLDivElement>;
   overlayContent?: React.ReactNode;
   stunned?: boolean;
   isCharging?: boolean;
@@ -22,7 +22,233 @@ interface CharacterProps {
   stunTimerRef?: React.MutableRefObject<number>;
   rollTimerRef?: React.MutableRefObject<number>;
   isHiding?: boolean;
+  staminaRef?: React.MutableRefObject<number>;
+  currentSurface?: number;
+  fallDistance?: number;
+  justLanded?: boolean;
 }
+
+const ParticleEffects: React.FC<{
+    isRunning: boolean;
+    isMoving: boolean;
+    isGrounded: boolean;
+    currentSurface: number;
+    staminaRef?: React.MutableRefObject<number>;
+    landingFactor: number;
+    playerGroup: React.RefObject<THREE.Group>;
+    stunned: boolean;
+    fallDistance: number;
+    justLanded: boolean;
+    isTiredBreathingRef?: React.MutableRefObject<boolean>; // Changed to Ref
+}> = ({ isRunning, isMoving, isGrounded, currentSurface, staminaRef, landingFactor, playerGroup, stunned, fallDistance, justLanded, isTiredBreathingRef }) => {
+    const meshRef = useRef<THREE.InstancedMesh>(null!);
+    const particles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; color: THREE.Color; scale: number; active: boolean }[]>([]);
+    const dummy = React.useMemo(() => new THREE.Object3D(), []);
+    const maxParticles = 200; 
+    
+    // Initialize particles pool
+    React.useEffect(() => {
+        particles.current = new Array(maxParticles).fill(0).map(() => ({
+            pos: new THREE.Vector3(),
+            vel: new THREE.Vector3(),
+            life: 0,
+            color: new THREE.Color(),
+            scale: 0,
+            active: false
+        }));
+    }, []);
+
+    const spawnParticle = (pos: THREE.Vector3, vel: THREE.Vector3, color: string, scale: number, life: number) => {
+        const p = particles.current.find(p => !p.active);
+        if (p) {
+            p.active = true;
+            p.pos.copy(pos);
+            p.vel.copy(vel);
+            p.life = life;
+            p.color.set(color);
+            p.scale = scale;
+        }
+    };
+
+    const prevLanding = useRef(0);
+    const wasInWater = useRef(false);
+    const wetTimer = useRef(0);
+    const lastBreathCycle = useRef(0); // Only keep cycle tracker
+
+    useFrame((state, delta) => {
+        if (!meshRef.current || !playerGroup.current) return;
+
+        // SPAWN LOGIC
+        
+        // 1. Running Particles
+        if (isRunning && isGrounded && Math.random() < 0.3) {
+            const offset = new THREE.Vector3((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
+            const spawnPos = playerGroup.current.position.clone().add(offset);
+            
+            let color = '#a8a29e'; 
+            if (currentSurface === 0) color = '#4ade80'; 
+            else if (currentSurface === 1) color = '#60a5fa'; 
+            else if (currentSurface === 3) color = '#d6d3d1'; 
+            
+            spawnParticle(
+                spawnPos,
+                new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2 + 0.5, (Math.random() - 0.5) * 2),
+                color,
+                0.1 + Math.random() * 0.1,
+                0.5 + Math.random() * 0.5
+            );
+        }
+
+        // 2. Sweat Particles
+        if (staminaRef && staminaRef.current < 25 && Math.random() < 0.1) {
+             const headOffset = new THREE.Vector3((Math.random() - 0.5) * 0.6, 1.8, (Math.random() - 0.5) * 0.6);
+             const spawnPos = playerGroup.current.position.clone().add(headOffset);
+             spawnParticle(
+                 spawnPos,
+                 new THREE.Vector3(0, -3, 0), 
+                 '#38bdf8',
+                 0.25, 
+                 0.5
+             );
+        }
+
+        // 3. Landing Particles
+        if (justLanded) {
+             if (fallDistance > 1.5) {
+                 let count = currentSurface === 1 ? 15 : 12; 
+                 let scaleBase = 0.1; 
+                 let spread = 0.8; 
+                 let color = '#a8a29e';
+
+                 if (currentSurface === 0) color = '#4ade80';
+                 else if (currentSurface === 1) color = '#60a5fa';
+                 else if (currentSurface === 3) color = '#d6d3d1';
+
+                 if (stunned) {
+                     count = 30; 
+                     scaleBase = 0.25; 
+                     spread = 1.2; 
+                     color = '#78716c'; 
+                 }
+
+                 for(let i=0; i<count; i++) {
+                     const offset = new THREE.Vector3((Math.random() - 0.5) * spread, 0, (Math.random() - 0.5) * spread);
+                     const spawnPos = playerGroup.current.position.clone().add(offset);
+                     
+                     spawnParticle(
+                        spawnPos,
+                        new THREE.Vector3((Math.random() - 0.5) * 3, Math.random() * 3, (Math.random() - 0.5) * 3), 
+                        color,
+                        scaleBase + Math.random() * 0.15, 
+                        0.6 
+                     );
+                 }
+             }
+        }
+        prevLanding.current = landingFactor;
+
+        // 4. Water Splash & Dripping
+        const playerY = playerGroup.current.position.y;
+        const isOverWater = currentSurface === 1;
+        const isInWater = isOverWater && playerY < -0.5;
+
+        if (isInWater && !wasInWater.current) {
+            for(let i=0; i<30; i++) {
+                    const offset = new THREE.Vector3((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2);
+                    const spawnPos = playerGroup.current.position.clone().add(offset);
+                    spawnPos.y = -0.5; 
+                    
+                    spawnParticle(
+                    spawnPos,
+                    new THREE.Vector3((Math.random() - 0.5) * 3, Math.random() * 4 + 2, (Math.random() - 0.5) * 3),
+                    '#60a5fa', 
+                    0.2 + Math.random() * 0.2,
+                    0.8
+                    );
+            }
+        }
+        
+        if (wasInWater.current && !isInWater) {
+            wetTimer.current = 2.0; 
+        }
+        wasInWater.current = isInWater;
+
+        // 5. Dripping Logic
+        if (wetTimer.current > 0) {
+            wetTimer.current -= delta;
+            if (Math.random() < 0.3) { 
+                 const offset = new THREE.Vector3((Math.random() - 0.5) * 0.8, Math.random() * 1.2, (Math.random() - 0.5) * 0.8);
+                 const spawnPos = playerGroup.current.position.clone().add(offset);
+                 spawnParticle(
+                     spawnPos,
+                     new THREE.Vector3(0, -4, 0),
+                     '#38bdf8', 
+                     0.15,
+                     0.4
+                 );
+            }
+        }
+
+        // 6. Tired Breath (Fumacinha) - Driven by prop Ref
+        if (isTiredBreathingRef?.current) {
+             const breathCycle = Math.sin(state.clock.getElapsedTime() * 8.0);
+             
+             // Trigger puff on rising edge
+             if (breathCycle > 0.8 && lastBreathCycle.current <= 0.8) {
+                 const rotY = playerGroup.current.rotation.y;
+                 const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+                 const mouthOffset = new THREE.Vector3(0, 1.4, 0).addScaledVector(forward, 0.3);
+                 const spawnPos = playerGroup.current.position.clone().add(mouthOffset);
+                 
+                 spawnParticle(
+                     spawnPos,
+                     forward.clone().multiplyScalar(1.2).add(new THREE.Vector3(0, 0.5, 0)), 
+                     '#f3f4f6', 
+                     0.15 + Math.random() * 0.1,
+                     0.8 
+                 );
+             }
+             lastBreathCycle.current = breathCycle;
+        } else {
+            lastBreathCycle.current = 0;
+        }
+
+        // UPDATE PARTICLES
+        let idx = 0;
+        particles.current.forEach(p => {
+            if (p.active) {
+                p.life -= delta;
+                p.vel.y -= 8.0 * delta; // Gravity
+                p.pos.addScaledVector(p.vel, delta);
+                
+                if (p.life <= 0 || p.pos.y < -2) {
+                    p.active = false;
+                    dummy.scale.set(0, 0, 0);
+                } else {
+                    const s = p.scale * (p.life / 0.5); // Fade out scale
+                    dummy.position.copy(p.pos);
+                    dummy.scale.set(s, s, s);
+                    dummy.rotation.set(Math.random(), Math.random(), Math.random());
+                    meshRef.current.setColorAt(idx, p.color);
+                }
+            } else {
+                dummy.scale.set(0, 0, 0);
+            }
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(idx, dummy.matrix);
+            idx++;
+        });
+        meshRef.current.instanceMatrix.needsUpdate = true;
+        if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
+    });
+
+    return (
+        <instancedMesh ref={meshRef} args={[undefined, undefined, maxParticles]}>
+            <boxGeometry args={[1, 1, 1]} />
+            <meshBasicMaterial transparent opacity={0.8} />
+        </instancedMesh>
+    );
+};
 
 export const Character: React.FC<CharacterProps> = ({ 
   groupRef, 
@@ -41,7 +267,11 @@ export const Character: React.FC<CharacterProps> = ({
   stepUpFactor = 0,
   stunTimerRef,
   rollTimerRef,
-  isHiding = false
+  isHiding = false,
+  staminaRef,
+  currentSurface = 0,
+  fallDistance = 0,
+  justLanded = false
 }) => {
   const headColor = stunned ? '#9ca3af' : '#3b82f6';
   const bodyColor = stunned ? '#4b5563' : '#1d4ed8';
@@ -51,6 +281,16 @@ export const Character: React.FC<CharacterProps> = ({
   const headMesh = useRef<THREE.Mesh>(null!);
   const bodyMesh = useRef<THREE.Mesh>(null!);
   const eyesMesh = useRef<THREE.Group>(null!);
+
+  // Animation State Refs
+  const idleTimer = useRef(0);
+  const idleState = useRef(0); // 0: Breath, 1: Look, 2: Shift
+  const idleTargetRotY = useRef(0);
+  
+  // Tired Breath State
+  const tiredBreathCount = useRef(0);
+  const isTiredBreathing = useRef(false);
+  const lastBreathCycle = useRef(0);
   
   useFrame((state, delta) => {
     const stunTimeLeft = stunTimerRef?.current || 0;
@@ -61,9 +301,86 @@ export const Character: React.FC<CharacterProps> = ({
     const isGettingUp = stunned && !isStumbling && stunTimeLeft <= GET_UP_DURATION && stunTimeLeft > 0;
     const isLyingDownAnim = stunned && !isStumbling && stunTimeLeft > GET_UP_DURATION;
 
+    // --- IDLE ANIMATION LOGIC ---
+    let headRotY = 0;
+    let bodyRotZ = 0;
+    let breathingScale = 1.0;
+    let heavyBreathingRotX = 0;
+
+    if (isGrounded && !isMoving && !isRunning && !isClimbing && !stunned && !isRolling && !isStumbling && !isCharging && !isHiding) {
+        idleTimer.current += delta;
+        
+        const currentStamina = staminaRef?.current ?? 100;
+        const isLowStamina = currentStamina < 30;
+        
+        // Tired Breath State Logic
+        if (isLowStamina && !isTiredBreathing.current) {
+            isTiredBreathing.current = true;
+            tiredBreathCount.current = 0;
+        }
+        
+        if (isTiredBreathing.current) {
+             const breathCycle = Math.sin(time * 8.0);
+             if (breathCycle > 0.8 && lastBreathCycle.current <= 0.8) {
+                 tiredBreathCount.current++;
+             }
+             lastBreathCycle.current = breathCycle;
+             
+             if (!isLowStamina && tiredBreathCount.current >= 3) {
+                 isTiredBreathing.current = false;
+             }
+        } else {
+            lastBreathCycle.current = 0;
+        }
+        
+        // Breathing Animation
+        const breathSpeed = isTiredBreathing.current ? 8.0 : 2.5;
+        const breathAmp = isTiredBreathing.current ? 0.06 : 0.02;
+        
+        breathingScale = 1.0 + Math.sin(time * breathSpeed) * breathAmp;
+
+        if (isTiredBreathing.current) {
+             // Heavy breathing: Lean forward and back slightly
+             heavyBreathingRotX = Math.sin(time * breathSpeed) * 0.15 + 0.1; // Bias forward
+        }
+
+        // State Machine
+        if (idleState.current === 0) { // Breathing
+            if (idleTimer.current > 0.5 + Math.random() * 1.5) { 
+                // If tired breathing, don't look around
+                if (!isTiredBreathing.current) {
+                    idleState.current = Math.random() > 0.5 ? 1 : 2;
+                    idleTimer.current = 0;
+                    if (idleState.current === 1) idleTargetRotY.current = (Math.random() - 0.5) * 1.0; 
+                }
+            }
+        } else if (idleState.current === 1) { // Look Around
+            headRotY = THREE.MathUtils.lerp(0, idleTargetRotY.current, Math.sin(Math.min(idleTimer.current, 1.0) * Math.PI));
+            if (idleTimer.current > 1.5) {
+                idleState.current = 0;
+                idleTimer.current = 0;
+            }
+        } else if (idleState.current === 2) { // Shift Weight
+            bodyRotZ = Math.sin(Math.min(idleTimer.current, 1.0) * Math.PI) * 0.05;
+            if (idleTimer.current > 1.0) {
+                idleState.current = 0;
+                idleTimer.current = 0;
+            }
+        }
+    } else {
+        idleTimer.current = 0;
+        idleState.current = 0;
+    }
+
     // --- SQUASH / CROUCH LOGIC ---
     const baseCrouch = isCharging ? 0.4 : 0; 
-    const landingSquash = landingFactor * 0.4;
+    
+    // Improved Landing Squash: Elastic bounce with volume preservation
+    const heavyLanding = fallDistance > 2.0;
+    const landingIntensity = heavyLanding ? 0.7 : 0.3; // Deeper squash for heavy falls
+    
+    // Elastic bounce curve
+    const landingSquash = Math.max(0, Math.sin(landingFactor * Math.PI)) * landingIntensity;
     let totalSquash = Math.max(baseCrouch, landingSquash);
     
     if (isStumbling) {
@@ -88,7 +405,8 @@ export const Character: React.FC<CharacterProps> = ({
     const HEAD_SIZE = 0.8;
 
     // Standard Standing Target Positions
-    const targetScaleY = 1.0 - totalSquash;
+    const targetScaleY = (1.0 - totalSquash) * breathingScale;
+    const targetScaleXZ = 1.0 + (totalSquash * 0.5); // Maintain volume: squash Y -> stretch XZ
     
     // Body Center Y = Height/2 = 0.6
     const standardBodyY = (BODY_HEIGHT / 2) - (totalSquash * 0.5); 
@@ -97,8 +415,8 @@ export const Character: React.FC<CharacterProps> = ({
     const standardHeadY = (BODY_HEIGHT + HEAD_SIZE/2) - (totalSquash * 1.5); 
     
     // --- ROTATION & PIVOT LOGIC ---
-    let targetRotX = 0;
-    let targetRotZ = 0;
+    let targetRotX = heavyBreathingRotX;
+    let targetRotZ = bodyRotZ; // Apply idle sway
     let targetZOffset = 0;
     let targetPivotY = 0; 
     let bobY = 0;
@@ -143,17 +461,18 @@ export const Character: React.FC<CharacterProps> = ({
         rotLerpSpeed = delta * 20; 
     } else if ((isMoving || isRunning) && isGrounded) {
         // WALKING / RUNNING ANIMATION
-        const speed = isRunning ? 20 : 12;
-        const amp = isRunning ? 0.08 : 0.04;
+        const speed = isRunning ? 18 : 12; // Adjusted speeds
+        const bobAmp = isRunning ? 0.03 : 0.02; // Reduced from 0.05
+        const swayAmp = isRunning ? 0.1 : 0.05;
         
-        // Bob up and down
-        bobY = Math.sin(time * speed) * amp;
-        // Sway side to side (half speed of bob)
-        targetRotZ = Math.cos(time * (speed * 0.5)) * (isRunning ? 0.05 : 0.03);
+        // Bob up and down (Sine) - Positive to lift feet slightly (hopping/stepping)
+        bobY = Math.abs(Math.sin(time * speed)) * bobAmp;
         
-        if (isRunning) {
-             targetRotX = 0.15; // Lean forward when running
-        }
+        // Sway side to side (Cosine, half speed) - Simulates weight shift
+        targetRotZ = Math.cos(time * speed) * swayAmp;
+        
+        // Lean forward
+        targetRotX = isRunning ? 0.15 : 0.05; // Reduced lean from 0.25/0.1
     }
 
     // Apply Lerps
@@ -172,6 +491,7 @@ export const Character: React.FC<CharacterProps> = ({
             if (modelGroup.current.rotation.x > Math.PI) {
                  modelGroup.current.rotation.x -= Math.PI * 2;
             }
+            // Smooth rotation
             modelGroup.current.rotation.x = THREE.MathUtils.lerp(modelGroup.current.rotation.x, targetRotX, rotLerpSpeed);
             modelGroup.current.rotation.z = THREE.MathUtils.lerp(modelGroup.current.rotation.z, targetRotZ, rotLerpSpeed);
             nextBaseY = THREE.MathUtils.lerp(currentBaseY, targetPivotY, rotLerpSpeed);
@@ -187,19 +507,39 @@ export const Character: React.FC<CharacterProps> = ({
 
     if (bodyMesh.current) {
         bodyMesh.current.scale.y = THREE.MathUtils.lerp(bodyMesh.current.scale.y, targetScaleY, squashLerpSpeed);
+        bodyMesh.current.scale.x = THREE.MathUtils.lerp(bodyMesh.current.scale.x, targetScaleXZ, squashLerpSpeed);
+        bodyMesh.current.scale.z = THREE.MathUtils.lerp(bodyMesh.current.scale.z, targetScaleXZ, squashLerpSpeed);
         bodyMesh.current.position.y = THREE.MathUtils.lerp(bodyMesh.current.position.y, targetBodyLocalY, squashLerpSpeed);
     }
     if (headMesh.current) {
         headMesh.current.position.y = THREE.MathUtils.lerp(headMesh.current.position.y, targetHeadLocalY, squashLerpSpeed);
+        // Apply Head Look Rotation
+        headMesh.current.rotation.y = THREE.MathUtils.lerp(headMesh.current.rotation.y, headRotY, delta * 10);
     }
     if (eyesMesh.current) {
          eyesMesh.current.position.y = THREE.MathUtils.lerp(eyesMesh.current.position.y, targetHeadLocalY + 0.1, squashLerpSpeed);
+         // Sync Eyes Rotation with Head
+         eyesMesh.current.rotation.y = THREE.MathUtils.lerp(eyesMesh.current.rotation.y, headRotY, delta * 10);
     }
   });
 
   // Reduced width/depth from 0.8 to 0.7 to minimize wall clipping during rotation
   return (
-    <group ref={groupRef}>
+    <>
+      <ParticleEffects 
+          isRunning={isRunning || false} 
+          isMoving={isMoving || false}
+          isGrounded={isGrounded || false} 
+          currentSurface={currentSurface || 0} 
+          staminaRef={staminaRef} 
+          landingFactor={landingFactor || 0} 
+          playerGroup={groupRef} 
+          stunned={stunned || false}
+          fallDistance={fallDistance || 0}
+          justLanded={justLanded || false}
+          isTiredBreathingRef={isTiredBreathing}
+      />
+      <group ref={groupRef}>
       {/* UI Elements */}
       {overlayContent && (
          <Html position={[0, 4.0, 0]} center style={{ pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 101 }}>
@@ -216,18 +556,30 @@ export const Character: React.FC<CharacterProps> = ({
 
       {/* Stamina Bar */}
       {staminaGroupRef && staminaFillRef && (
-        <Billboard position={[0, 2.4, 0]}>
-            <group ref={staminaGroupRef} visible={true}>
-                <mesh position={[0, 0, 0]} renderOrder={999}>
-                    <boxGeometry args={[1.5, 0.25, 0.05]} />
-                    <meshBasicMaterial color="#1f2937" depthTest={false} depthWrite={false} toneMapped={false} />
-                </mesh>
-                <mesh ref={staminaFillRef} position={[0, 0, 0.03]} renderOrder={1000}>
-                    <boxGeometry args={[1.45, 0.2, 0.05]} />
-                    <meshBasicMaterial color={stunned ? "#9ca3af" : "#fbbf24"} depthTest={false} depthWrite={false} toneMapped={false} />
-                </mesh>
-            </group>
-        </Billboard>
+        <Html position={[0, 2.5, 0]} center style={{ pointerEvents: 'none', zIndex: 90 }}>
+            <div 
+                ref={staminaGroupRef} 
+                style={{ 
+                    width: '60px', 
+                    height: '8px', 
+                    background: '#1f2937', 
+                    border: '1px solid rgba(0,0,0,0.5)', 
+                    borderRadius: '4px', 
+                    overflow: 'hidden',
+                    display: 'none'
+                }}
+            >
+                <div 
+                    ref={staminaFillRef} 
+                    style={{ 
+                        width: '100%', 
+                        height: '100%', 
+                        background: stunned ? '#9ca3af' : '#fbbf24', 
+                        transition: 'width 0.1s linear, background-color 0.2s' 
+                    }} 
+                />
+            </div>
+        </Html>
       )}
       
       <group ref={modelGroup} position={[0, 0, 0]}>
@@ -254,5 +606,6 @@ export const Character: React.FC<CharacterProps> = ({
         </group>
       </group>
     </group>
+    </>
   );
 };

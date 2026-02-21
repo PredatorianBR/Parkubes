@@ -18,6 +18,7 @@ export const generateCityLevel = (
     const oGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Height Grid
     const bGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Bridge Grid
     const wGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Water Grid
+    const sGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Surface Grid (0: Grass, 1: Water, 2: Street, 3: Hard)
     
     // Type Grid remains Logic Resolution (1x1) for building placement logic
     const tGrid: number[][] = Array(size).fill(null).map(() => Array(size).fill(0)); 
@@ -154,14 +155,21 @@ export const generateCityLevel = (
         
         if (!forcedType && rand < tRuins) {
             const numRuins = Math.max(1, Math.floor((bw * bd) / 4));
+            const placedRuinsInBlock = new Set<string>();
+
             for(let i=0; i<numRuins; i++) {
                 const rx = bx + Math.floor(Math.random() * bw);
                 const rz = bz + Math.floor(Math.random() * bd);
+                
+                const key = `${rx},${rz}`;
+                if (placedRuinsInBlock.has(key)) continue;
+
                 const tx = rx + halfSize;
                 const tz = rz + halfSize;
                 
                 if(tx >= 0 && tx < size && tz >= 0 && tz < size) {
                     if (!isWaterLogic(rx, rz) && tGrid[tx][tz] !== 4) {
+                        placedRuinsInBlock.add(key);
                         const h = Math.random() > 0.7 ? 2 : 1;
                         objects.push({
                             id: uid(`ruin-${rx}-${rz}`),
@@ -584,30 +592,62 @@ export const generateCityLevel = (
         }
 
         if (type === 'factory') {
-            const numRoofObjs = Math.floor(Math.random() * 3); 
+            // UPDATED: Increase count to up to 3 objects
+            const numRoofObjs = Math.floor(Math.random() * 3) + 1; 
+            
             for (let k = 0; k < numRoofObjs; k++) {
+                // FIXED: Force padding of 1 to ensure objects are never on the edge
                 const pad = 1;
-                if (fillW <= 2 || fillD <= 2) continue; 
-                
-                // ADJUSTED: Random Roof AC Size for Factories
-                // Width/Depth between 2 and 4. Height fixed at 3.
-                const acW = Math.floor(Math.random() * 3) + 2; // 2, 3, or 4
-                const acD = Math.floor(Math.random() * 3) + 2; // 2, 3, or 4
-                const acH = 3.0;
-                
-                // Ensure it fits within the roof with padding
-                const maxRx = fillW - 2 * pad - acW;
-                const maxRz = fillD - 2 * pad - acD;
 
-                if (maxRx <= 0 || maxRz <= 0) continue;
+                // If building is too small to have padded interior (need at least 3x3 to have 1 center voxel), skip
+                if (fillW < 3 || fillD < 3) continue;
+                
+                // Calculate max available dimension for an object
+                const availObjW = fillW - 2 * pad;
+                const availObjD = fillD - 2 * pad;
+                
+                if (availObjW < 1 || availObjD < 1) continue;
 
-                const rx = Math.floor(Math.random() * maxRx) + pad;
-                const rz = Math.floor(Math.random() * maxRz) + pad;
+                let acW = 1;
+                let acD = 1;
+
+                // "Fabricas menores" logic: Scale ACs down for small footprints
+                if (fillW < 5 || fillD < 5) {
+                    // Prefer 1x1 ACs for small buildings, occasionally 2x1 if space permits
+                    acW = (availObjW >= 2 && Math.random() > 0.7) ? 2 : 1;
+                    acD = (availObjD >= 2 && Math.random() > 0.7) ? 2 : 1;
+                } else {
+                    // Larger buildings
+                    const maxACW = Math.max(2, Math.floor(fillW / 2));
+                    const maxACD = Math.max(2, Math.floor(fillD / 2));
+                    
+                    // Constrain random selection by actual available space
+                    const targetW = Math.min(4, Math.floor(Math.random() * (maxACW - 1)) + 2);
+                    const targetD = Math.min(4, Math.floor(Math.random() * (maxACD - 1)) + 2);
+                    
+                    acW = Math.min(availObjW, targetW);
+                    acD = Math.min(availObjD, targetD);
+                }
+                
+                // REDUCED HEIGHT: ACs now much shorter (half of previous 2.5 average)
+                const acH = 1.0 + Math.random() * 0.8;
+                
+                // Range calculation
+                const rangeX = fillW - 2 * pad - acW;
+                const rangeZ = fillD - 2 * pad - acD;
+
+                if (rangeX < 0 || rangeZ < 0) continue;
+
+                // Random position within safe zone
+                const rx = Math.floor(Math.random() * (rangeX + 1)) + pad;
+                const rz = Math.floor(Math.random() * (rangeZ + 1)) + pad;
                 
                 let overlap = false;
+                // Relative position from center calc
                 const checkX = rx - (fillW-1)/2 + acW/2;
                 const checkZ = rz - (fillD-1)/2 + acD/2;
                 
+                // Overlap Check (using approximate radius)
                 for (const ac of assignedACs) {
                     if (ac.type === 'roof') {
                          const dx = ac.pos[0] - checkX;
@@ -633,12 +673,7 @@ export const generateCityLevel = (
                             rotation: 0
                         });
                     } else {
-                        // Position Y: Base aligned with roof top.
-                        // Building Top Y (absolute) = height.
-                        // AC Center Y = height + acH/2.
-                        // Relative to Building Center (height/2): (height + acH/2) - height/2 = height/2 + acH/2.
                         const posY = height/2 + acH/2;
-
                         assignedACs.push({
                             pos: [checkX, posY, checkZ],
                             scale: [acW, acH, acD], 
@@ -747,8 +782,6 @@ export const generateCityLevel = (
 
     // --- AUTOMATIC COLLISION ADJUSTMENT STEP (HIGH RES) ---
     objects.forEach(obj => {
-        if (obj.type === 'street') return;
-        
         // --- CUSTOM FENCE COLLISION (1 Voxel Precision) ---
         if (obj.type === 'fence') {
             // Revert the visual offset to get Logic Coordinates for collision mapping
@@ -767,6 +800,7 @@ export const generateCityLevel = (
             // Pillar: Always at (0,0) of the tile (Top-Left).
             if (ix >= 0 && ix < gridSize && iz >= 0 && iz < gridSize) {
                 oGrid[ix][iz] = 1.2; // Pillar Height
+                sGrid[ix][iz] = 3; // Hard surface
             }
 
             // Neighbor Logic to create "thin" walls (1 voxel thick)
@@ -774,12 +808,14 @@ export const generateCityLevel = (
             if (obj.neighbors?.s) {
                 if (ix >= 0 && ix < gridSize && iz + 1 < gridSize) {
                     oGrid[ix][iz + 1] = 1.0; 
+                    sGrid[ix][iz + 1] = 3;
                 }
             }
             // East Connection: Connects (ix, iz) to (ix + 2, iz) via (ix + 1, iz)
             if (obj.neighbors?.e) {
                 if (ix + 1 < gridSize && iz >= 0 && iz < gridSize) {
                     oGrid[ix + 1][iz] = 1.0;
+                    sGrid[ix + 1][iz] = 3;
                 }
             }
             return;
@@ -802,6 +838,12 @@ export const generateCityLevel = (
         
         const wHigh = Math.round(w * GRID_SCALE);
         const dHigh = Math.round(d * GRID_SCALE);
+
+        // Determine surface type
+        let surfaceType = 3; // Default Hard/Stone
+        if (obj.type === 'street') surfaceType = 2; // Street/Dirt
+        else if (obj.type === 'ruin') surfaceType = 3;
+        else if (obj.type === 'box' || obj.type === 'factory' || obj.type === 'highrise') surfaceType = 3;
 
         for (let ix = 0; ix < wHigh; ix++) {
             for (let iz = 0; iz < dHigh; iz++) {
@@ -832,8 +874,13 @@ export const generateCityLevel = (
                 const gridZ = startZHigh + iz;
 
                 if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
+                    // Update Surface Grid
+                    sGrid[gridX][gridZ] = surfaceType;
+
+                    // Skip collision update for streets
+                    if (obj.type === 'street') continue;
+
                     const topY = obj.position[1] + h / 2;
-                    // FIX: Remove 'fence' check as it's already returned early, causing type mismatch error
                     const collisionH = topY + (obj.type !== 'ruin' ? 0.3 : 0);
                     if (obj.position[1] - h/2 > 1.0) {
                          bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], collisionH);
@@ -902,5 +949,14 @@ export const generateCityLevel = (
         }
     }
 
-    return { objects, oGrid, bGrid, wGrid, spawnPos };
+    // Populate sGrid with Water where applicable (if not overwritten by objects)
+    for(let x=0; x<gridSize; x++) {
+        for(let z=0; z<gridSize; z++) {
+            if (wGrid[x][z] === 1 && sGrid[x][z] === 0) {
+                sGrid[x][z] = 1; // Water
+            }
+        }
+    }
+
+    return { objects, oGrid, bGrid, wGrid, sGrid, spawnPos };
 };

@@ -323,7 +323,10 @@ export const updateEntityPhysics = (
 
     // Running in water drains stamina but doesn't give much speed boost
     if (actions.run && next.stamina > 0 && isMoving && !next.isCharging && !next.isRolling) {
-        speed *= 1.5;
+        // Scale speed boost based on stamina: 100% -> 1.5x, 0% -> 1.0x
+        const staminaFactor = next.stamina / 100.0;
+        speed *= 1.0 + (0.5 * staminaFactor);
+        
         next.stamina -= STAMINA_RUN_COST * dt;
         isRunning = true;
     } else {
