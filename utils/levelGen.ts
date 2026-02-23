@@ -4,53 +4,62 @@ import { VoxelObject, GameSettings, Position } from '../types';
 import { worldToIndex, GRID_SCALE } from './physics';
 
 export const generateCityLevel = (
-    pSpawn: THREE.Vector2, 
+    pSpawn: THREE.Vector2,
     settings: GameSettings,
-    mapId: number // ID unique to this match generation
+    mapId: number, // ID unique to this match generation
+    debugMode: boolean = false
 ) => {
     // --- LOCAL SCOPED VARIABLES (Reset every function call) ---
     const objects: VoxelObject[] = [];
+
+    const currentArea: Record<'farm' | 'ruins' | 'house' | 'factory' | 'highrise', number> = {
+        farm: 0,
+        ruins: 0,
+        house: 0,
+        factory: 0,
+        highrise: 0
+    };
+    let totalBuiltArea = 0;
+
     const size = settings.worldSize;
     const halfSize = Math.floor(size / 2);
-    
+
     // Grids (Scaled Up for Physics Precision)
     const gridSize = size * GRID_SCALE;
     const oGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Height Grid
     const bGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Bridge Grid
     const wGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Water Grid
     const sGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Surface Grid (0: Grass, 1: Water, 2: Street, 3: Hard)
-    
+
     // Type Grid remains Logic Resolution (1x1) for building placement logic
-    const tGrid: number[][] = Array(size).fill(null).map(() => Array(size).fill(0)); 
-    
+    const tGrid: number[][] = Array(size).fill(null).map(() => Array(size).fill(0));
+
     // Tracking Sets
     const globalWallOccupied = new Set<string>();
-    const globalColumnOccupied = new Set<string>(); 
+    const globalColumnOccupied = new Set<string>();
     const fenceLocations = new Set<string>();
 
     const getPosKey = (x: number, y: number, z: number) => `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
 
-    const baseStreetWidth = 2;
-    const minBlockSize = 2; 
-    const maxBlockSize = 9; 
+    const baseStreetWidth = 4;
+    const minBlockSize = 4;
+    const maxBlockSize = 18;
 
-    let acClusterHeat = 0.0; 
+    let acClusterHeat = 0.0;
 
     const uid = (prefix: string) => `${prefix}_m${mapId}`;
 
     const colors = {
         house: ['#f8fafc', '#f1f5f9', '#e2e8f0', '#fefce8', '#f0fdf4', '#eff6ff', '#fff1f2'],
         brick: '#7f1d1d',
-        highrise: ['#cbd5e1', '#94a3b8', '#64748b', '#f8fafc', '#e2e8f0'], 
-        factory: ['#1e293b', '#0f172a', '#334155', '#3f3f46', '#27272a'], 
-        streetAsphalt: '#333333',
-        streetDirt: '#78350f',
+        highrise: ['#cbd5e1', '#94a3b8', '#64748b', '#f8fafc', '#e2e8f0'],
+        factory: ['#1e293b', '#0f172a', '#334155', '#3f3f46', '#27272a'],
         ruin: '#78716c',
-        acIndustrial: '#475569', 
-        acResidential: '#e2e8f0', 
-        chimneyResidential: '#7f1d1d', 
-        chimneyIndustrial: '#94a3b8', 
-        fenceWood: '#d4a373' 
+        acIndustrial: '#475569',
+        acResidential: '#e2e8f0',
+        chimneyResidential: '#7f1d1d',
+        chimneyIndustrial: '#94a3b8',
+        fenceWood: '#d4a373'
     };
 
     // Helper to check water presence at logic coordinate
@@ -64,31 +73,32 @@ export const generateCityLevel = (
     };
 
     // --- RIVER GENERATION ---
-    const hasRiver = settings.riverWidth > 0 && Math.random() > 0.1; 
+    const hasRiver = settings.riverWidth > 0 && Math.random() > 0.1;
     if (hasRiver) {
         const orientation = Math.random() > 0.5 ? 0 : 1;
         let cx = orientation === 0 ? Math.floor(Math.random() * (size - 10)) + 5 - halfSize : -halfSize;
         let cz = orientation === 0 ? -halfSize : Math.floor(Math.random() * (size - 10)) + 5 - halfSize;
-        const steps = size + 5; 
-        
-        for(let i = 0; i < steps; i++) {
+        const steps = size + 5;
+
+        for (let i = 0; i < steps; i++) {
             const width = Math.floor(Math.random() * settings.riverWidth) + 1;
-            for(let wx = -Math.floor(width/2); wx < Math.ceil(width/2); wx++) {
-                for(let wz = -Math.floor(width/2); wz < Math.ceil(width/2); wz++) {
-                     const logicX = cx + wx;
-                     const logicZ = cz + wz;
-                     const startX = worldToIndex(logicX, halfSize, size);
-                     const startZ = worldToIndex(logicZ, halfSize, size);
-                     
-                     for (let sx = 0; sx < GRID_SCALE; sx++) {
-                         for (let sz = 0; sz < GRID_SCALE; sz++) {
-                             const hx = startX + sx;
-                             const hz = startZ + sz;
-                             if (hx >= 0 && hx < gridSize && hz >= 0 && hz < gridSize) {
+            for (let wx = -Math.floor(width / 2); wx < Math.ceil(width / 2); wx++) {
+                for (let wz = -Math.floor(width / 2); wz < Math.ceil(width / 2); wz++) {
+                    const logicX = cx + wx;
+                    const logicZ = cz + wz;
+                    // Fix 0.5 offset: align water generation with the left/top edges of the logic tile
+                    const startX = worldToIndex(logicX, halfSize, size);
+                    const startZ = worldToIndex(logicZ, halfSize, size);
+
+                    for (let sx = 0; sx < GRID_SCALE; sx++) {
+                        for (let sz = 0; sz < GRID_SCALE; sz++) {
+                            const hx = startX + sx;
+                            const hz = startZ + sz;
+                            if (hx >= 0 && hx < gridSize && hz >= 0 && hz < gridSize) {
                                 wGrid[hx][hz] = 1;
-                             }
-                         }
-                     }
+                            }
+                        }
+                    }
                 }
             }
             if (orientation === 0) {
@@ -111,11 +121,11 @@ export const generateCityLevel = (
                 // tGrid check needs logic coords (no worldToIndex scaling needed, just bounds check)
                 const lx = cx + x + halfSize;
                 const lz = cz + z + halfSize;
-                
+
                 if (lx >= 0 && lx < size && lz >= 0 && lz < size) {
                     const type = tGrid[lx][lz];
                     if (type === 2 || type === 3) nearHighrise = true;
-                    if (type === 4) nearFarm = true; 
+                    if (type === 4) nearFarm = true;
                 }
             }
         }
@@ -123,95 +133,154 @@ export const generateCityLevel = (
     };
 
     // --- PLACE BUILDING ---
-    const placeBuilding = (bx: number, bz: number, bw: number, bd: number, forcedType?: 'factory') => {
-        const rand = Math.random() * 100;
-        const ratios = settings.ratios;
+    const placeBuilding = (bx: number, bz: number, bw: number, bd: number, forcedType?: 'farm' | 'ruins' | 'house' | 'factory' | 'highrise') => {
         acClusterHeat *= 0.99;
+        const blockArea = bw * bd;
 
-        const tFarm = ratios.farm;
-        const tRuins = tFarm + ratios.ruins;
-        const tHouse = tRuins + ratios.house;
-        const tFactory = tHouse + ratios.factory;
-        const tHighrise = tFactory + ratios.highrise;
-        
-        if (!forcedType && rand < tFarm) {
-            if (!((bw >= 2 && bd >= 4) || (bw >= 4 && bd >= 2))) return null; 
+        let selectedType: 'farm' | 'ruins' | 'house' | 'factory' | 'highrise' = 'house';
 
-            for(let i=0; i<bw; i++) {
-                for(let j=0; j<bd; j++) {
-                     const logicX = bx + i;
-                     const logicZ = bz + j;
-                     const tx = logicX + halfSize;
-                     const tz = logicZ + halfSize;
-                     if(tx >= 0 && tx < size && tz >= 0 && tz < size) {
-                         if (!isWaterLogic(logicX, logicZ)) {
-                             tGrid[tx][tz] = 4; // Mark as Farm
-                         }
-                     }
-                }
+        if (forcedType) {
+            selectedType = forcedType;
+        } else {
+            const newTotalArea = totalBuiltArea + blockArea;
+
+            let weights = {
+                farm: Math.max(0, (settings.ratios.farm / 100) * newTotalArea - currentArea.farm),
+                ruins: Math.max(0, (settings.ratios.ruins / 100) * newTotalArea - currentArea.ruins),
+                house: Math.max(0, (settings.ratios.house / 100) * newTotalArea - currentArea.house),
+                factory: Math.max(0, (settings.ratios.factory / 100) * newTotalArea - currentArea.factory),
+                highrise: Math.max(0, (settings.ratios.highrise / 100) * newTotalArea - currentArea.highrise)
+            };
+
+            let sumWeights = weights.farm + weights.ruins + weights.house + weights.factory + weights.highrise;
+
+            if (sumWeights <= 0) {
+                weights = settings.ratios;
+                sumWeights = weights.farm + weights.ruins + weights.house + weights.factory + weights.highrise;
             }
-            return null; 
-        }
-        
-        if (!forcedType && rand < tRuins) {
-            const numRuins = Math.max(1, Math.floor((bw * bd) / 4));
-            const placedRuinsInBlock = new Set<string>();
 
-            for(let i=0; i<numRuins; i++) {
-                const rx = bx + Math.floor(Math.random() * bw);
-                const rz = bz + Math.floor(Math.random() * bd);
-                
-                const key = `${rx},${rz}`;
-                if (placedRuinsInBlock.has(key)) continue;
-
-                const tx = rx + halfSize;
-                const tz = rz + halfSize;
-                
-                if(tx >= 0 && tx < size && tz >= 0 && tz < size) {
-                    if (!isWaterLogic(rx, rz) && tGrid[tx][tz] !== 4) {
-                        placedRuinsInBlock.add(key);
-                        const h = Math.random() > 0.7 ? 2 : 1;
-                        objects.push({
-                            id: uid(`ruin-${rx}-${rz}`),
-                            position: [rx, h/2, rz],
-                            scale: [1, h, 1],
-                            color: colors.ruin,
-                            type: 'ruin'
-                        });
+            const rand = Math.random() * sumWeights;
+            let acc = weights.farm;
+            if (rand < acc) selectedType = 'farm';
+            else {
+                acc += weights.ruins;
+                if (rand < acc) selectedType = 'ruins';
+                else {
+                    acc += weights.house;
+                    if (rand < acc) selectedType = 'house';
+                    else {
+                        acc += weights.factory;
+                        if (rand < acc) selectedType = 'factory';
+                        else selectedType = 'highrise';
                     }
                 }
             }
+        }
+
+        if (selectedType === 'farm') {
+            if (!((bw >= 4 && bd >= 8) || (bw >= 8 && bd >= 4))) return null;
+
+            for (let i = 0; i < bw; i++) {
+                for (let j = 0; j < bd; j++) {
+                    const logicX = bx + i;
+                    const logicZ = bz + j;
+                    const tx = logicX + halfSize;
+                    const tz = logicZ + halfSize;
+                    if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
+                        if (!isWaterLogic(logicX, logicZ)) {
+                            tGrid[tx][tz] = 4; // Mark as Farm
+                        }
+                    }
+                }
+            }
+            currentArea.farm += blockArea;
+            totalBuiltArea += blockArea;
             return null;
         }
 
-        if (!forcedType && rand > tHighrise) return null; 
+        if (selectedType === 'ruins') {
+            const numRuins = Math.max(1, Math.floor((bw * bd) / 4));
+            const placedRuinsInBlock = new Set<string>();
+
+            for (let i = 0; i < numRuins; i++) {
+                const rx = bx + Math.floor(Math.random() * bw);
+                const rz = bz + Math.floor(Math.random() * bd);
+
+                const key = `${rx},${rz}`;
+                if (placedRuinsInBlock.has(key)) continue;
+
+                // A ruin has size 2x2 logic units. 
+                // We must check rx, rx+1, rz, rz+1
+                let canPlace = true;
+
+                for (let dx = 0; dx < 2; dx++) {
+                    for (let dz = 0; dz < 2; dz++) {
+                        const checkX = rx + dx;
+                        const checkZ = rz + dz;
+                        const tx = checkX + halfSize;
+                        const tz = checkZ + halfSize;
+
+                        if (tx < 0 || tx >= size || tz < 0 || tz >= size) {
+                            canPlace = false;
+                        } else if (isWaterLogic(checkX, checkZ) || tGrid[tx][tz] !== 0) {
+                            // Can't place on water or if area is already used (4=farm, 1=house, etc)
+                            canPlace = false;
+                        }
+                    }
+                }
+
+                if (canPlace) {
+                    placedRuinsInBlock.add(key);
+                    // Mark tGrid so other buildings/ruins don't overlap
+                    for (let dx = 0; dx < 2; dx++) {
+                        for (let dz = 0; dz < 2; dz++) {
+                            const tx = rx + dx + halfSize;
+                            const tz = rz + dz + halfSize;
+                            tGrid[tx][tz] = 5; // Mark as ruin
+                        }
+                    }
+
+                    // Player height is ~4.0. Cap maximum ruin height at 3.8.
+                    const h = 1.0 + Math.random() * 2.8;
+                    objects.push({
+                        id: uid(`ruin-${rx}-${rz}`),
+                        // The ruin logic coordinates form a 2x2. The world position is the center.
+                        // rx,rz is the bottom-left. center is rx +1, rz+1.
+                        position: [rx + 1, h / 2, rz + 1],
+                        scale: [2, h, 2],
+                        color: colors.ruin,
+                        type: 'ruin'
+                    });
+                }
+            }
+            currentArea.ruins += blockArea;
+            totalBuiltArea += blockArea;
+            return null;
+        }
 
         let type: 'house' | 'highrise' | 'factory' = 'house';
         let typeId = 1;
-        
-        if (forcedType) {
-            type = forcedType;
-            typeId = 2;
-        } else if (rand < tHouse) {
-            type = 'house';
-            typeId = 1;
-        } else if (rand < tFactory) {
+
+        if (selectedType === 'factory') {
             type = 'factory';
             typeId = 2;
-        } else {
+        } else if (selectedType === 'house') {
+            type = 'house';
+            typeId = 1;
+        } else if (selectedType === 'highrise') {
             type = 'highrise';
             typeId = 3;
         }
 
-        const availW = Math.max(2, bw - Math.random() * 2); 
-        const availD = Math.max(2, bd - Math.random() * 2);
-        
+        const availW = Math.max(4, bw - Math.random() * 4);
+        const availD = Math.max(4, bd - Math.random() * 4);
+
         let fillW = Math.floor(availW);
         let fillD = Math.floor(availD);
 
         if (type === 'factory') {
-            fillW = Math.max(3, fillW);
-            fillD = Math.max(3, fillD);
+            fillW = Math.max(10, fillW);
+            fillD = Math.max(10, fillD);
             if (fillW > bw || fillD > bd) {
                 type = 'house';
                 typeId = 1;
@@ -220,117 +289,128 @@ export const generateCityLevel = (
             }
         }
 
-        if (fillW === 2 && fillD === 2) {
-            if (bw >= 3) fillW = 3;
-            else if (bd >= 3) fillD = 3;
+        if (fillW <= 4 && fillD <= 4) {
+            if (bw >= 6) fillW = 6;
+            else if (bd >= 6) fillD = 6;
             else return null;
         }
-        
+
+        if (fillW % 2 !== 0) fillW = Math.max(4, fillW - 1);
+        if (fillD % 2 !== 0) fillD = Math.max(4, fillD - 1);
+
         const alignX = Math.random();
         const alignZ = Math.random();
-        
+
         let startX = bx;
-        if (alignX < 0.3) startX = bx; 
-        else if (alignX > 0.7) startX = bx + (bw - fillW); 
+        if (alignX < 0.3) startX = bx;
+        else if (alignX > 0.7) startX = bx + (bw - fillW);
         else startX = bx + Math.floor((bw - fillW) / 2);
 
         let startZ = bz;
-        if (alignZ < 0.3) startZ = bz; 
-        else if (alignZ > 0.7) startZ = bz + (bd - fillD); 
+        if (alignZ < 0.3) startZ = bz;
+        else if (alignZ > 0.7) startZ = bz + (bd - fillD);
         else startZ = bz + Math.floor((bd - fillD) / 2);
 
-        for(let i = 0; i < fillW; i++) {
-            for(let j = 0; j < fillD; j++) {
-                 const lx = startX + i;
-                 const lz = startZ + j;
-                 const tx = lx + halfSize;
-                 const tz = lz + halfSize;
+        for (let i = 0; i < fillW; i++) {
+            for (let j = 0; j < fillD; j++) {
+                const lx = startX + i;
+                const lz = startZ + j;
+                const tx = lx + halfSize;
+                const tz = lz + halfSize;
 
-                 if(tx >= 0 && tx < size && tz >= 0 && tz < size) {
-                     if (isWaterLogic(lx, lz) || tGrid[tx][tz] !== 0) return null;
-                 }
+                if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
+                    if (isWaterLogic(lx, lz) || tGrid[tx][tz] !== 0) return null;
+                }
             }
         }
 
-        let height = 3;
+        let height = 6;
         if (type === 'house') {
-            height = Math.floor(Math.random() * 3) + 3; 
+            height = (Math.floor(Math.random() * 3) + 3) * 2;
         } else if (type === 'factory') {
-            height = Math.floor(Math.random() * 4) + 4; 
+            height = (Math.floor(Math.random() * 4) + 4) * 2;
         } else {
-            height = Math.floor(Math.random() * 7) + 5; 
-            if (height > 8 && (fillW < 4 || fillD < 4)) height = 8; 
+            height = (Math.floor(Math.random() * 7) + 5) * 2;
+            if (height > 16 && (fillW < 4 || fillD < 4)) height = 16;
         }
 
-        const canBeL = fillW >= 3 && fillD >= 3;
-        const isLShape = canBeL && Math.random() > 0.4; 
+        const canBeL = fillW >= 6 && fillD >= 6;
+        const isLShape = canBeL && Math.random() > 0.4;
 
         let lShapeConfig = undefined;
         let cutMask: boolean[][] = Array(fillW).fill(null).map(() => Array(fillD).fill(false));
 
         if (isLShape) {
-            const cutCorner = Math.floor(Math.random() * 4) as 0|1|2|3;
-            const cutW = Math.max(1, Math.floor(fillW * (0.3 + Math.random() * 0.3))); 
-            const cutD = Math.max(1, Math.floor(fillD * (0.3 + Math.random() * 0.3)));
-            
+            const cutCorner = Math.floor(Math.random() * 4) as 0 | 1 | 2 | 3;
+            let cutW = Math.max(2, Math.floor(fillW * (0.3 + Math.random() * 0.3)));
+            let cutD = Math.max(2, Math.floor(fillD * (0.3 + Math.random() * 0.3)));
+
+            if (cutW % 2 !== 0) cutW -= 1;
+            if (cutD % 2 !== 0) cutD -= 1;
+            if (cutW < 2) cutW = 2;
+            if (cutD < 2) cutD = 2;
+
             lShapeConfig = {
                 active: true,
                 cutCorner: cutCorner,
                 cutSize: [cutW, cutD] as [number, number]
             };
 
-            for(let i=0; i<fillW; i++) {
-                for(let j=0; j<fillD; j++) {
-                     let inCut = false;
-                     if (cutCorner === 0 && i >= fillW - cutW && j >= fillD - cutD) inCut = true;
-                     if (cutCorner === 1 && i >= fillW - cutW && j < cutD) inCut = true;
-                     if (cutCorner === 2 && i < cutW && j < cutD) inCut = true;
-                     if (cutCorner === 3 && i < cutW && j >= fillD - cutD) inCut = true;
-                     cutMask[i][j] = inCut;
+            for (let i = 0; i < fillW; i++) {
+                for (let j = 0; j < fillD; j++) {
+                    let inCut = false;
+                    if (cutCorner === 0 && i >= fillW - cutW && j >= fillD - cutD) inCut = true;
+                    if (cutCorner === 1 && i >= fillW - cutW && j < cutD) inCut = true;
+                    if (cutCorner === 2 && i < cutW && j < cutD) inCut = true;
+                    if (cutCorner === 3 && i < cutW && j >= fillD - cutD) inCut = true;
+                    cutMask[i][j] = inCut;
                 }
             }
         }
 
-        const variant = Math.floor(Math.random() * 4); 
+        const variant = Math.floor(Math.random() * 4);
         const buildingId = uid(`bldg-${bx}-${bz}`);
 
-        const cx = startX + (fillW - 1) / 2;
-        const cz = startZ + (fillD - 1) / 2;
-        const objType = type === 'house' ? 'box' : type; 
-        
+        const cx = startX + fillW / 2;
+        const cz = startZ + fillD / 2;
+        const objType = type === 'house' ? 'box' : type;
+
         let baseColor = colors.house[0];
         if (type === 'house') baseColor = colors.house[Math.floor(Math.random() * colors.house.length)];
         if (type === 'highrise') baseColor = colors.highrise[Math.floor(Math.random() * colors.highrise.length)];
         if (type === 'factory') baseColor = colors.factory[Math.floor(Math.random() * colors.factory.length)];
 
-        const assignedWindows: { pos: Position, rot: [number,number,number] }[] = [];
+        const assignedWindows: { pos: Position, rot: [number, number, number] }[] = [];
         const attachedChimneys: { pos: Position, scale: Position, color: string, smoke?: boolean, rotation?: number }[] = [];
-        const assignedDoors: { pos: Position, rot: [number,number,number], type: 'standard' | 'industrial' }[] = [];
+        const assignedDoors: { pos: Position, rot: [number, number, number], type: 'standard' | 'industrial' }[] = [];
         const assignedACs: { pos: Position, scale: Position, color: string, rotation: number, type: 'wall' | 'roof' }[] = [];
 
         const buildingWallDoorTypes = new Set<string>();
 
-        for(let i = 0; i < fillW; i++) {
-            for(let j = 0; j < fillD; j++) {
-                if (isLShape && cutMask[i][j]) continue; 
+        for (let i = 0; i < fillW; i++) {
+            for (let j = 0; j < fillD; j++) {
+                if (isLShape && cutMask[i][j]) continue;
                 const lx = startX + i;
                 const lz = startZ + j;
                 const tx = lx + halfSize;
                 const tz = lz + halfSize;
-                if(tx >= 0 && tx < size && tz >= 0 && tz < size) {
+                if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
                     tGrid[tx][tz] = typeId;
                 }
             }
         }
 
-        const floorH = 3; 
+        const floorH = 6;
         const numFloors = Math.max(1, Math.floor(height / floorH));
 
         type WallColumn = {
             worldX: number, worldZ: number,
             dx: number, dz: number,
             rot: number,
-            rotVec: number[]
+            rotVec: number[],
+            minDist: number,
+            biasDist: number,
+            facadeId: string
         };
         const columns: WallColumn[] = [];
 
@@ -341,32 +421,45 @@ export const generateCityLevel = (
         };
 
         const neighbors = [
-            { dx: 1, dz: 0, rot: Math.PI/2, rotVec: [0, Math.PI/2, 0] }, 
-            { dx: -1, dz: 0, rot: -Math.PI/2, rotVec: [0, -Math.PI/2, 0] },
+            { dx: 1, dz: 0, rot: Math.PI / 2, rotVec: [0, Math.PI / 2, 0] },
+            { dx: -1, dz: 0, rot: -Math.PI / 2, rotVec: [0, -Math.PI / 2, 0] },
             { dx: 0, dz: 1, rot: 0, rotVec: [0, 0, 0] },
             { dx: 0, dz: -1, rot: Math.PI, rotVec: [0, Math.PI, 0] }
         ];
 
-        for(let i = 0; i < fillW; i++) {
-            for(let j = 0; j < fillD; j++) {
+        for (let i = 0; i < fillW; i++) {
+            for (let j = 0; j < fillD; j++) {
                 if (!isSolid(i, j)) continue;
 
                 for (const n of neighbors) {
                     const nx = i + n.dx;
                     const nz = j + n.dz;
-                    
+
                     if (!isSolid(nx, nz)) {
                         const airX = startX + i + n.dx;
                         const airZ = startZ + j + n.dz;
                         const tx = airX + halfSize;
                         const tz = airZ + halfSize;
-                        
+
                         if (tx >= 0 && tx < size && tz >= 0 && tz < size && tGrid[tx][tz] === 0) {
                             const tX = -n.dz;
                             const tZ = n.dx;
-                            const hasLeft = isSolid(i + tX, j + tZ);
-                            const hasRight = isSolid(i - tX, j - tZ);
-                            if (!hasLeft || !hasRight) continue;
+
+                            // Calculate distance to nearest corner in both directions
+                            let distL = 0;
+                            while (isSolid(i + tX * (distL + 1), j + tZ * (distL + 1))) distL++;
+                            let distR = 0;
+                            while (isSolid(i - tX * (distR + 1), j - tZ * (distR + 1))) distR++;
+
+                            const wallLength = distL + distR + 1;
+                            const minDist = Math.min(distL, distR);
+
+                            // Padding requirements based on wall length
+                            // Walls >= 6: Need 2 blocks from corner for "premium" centered look
+                            // Walls >= 3: Need at least 1 block from corner (centers a middle block)
+                            if (wallLength >= 6 && minDist < 2) continue;
+                            if (wallLength >= 3 && minDist < 1) continue;
+                            if (wallLength < 3) continue;
 
                             let solidAirNeighbors = 0;
                             const airLocalX = i + n.dx;
@@ -377,10 +470,18 @@ export const generateCityLevel = (
                             if (isSolid(airLocalX, airLocalZ - 1)) solidAirNeighbors++;
                             if (solidAirNeighbors > 1) continue;
 
+                            // Include facade ID for grouping (normal + plane offset)
+                            const facadeId = `${n.dx},${n.dz}:${(n.dx !== 0 ? airX : airZ)}`;
+
+                            const biasDist = distL - distR;
+
                             columns.push({
                                 worldX: airX, worldZ: airZ,
                                 dx: n.dx, dz: n.dz,
-                                rot: n.rot, rotVec: n.rotVec
+                                rot: n.rot, rotVec: n.rotVec,
+                                minDist: minDist,
+                                biasDist: biasDist,
+                                facadeId: facadeId
                             });
                         }
                     }
@@ -388,39 +489,81 @@ export const generateCityLevel = (
             }
         }
 
-        columns.sort(() => Math.random() - 0.5);
+        // Stability: Group by facade and pick the best (most centered) spots first
+        const columnsByFacade: Record<string, WallColumn[]> = {};
+        columns.forEach(col => {
+            if (!columnsByFacade[col.facadeId]) columnsByFacade[col.facadeId] = [];
+            columnsByFacade[col.facadeId].push(col);
+        });
+
+        // Sort each facade by minDist (descending) 
+        // For EVEN walls, minDist will be equal for two middle blocks. 
+        // We use biasDist to pick a consistent side (the one with slightly more left padding)
+        Object.values(columnsByFacade).forEach(list => {
+            list.sort((a, b) => {
+                if (b.minDist !== a.minDist) return b.minDist - a.minDist;
+                // If minDist is equal, it's an even wall middle. 
+                // Prefer biasDist = 1 (left-leaning middle) for consistent "feel"
+                return b.biasDist - a.biasDist;
+            });
+        });
+
+        // Create a flat list that alternates between facades to distribute features evenly
+        const distributedColumns: WallColumn[] = [];
+        const facadeIds = Object.keys(columnsByFacade);
+        let maxColsPerFacade = 0;
+        facadeIds.forEach(id => maxColsPerFacade = Math.max(maxColsPerFacade, columnsByFacade[id].length));
+
+        for (let i = 0; i < maxColsPerFacade; i++) {
+            facadeIds.forEach(id => {
+                if (columnsByFacade[id][i]) distributedColumns.push(columnsByFacade[id][i]);
+            });
+        }
 
         let doorsPlacedCount = 0;
         let indDoorsCount = 0;
         let stdDoorsCount = 0;
-        const maxDoors = (fillW > 4 || fillD > 4) ? 2 : 1;
-        let hasChimney = false; 
+        let maxDoors = 1;
+        if (type === 'factory') {
+            maxDoors = (fillW >= 12 && fillD >= 12) ? 3 : 2;
+        } else if (fillW >= 10 && fillD >= 10) {
+            maxDoors = 2;
+        }
+        let hasChimney = false;
 
         let factoryWallACs = 0;
-        const floorsWithWallAC = new Array(numFloors).fill(false); 
+        const floorsWithWallAC = new Array(numFloors).fill(false);
 
-        for (const col of columns) {
-            const tX = -col.dz; 
+        for (const col of distributedColumns) {
+            const tX = -col.dz;
             const tZ = col.dx;
             const colKey = `${col.worldX},${col.worldZ}`;
             const colKeyL = `${col.worldX + tX},${col.worldZ + tZ}`;
             const colKeyR = `${col.worldX - tX},${col.worldZ - tZ}`;
-            
-            if (globalColumnOccupied.has(colKey) || globalColumnOccupied.has(colKeyL) || globalColumnOccupied.has(colKeyR)) {
+            const colKeyL2 = `${col.worldX + tX * 2},${col.worldZ + tZ * 2}`;
+            const colKeyR2 = `${col.worldX - tX * 2},${col.worldZ - tZ * 2}`;
+
+            if (
+                globalColumnOccupied.has(colKey) ||
+                globalColumnOccupied.has(colKeyL) ||
+                globalColumnOccupied.has(colKeyR) ||
+                globalColumnOccupied.has(colKeyL2) ||
+                globalColumnOccupied.has(colKeyR2)
+            ) {
                 continue;
             }
 
             let feature: 'door' | 'chimney' | 'window' | 'ac' | 'none' = 'none';
             const rand = Math.random();
 
-            if (type === 'house' && !hasChimney && rand < 0.4) {
-                 feature = 'chimney';
+            if (type === 'house' && !hasChimney && (fillW >= 8 || fillD >= 8) && rand < 0.4) {
+                feature = 'chimney';
             } else if (doorsPlacedCount < maxDoors) {
                 if (type === 'factory') {
                     if (indDoorsCount < 1) feature = 'door';
                     else if (stdDoorsCount < 1) feature = 'door';
                     else if (rand < 0.5) feature = 'door';
-                    else feature = 'window'; 
+                    else feature = 'window';
                 } else {
                     feature = 'door';
                 }
@@ -429,8 +572,8 @@ export const generateCityLevel = (
                     feature = 'window';
                 } else {
                     if (type === 'factory' && rand < 0.15) feature = 'ac';
-                    else if (rand < 0.7) feature = 'window'; 
-                    
+                    else if (rand < 0.4) feature = 'window';
+
                     if (height > 4 && feature === 'none') {
                         feature = 'window';
                     }
@@ -439,6 +582,8 @@ export const generateCityLevel = (
 
             if (feature === 'none') continue;
             globalColumnOccupied.add(colKey);
+            globalColumnOccupied.add(colKeyL);
+            globalColumnOccupied.add(colKeyR);
 
             if (feature === 'door') {
                 let dType: 'standard' | 'industrial' = 'standard';
@@ -449,48 +594,74 @@ export const generateCityLevel = (
                 }
                 const wallKey = `${col.dx},${col.dz}:${dType}`;
                 if (buildingWallDoorTypes.has(wallKey)) {
-                     feature = 'window'; 
+                    feature = 'window';
                 } else {
-                     buildingWallDoorTypes.add(wallKey);
-                     const doorHeight = dType === 'industrial' ? 3.0 : 2.2;
-                     const ly = (doorHeight/2) - (height/2);
-                     const lx = (col.worldX - (col.dx * 0.5)) - cx;
-                     const lz = (col.worldZ - (col.dz * 0.5)) - cz;
+                    buildingWallDoorTypes.add(wallKey);
+                    const doorHeight = dType === 'industrial' ? 6.0 : 4.4;
+                    const ly = (doorHeight / 2) - (height / 2);
+                    const tX = -col.dz;
+                    const tZ = col.dx;
+                    const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                    const lx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
+                    const lz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
 
-                     assignedDoors.push({
-                         pos: [lx, ly, lz],
-                         rot: col.rotVec as [number,number,number],
-                         type: dType
-                     });
-                     globalWallOccupied.add(getPosKey(col.worldX, 1.25, col.worldZ));
-                     doorsPlacedCount++;
-                     if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
-                     
-                     for (let f = 1; f < numFloors; f++) {
-                         const worldY = (f * floorH) + 1.5; 
-                         if (worldY + 0.5 < height) {
-                             const lyWin = worldY - (height/2);
-                             const lxWin = (col.worldX - (col.dx * 0.495)) - cx;
-                             const lzWin = (col.worldZ - (col.dz * 0.495)) - cz;
-                             assignedWindows.push({
-                                 pos: [lxWin, lyWin, lzWin],
-                                 rot: col.rotVec as [number,number,number]
-                             });
-                             globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                         }
-                     }
-                     continue; 
+                    assignedDoors.push({
+                        pos: [lx, ly, lz],
+                        rot: col.rotVec as [number, number, number],
+                        type: dType
+                    });
+                    globalWallOccupied.add(getPosKey(col.worldX, 1.25, col.worldZ));
+                    // Mark as occupied for doors (standard covers ~2 voxels, industrial ~4)
+                    globalColumnOccupied.add(colKey);
+                    globalColumnOccupied.add(colKeyL);
+                    globalColumnOccupied.add(colKeyR);
+                    if (dType === 'industrial') {
+                        // Extra padding for wide industrial doors
+                        const colKeyL2 = `${col.worldX + tX * 2},${col.worldZ + tZ * 2}`;
+                        const colKeyR2 = `${col.worldX - tX * 2},${col.worldZ - tZ * 2}`;
+                        globalColumnOccupied.add(colKeyL2);
+                        globalColumnOccupied.add(colKeyR2);
+                    }
+
+                    doorsPlacedCount++;
+                    if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
+
+                    for (let f = 1; f < numFloors; f++) {
+                        const worldY = (f * floorH) + 3.0;
+                        if (worldY + 0.5 < height) {
+                            const lyWin = worldY - (height / 2);
+                            const tX = -col.dz;
+                            const tZ = col.dx;
+                            const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                            const lxWin = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
+                            const lzWin = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
+                            assignedWindows.push({
+                                pos: [lxWin, lyWin, lzWin],
+                                rot: col.rotVec as [number, number, number]
+                            });
+                            globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
+                        }
+                    }
+                    continue;
                 }
             }
 
             if (feature === 'window') {
                 for (let f = 0; f < numFloors; f++) {
-                    const worldY = (f * floorH) + 1.5;
+                    const worldY = (f * floorH) + 3.0;
                     if (worldY + 0.5 < height) {
-                        const ly = worldY - (height/2);
-                        const lx = (col.worldX - (col.dx * 0.495)) - cx;
-                        const lz = (col.worldZ - (col.dz * 0.495)) - cz;
-                        
+                        // CRITICAL FIX: Check if ground floor is already occupied by a door/detail
+                        if (f === 0 && globalWallOccupied.has(getPosKey(col.worldX, 1.25, col.worldZ))) {
+                            continue;
+                        }
+
+                        const ly = worldY - (height / 2);
+                        const tX = -col.dz;
+                        const tZ = col.dx;
+                        const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                        const lx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
+                        const lz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
+
                         let canPlaceAC = true;
                         if (Math.random() < 0.2 && f > 0) {
                             if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
@@ -500,185 +671,247 @@ export const generateCityLevel = (
                         }
 
                         if (canPlaceAC) {
-                            // AC POSITIONING:
-                            // Wall AC Size reduced to be realistic: 0.85 width, 0.6 height, 0.4 depth
-                            // To be mounted on wall (depth 1, half is 0.5):
-                            // Center should be shifted towards the wall.
+                            // Wall AC Size Increased: 2.5 width, 1.8 height, 1.2 depth
+                            // To be mounted on wall (depth 1.2, half is 0.6):
                             // AirCenter distance to WallSurface is 0.5.
-                            // AC Center should be WallSurface + HalfDepth (0.2) = AirCenter - 0.5 + 0.2 = AirCenter - 0.3.
-                            const offset = 0.3;
-                            const lxAC = (col.worldX - (col.dx * offset)) - cx;
-                            const lzAC = (col.worldZ - (col.dz * offset)) - cz;
+                            // AC Center should be WallSurface + HalfDepth (0.6) = AirCenter - 0.5 + 0.6 = AirCenter + 0.1.
+                            const tX = -col.dz;
+                            const tZ = col.dx;
+                            const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                            const offset = -0.1; // -0.1 to pull it "out" of the air towards the wall
+                            const lxAC = (col.worldX - (col.dx * offset) + 0.5 + tX * shift) - cx;
+                            const lzAC = (col.worldZ - (col.dz * offset) + 0.5 + tZ * shift) - cz;
 
                             assignedACs.push({
                                 pos: [lxAC, ly, lzAC],
-                                scale: [0.85, 0.6, 0.4], 
+                                scale: [2.5, 1.8, 1.2], // Larger Wall AC size
                                 color: type === 'house' ? colors.acResidential : colors.acIndustrial,
                                 rotation: col.rot,
                                 type: 'wall'
                             });
-                            
+
                             if (type === 'factory') factoryWallACs++;
                             if (type === 'house' || type === 'highrise') floorsWithWallAC[f] = true;
                         } else {
                             assignedWindows.push({
-                                 pos: [lx, ly, lz],
-                                 rot: col.rotVec as [number,number,number]
+                                pos: [lx, ly, lz],
+                                rot: col.rotVec as [number, number, number]
                             });
                         }
                         globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
                     }
                 }
-            } 
+            }
             else if (feature === 'ac') {
-                 // Standalone Wall AC Logic
-                 for (let f = 1; f < numFloors; f++) {
-                     const worldY = (f * floorH) + 1.5;
-                     if (worldY + 1.5 < height) { // Needs space for 2 height
-                         const ly = worldY - (height/2);
-                         let canPlaceAC = true;
-                         if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
-                         if ((type === 'house' || type === 'highrise') && floorsWithWallAC[f]) canPlaceAC = false;
+                // Standalone Wall AC Logic
+                for (let f = 1; f < numFloors; f++) {
+                    const worldY = (f * floorH) + 3.0;
+                    if (worldY + 3.0 < height) { // Needs space for 2 height
+                        const ly = worldY - (height / 2);
+                        let canPlaceAC = true;
+                        if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
+                        if ((type === 'house' || type === 'highrise') && floorsWithWallAC[f]) canPlaceAC = false;
 
-                         if (canPlaceAC) {
-                             const offset = 0.3;
-                             const lxAC = (col.worldX - (col.dx * offset)) - cx;
-                             const lzAC = (col.worldZ - (col.dz * offset)) - cz;
-                             
-                             assignedACs.push({
+                        if (canPlaceAC) {
+                            const tX = -col.dz;
+                            const tZ = col.dx;
+                            const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                            const offset = -0.1;
+                            const lxAC = (col.worldX - (col.dx * offset) + 0.5 + tX * shift) - cx;
+                            const lzAC = (col.worldZ - (col.dz * offset) + 0.5 + tZ * shift) - cz;
+
+                            assignedACs.push({
                                 pos: [lxAC, ly, lzAC],
-                                scale: [0.85, 0.6, 0.4],
+                                scale: [2.8, 2.0, 1.2], // Larger Standalone Wall AC size
                                 color: colors.acIndustrial,
                                 rotation: col.rot,
                                 type: 'wall'
                             });
                             if (type === 'factory') factoryWallACs++;
                             if (type === 'house' || type === 'highrise') floorsWithWallAC[f] = true;
-                         } else {
-                             const winLy = worldY - (height/2);
-                             const winLx = (col.worldX - (col.dx * 0.495)) - cx;
-                             const winLz = (col.worldZ - (col.dz * 0.495)) - cz;
-                             assignedWindows.push({
-                                 pos: [winLx, winLy, winLz],
-                                 rot: col.rotVec as [number,number,number]
+                        } else {
+                            const winLy = worldY - (height / 2);
+                            const tX = -col.dz;
+                            const tZ = col.dx;
+                            const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
+                            const winLx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
+                            const winLz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
+                            assignedWindows.push({
+                                pos: [winLx, winLy, winLz],
+                                rot: col.rotVec as [number, number, number]
                             });
-                         }
+                        }
                         globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                     }
-                 }
+                    }
+                }
             }
             else if (feature === 'chimney') {
-                 hasChimney = true;
-                 const faceX = col.worldX; 
-                 const faceZ = col.worldZ; 
-                 const scaleY = height + 1.2;
-                 const ly = (scaleY / 2) - (height / 2);
-                 const offsetX = -col.dx * 0.5;
-                 const offsetZ = -col.dz * 0.5;
+                hasChimney = true;
+                const faceX = col.worldX;
+                const faceZ = col.worldZ;
+                const scaleY = height + 2.0;
+                const ly = (scaleY / 2) - (height / 2);
+                const tX = -col.dz;
+                const tZ = col.dx;
+                const shimneyShift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0.5;
 
-                 attachedChimneys.push({
-                     pos: [faceX + offsetX - cx, ly, faceZ + offsetZ - cz],
-                     scale: [1.0, scaleY, 1.0], 
-                     color: colors.chimneyResidential,
-                     smoke: Math.random() > 0.5, 
-                     rotation: col.rot
-                 });
-                 
-                 for (let f = 0; f < numFloors; f++) {
-                     const worldY = (f * floorH) + 1.5;
-                     if (worldY < height) globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                 }
+                const offsetX = -col.dx * 0.5;
+                const offsetZ = -col.dz * 0.5;
+
+                attachedChimneys.push({
+                    pos: [(faceX + offsetX) - cx + 0.5 + tX * shimneyShift, ly, (faceZ + offsetZ) - cz + 0.5 + tZ * shimneyShift],
+                    scale: [2.0, scaleY, 2.0],
+                    color: colors.chimneyResidential,
+                    smoke: Math.random() > 0.5,
+                    rotation: col.rot
+                });
+
+                for (let f = 0; f < numFloors; f++) {
+                    const worldY = (f * floorH) + 3.0;
+                    if (worldY < height) globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
+                }
             }
         }
 
         if (type === 'factory') {
             // UPDATED: Increase count to up to 3 objects
-            const numRoofObjs = Math.floor(Math.random() * 3) + 1; 
-            
-            for (let k = 0; k < numRoofObjs; k++) {
-                // FIXED: Force padding of 1 to ensure objects are never on the edge
-                const pad = 1;
+            const numRoofObjs = Math.floor(Math.random() * 3) + 1;
 
-                // If building is too small to have padded interior (need at least 3x3 to have 1 center voxel), skip
-                if (fillW < 3 || fillD < 3) continue;
-                
+            for (let k = 0; k < numRoofObjs; k++) {
+                // FIXED: Increase padding to 2 to ensure objects are never on the very edge
+                const pad = 2;
+
+                // If building is too small to have padded interior (need at least 5x5 to have 1 center voxel with pad 2), skip
+                if (fillW < 5 || fillD < 5) continue;
+
                 // Calculate max available dimension for an object
                 const availObjW = fillW - 2 * pad;
                 const availObjD = fillD - 2 * pad;
-                
+
                 if (availObjW < 1 || availObjD < 1) continue;
 
                 let acW = 1;
                 let acD = 1;
 
                 // "Fabricas menores" logic: Scale ACs down for small footprints
-                if (fillW < 5 || fillD < 5) {
-                    // Prefer 1x1 ACs for small buildings, occasionally 2x1 if space permits
-                    acW = (availObjW >= 2 && Math.random() > 0.7) ? 2 : 1;
-                    acD = (availObjD >= 2 && Math.random() > 0.7) ? 2 : 1;
+                if (fillW < 12 || fillD < 12) {
+                    // Prefer 2x2 ACs for small buildings, occasionally 4x2 if space permits
+                    acW = (availObjW >= 4 && Math.random() > 0.7) ? 4 : 2;
+                    acD = (availObjD >= 4 && Math.random() > 0.7) ? 4 : 2;
                 } else {
                     // Larger buildings
-                    const maxACW = Math.max(2, Math.floor(fillW / 2));
-                    const maxACD = Math.max(2, Math.floor(fillD / 2));
-                    
+                    const maxACW = Math.max(4, Math.floor(fillW / 2));
+                    const maxACD = Math.max(4, Math.floor(fillD / 2));
+
                     // Constrain random selection by actual available space
-                    const targetW = Math.min(4, Math.floor(Math.random() * (maxACW - 1)) + 2);
-                    const targetD = Math.min(4, Math.floor(Math.random() * (maxACD - 1)) + 2);
-                    
+                    const targetW = Math.min(8, Math.floor(Math.random() * (maxACW - 2)) + 4);
+                    const targetD = Math.min(8, Math.floor(Math.random() * (maxACD - 2)) + 4);
+
                     acW = Math.min(availObjW, targetW);
                     acD = Math.min(availObjD, targetD);
                 }
-                
+
+                const acRot = Math.floor(Math.random() * 4) * (Math.PI / 2);
+                let visualW = acW;
+                let visualD = acD;
+                if (Math.abs(Math.sin(acRot)) > 0.5) {
+                    visualW = acD;
+                    visualD = acW;
+                }
+
                 // REDUCED HEIGHT: ACs now much shorter (half of previous 2.5 average)
-                const acH = 1.0 + Math.random() * 0.8;
-                
+                const acH = (1.0 + Math.random() * 0.8) * 2;
+
                 // Range calculation
-                const rangeX = fillW - 2 * pad - acW;
-                const rangeZ = fillD - 2 * pad - acD;
+                const rangeX = fillW - 2 * pad - visualW;
+                const rangeZ = fillD - 2 * pad - visualD;
 
                 if (rangeX < 0 || rangeZ < 0) continue;
 
-                // Random position within safe zone
+                // Random position within safe zone (integers for grid index)
                 const rx = Math.floor(Math.random() * (rangeX + 1)) + pad;
                 const rz = Math.floor(Math.random() * (rangeZ + 1)) + pad;
-                
+
                 let overlap = false;
-                // Relative position from center calc
-                const checkX = rx - (fillW-1)/2 + acW/2;
-                const checkZ = rz - (fillD-1)/2 + acD/2;
-                
-                // Overlap Check (using approximate radius)
-                for (const ac of assignedACs) {
-                    if (ac.type === 'roof') {
-                         const dx = ac.pos[0] - checkX;
-                         const dz = ac.pos[2] - checkZ;
-                         if (Math.sqrt(dx*dx + dz*dz) < 2.5) overlap = true;
+
+                // Check L-Shape mask overlap for the actual visual footprint
+                if (isLShape) {
+                    for (let wx = 0; wx < visualW; wx++) {
+                        for (let wz = 0; wz < visualD; wz++) {
+                            const gridX = rx + wx;
+                            const gridZ = rz + wz;
+                            if (gridX >= 0 && gridX < fillW && gridZ >= 0 && gridZ < fillD) {
+                                if (cutMask[gridX][gridZ]) overlap = true;
+                            }
+                        }
                     }
                 }
+
+                // Relative position from center calc
+                // Using .0 or .5 snapped centers
+                const checkX = rx - fillW / 2 + visualW / 2;
+                const checkZ = rz - fillD / 2 + visualD / 2;
+
+                // Overlap Check (using approximate radius)
+                for (const ac of assignedACs) {
+                    const dx = ac.pos[0] - checkX;
+                    const dz = ac.pos[2] - checkZ;
+                    if (Math.sqrt(dx * dx + dz * dz) < 2.5) overlap = true;
+                }
                 for (const ch of attachedChimneys) {
-                     const dx = ch.pos[0] - checkX;
-                     const dz = ch.pos[2] - checkZ;
-                     if (Math.sqrt(dx*dx + dz*dz) < 2.5) overlap = true;
+                    const dx = ch.pos[0] - checkX;
+                    const dz = ch.pos[2] - checkZ;
+                    if (Math.sqrt(dx * dx + dz * dz) < 2.5) overlap = true;
                 }
 
                 if (!overlap) {
-                    const isChimney = Math.random() > 0.6; 
+                    const isChimney = Math.random() > 0.6;
                     if (isChimney) {
-                        const scaleY = 1.5 + Math.random() * 1.5; 
-                        attachedChimneys.push({
-                            pos: [checkX, height/2 + scaleY/2, checkZ], 
-                            scale: [1, scaleY, 1], 
-                            color: colors.chimneyIndustrial,
-                            smoke: true,
-                            rotation: 0
-                        });
+                        // Chimney is always 2x2. Verify that 2x2 footprint also clears cutMask.
+                        let chimneyOverlap = false;
+                        if (isLShape) {
+                            for (let wx = 0; wx < 2; wx++) {
+                                for (let wz = 0; wz < 2; wz++) {
+                                    const cX = Math.floor(checkX + fillW / 2 - 1);
+                                    const cZ = Math.floor(checkZ + fillD / 2 - 1);
+                                    if (cutMask[cX + wx]?.[cZ + wz]) chimneyOverlap = true;
+                                }
+                            }
+                        }
+
+                        if (!chimneyOverlap) {
+                            // NEW: Industrial chimneys can start from the roof (50% chance)
+                            const startsAtRoof = Math.random() > 0.5;
+                            let chimneyHeight: number;
+                            let ly: number;
+
+                            if (startsAtRoof) {
+                                // Roof-start chimney: shorter but still significant
+                                chimneyHeight = 4.0 + Math.random() * 8.0;
+                                // Positioned so its base is exactly at the building height
+                                ly = (height / 2) + (chimneyHeight / 2);
+                            } else {
+                                // Ground-start chimney: taller to exceed building height
+                                chimneyHeight = height + 6.0 + Math.random() * 6.0;
+                                // Positioned so its base is at world y=0
+                                ly = (chimneyHeight / 2) - (height / 2);
+                            }
+
+                            attachedChimneys.push({
+                                pos: [checkX, ly, checkZ],
+                                scale: [2, chimneyHeight, 2],
+                                color: colors.chimneyIndustrial,
+                                smoke: true,
+                                rotation: 0
+                            });
+                        }
                     } else {
-                        const posY = height/2 + acH/2;
+                        const posY = height / 2 + acH / 2;
                         assignedACs.push({
                             pos: [checkX, posY, checkZ],
-                            scale: [acW, acH, acD], 
+                            scale: [acW, acH, acD],
                             color: colors.acIndustrial,
-                            rotation: Math.floor(Math.random() * 4) * (Math.PI / 2),
+                            rotation: acRot,
                             type: 'roof'
                         });
                     }
@@ -690,7 +923,7 @@ export const generateCityLevel = (
             id: buildingId,
             position: [cx, height / 2, cz],
             scale: [fillW, height, fillD],
-            color: baseColor, 
+            color: baseColor,
             type: objType,
             lShape: lShapeConfig,
             variant: variant,
@@ -700,70 +933,95 @@ export const generateCityLevel = (
             acs: assignedACs
         };
         objects.push(buildingObj);
+
+        currentArea[type] += blockArea;
+        totalBuiltArea += blockArea;
+
         return type;
     };
 
     // --- MAIN LOOP ---
-    let x = -halfSize + 1;
-    while(x < halfSize - 1) {
-        const currentStreetWidth = Math.random() > 0.8 ? baseStreetWidth + 1 : baseStreetWidth;
-        const blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
-        if (x + blockW >= halfSize) break; 
-        
-        let z = -halfSize + 1;
-        while(z < halfSize - 1) {
-            const blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
-            if (z + blockD >= halfSize) break; 
-            
-            let safeBlockW = blockW;
-            let safeBlockD = blockD;
-            if (safeBlockW === 2 && safeBlockD === 2) {
-                safeBlockD = 3;
-            }
-            if (z + safeBlockD >= halfSize) break;
-
-            const placedType = placeBuilding(x, z, safeBlockW, safeBlockD);
-            let nextZ = z + safeBlockD + currentStreetWidth;
-
-            if (placedType === 'factory') {
-                 const gap = 3; 
-                 const twinZ = z + safeBlockD + gap;
-                 const twinBlockD = Math.max(3, Math.min(6, halfSize - 1 - twinZ));
-                 if (twinBlockD >= 3 && twinZ + twinBlockD < halfSize) {
-                     placeBuilding(x, twinZ, safeBlockW, twinBlockD, 'factory');
-                     nextZ = twinZ + twinBlockD + currentStreetWidth;
-                 }
-            }
-            z = nextZ;
-        }
-        x += blockW + currentStreetWidth;
-    }
-
-    for (let lx = -halfSize; lx < halfSize; lx++) {
+    if (debugMode || mapId === 0) {
+        // Add a central river for testing bridges/water FIRST so isWaterLogic works for debug buildings
+        const rw = settings.riverWidth > 0 ? settings.riverWidth : 6;
         for (let lz = -halfSize; lz < halfSize; lz++) {
-            const tx = lx + halfSize;
-            const tz = lz + halfSize;
-            if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
-                if (!isWaterLogic(lx, lz) && tGrid[tx][tz] === 0) {
-                    const zone = getZoneInfo(lx, lz, 5);
-                    const isDirt = zone.nearFarm && !zone.nearHighrise;
-                    objects.push({
-                        id: uid(`street-${lx}-${lz}`),
-                        position: [lx, -0.48, lz], 
-                        scale: [1, 0.05, 1],
-                        color: isDirt ? colors.streetDirt : colors.streetAsphalt,
-                        type: 'street'
-                    });
+            for (let lx = -Math.floor(rw / 2); lx < Math.ceil(rw / 2); lx++) {
+                const gx = worldToIndex(lx, halfSize, size);
+                const gz = worldToIndex(lz, halfSize, size);
+                if (gx >= 0 && gx < gridSize && gz >= 0 && gz < gridSize) {
+                    wGrid[gx][gz] = 1;
                 }
             }
         }
+
+        // DEBUG LEVEL: Fixed layout with all object types
+        placeBuilding(-18, -18, 12, 12, 'factory');
+        placeBuilding(6, -18, 10, 10, 'highrise');
+        placeBuilding(-18, 6, 10, 10, 'house');
+        placeBuilding(6, 6, 12, 12, 'farm');
+        placeBuilding(-5, -5, 10, 10, 'ruins');
+
+        // Fill ground color
+        for (let ix = 0; ix < gridSize; ix++) {
+            for (let iz = 0; iz < gridSize; iz++) {
+                if (wGrid[ix][iz] === 0) {
+                    const worldX = (ix / GRID_SCALE) - halfSize;
+                    const worldZ = (iz / GRID_SCALE) - halfSize;
+                    if (Math.abs(worldX) < 10 && Math.abs(worldZ) < 10) {
+                        // sGrid[ix][iz] = 2; // REMOVED: Street in the center
+                    }
+                }
+            }
+        }
+    } else {
+        // Leave at least 2 voxels clear at the edge of the map
+        let x = -halfSize + 2;
+        while (x < halfSize - 2) {
+            const currentStreetWidth = Math.random() > 0.8 ? baseStreetWidth + 1 : baseStreetWidth;
+            let blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+            if (blockW % 2 !== 0) blockW -= 1;
+            blockW = Math.max(4, blockW);
+            if (x + blockW >= halfSize - 1) break;
+
+            let z = -halfSize + 2;
+            while (z < halfSize - 2) {
+                let blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+                if (blockD % 2 !== 0) blockD -= 1;
+                blockD = Math.max(4, blockD);
+                if (z + blockD >= halfSize - 1) break;
+
+                let safeBlockW = blockW;
+                let safeBlockD = blockD;
+                if (safeBlockW <= 4 && safeBlockD <= 4) {
+                    safeBlockD = 6;
+                }
+                if (z + safeBlockD >= halfSize - 1) break;
+
+                const placedType = placeBuilding(x, z, safeBlockW, safeBlockD);
+                let nextZ = z + safeBlockD + currentStreetWidth;
+
+                if (placedType === 'factory') {
+                    const gap = 6;
+                    const twinZ = z + safeBlockD + gap;
+                    const twinBlockD = Math.max(10, Math.min(18, halfSize - 2 - twinZ)); // Allow 2 voxel border
+                    if (twinBlockD >= 10 && twinZ + twinBlockD < halfSize - 1) {
+                        placeBuilding(x, twinZ, safeBlockW, twinBlockD, 'factory');
+                        nextZ = twinZ + twinBlockD + currentStreetWidth;
+                    }
+                }
+                z = nextZ;
+            }
+            x += blockW + currentStreetWidth;
+        }
     }
+
+
 
     for (let x = 0; x < size; x++) {
         for (let z = 0; z < size; z++) {
             if (tGrid[x][z] === 4) {
                 let isEdge = false;
-                const neighbors = [[1,0], [-1,0], [0,1], [0,-1]];
+                const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
                 for (const [dx, dz] of neighbors) {
                     const nx = x + dx;
                     const nz = z + dz;
@@ -780,42 +1038,95 @@ export const generateCityLevel = (
         }
     }
 
+    fenceLocations.forEach(loc => {
+        const [xStr, zStr] = loc.split(',');
+        const x = parseInt(xStr);
+        const z = parseInt(zStr);
+
+        const neighbors = {
+            n: fenceLocations.has(`${x},${z - 1}`),
+            s: fenceLocations.has(`${x},${z + 1}`),
+            e: fenceLocations.has(`${x + 1},${z}`),
+            w: fenceLocations.has(`${x - 1},${z}`)
+        };
+
+        const lx = x - halfSize + 0.5; // Center of the tile
+        const lz = z - halfSize + 0.5;
+
+        const neighborCount = [neighbors.n, neighbors.s, neighbors.e, neighbors.w].filter(Boolean).length;
+        const isStraightNS = neighbors.n && neighbors.s && !neighbors.e && !neighbors.w;
+        const isStraightEW = !neighbors.n && !neighbors.s && neighbors.e && neighbors.w;
+
+        let shouldBePost = (x + z) % 2 === 0;
+        if (neighborCount === 1) shouldBePost = true; // Terminal pieces must be posts
+        if (neighborCount > 2) shouldBePost = true; // Junctions must be posts
+        if (neighborCount === 2 && !isStraightNS && !isStraightEW) shouldBePost = true; // Corners must be posts
+
+        objects.push({
+            id: uid(`fence-${x}-${z}`),
+            position: [lx, 0, lz], // Anchored to base floor
+            scale: [2, 1.66, 2], // Height scaled to ~2.0 units (half the 4.0 player)
+            color: colors.fenceWood,
+            type: 'fence',
+            neighbors: neighbors,
+            isPost: shouldBePost
+        });
+    });
+
+    // --- GENERATE WHEAT INSIDE FARMS ---
+    for (let x = 0; x < size; x++) {
+        for (let z = 0; z < size; z++) {
+            if (tGrid[x][z] === 4) {
+                // Skip planting on the exact edge where a fence is located
+                if (fenceLocations.has(`${x},${z}`)) continue;
+
+                const logicX = x - halfSize + 0.5; // Center of the tile
+                const logicZ = z - halfSize + 0.5;
+
+                // Exactly 1 huge crop cluster per farm block
+                const scaleY = 4.2 + (Math.random() * 0.4);
+                objects.push({
+                    id: uid(`wheat-${logicX}-${logicZ}`),
+                    position: [logicX, 0, logicZ], // Anchor geometry bottom to floor
+                    scale: [1.0, scaleY, 1.0], // Full 1.0 thickness
+                    rotation: Math.random() * Math.PI * 2, // Random Y Rotation
+                    color: '#fde047',
+                    type: 'wheat'
+                });
+            }
+        }
+    }
+
     // --- AUTOMATIC COLLISION ADJUSTMENT STEP (HIGH RES) ---
     objects.forEach(obj => {
         // --- CUSTOM FENCE COLLISION (1 Voxel Precision) ---
         if (obj.type === 'fence') {
-            // Revert the visual offset to get Logic Coordinates for collision mapping
-            // Visual X = worldX - 0.25. So Logic World X = Visual X + 0.25.
-            const logicWX = Math.round(obj.position[0] + 0.25);
-            const logicWZ = Math.round(obj.position[2] + 0.25);
-            
+            // Fences are on logic grid vertices (0.5 bounds)
+            // Visual X = worldX. We map it directly to the exact sub-cell representing that vertex
+            const logicWX = obj.position[0];
+            const logicWZ = obj.position[2];
+
             const startX = worldToIndex(logicWX, halfSize, size);
             const startZ = worldToIndex(logicWZ, halfSize, size);
-            
-            // Shift collision to align with visual offset (-0.25) which corresponds to Left/Top sub-cell (index - 1)
-            const ix = startX - 1;
-            const iz = startZ - 1;
-            
-            // Fence Logic: A tile is 2x2 sub-voxels.
-            // Pillar: Always at (0,0) of the tile (Top-Left).
+
+            // Pillar: the exact Vertex maps to the bottom-right of the cell (startX-1, startZ-1)
+            // But visually, the sub-voxel aligns better with the tile it "starts"
+            const ix = startX;
+            const iz = startZ;
+
             if (ix >= 0 && ix < gridSize && iz >= 0 && iz < gridSize) {
                 oGrid[ix][iz] = 1.2; // Pillar Height
-                sGrid[ix][iz] = 3; // Hard surface
             }
 
             // Neighbor Logic to create "thin" walls (1 voxel thick)
-            // South Connection: Connects (ix, iz) to (ix, iz + 2) via (ix, iz + 1)
             if (obj.neighbors?.s) {
                 if (ix >= 0 && ix < gridSize && iz + 1 < gridSize) {
-                    oGrid[ix][iz + 1] = 1.0; 
-                    sGrid[ix][iz + 1] = 3;
+                    oGrid[ix][iz + 1] = 1.0;
                 }
             }
-            // East Connection: Connects (ix, iz) to (ix + 2, iz) via (ix + 1, iz)
             if (obj.neighbors?.e) {
                 if (ix + 1 < gridSize && iz >= 0 && iz < gridSize) {
                     oGrid[ix + 1][iz] = 1.0;
-                    sGrid[ix + 1][iz] = 3;
                 }
             }
             return;
@@ -829,20 +1140,19 @@ export const generateCityLevel = (
         const w = obj.scale[0];
         const h = obj.scale[1];
         const d = obj.scale[2];
-        
+
         const startXLogic = obj.position[0] - w / 2;
         const startZLogic = obj.position[2] - d / 2;
-        
+
         const startXHigh = Math.round((startXLogic + halfSize) * GRID_SCALE);
         const startZHigh = Math.round((startZLogic + halfSize) * GRID_SCALE);
-        
+
         const wHigh = Math.round(w * GRID_SCALE);
         const dHigh = Math.round(d * GRID_SCALE);
 
         // Determine surface type
         let surfaceType = 3; // Default Hard/Stone
-        if (obj.type === 'street') surfaceType = 2; // Street/Dirt
-        else if (obj.type === 'ruin') surfaceType = 3;
+        if (obj.type === 'ruin') surfaceType = 3;
         else if (obj.type === 'box' || obj.type === 'factory' || obj.type === 'highrise') surfaceType = 3;
 
         for (let ix = 0; ix < wHigh; ix++) {
@@ -851,7 +1161,7 @@ export const generateCityLevel = (
                 if (obj.lShape && obj.lShape.active) {
                     const [cutW, cutD] = obj.lShape.cutSize;
                     const corner = obj.lShape.cutCorner;
-                    
+
                     const cutWHigh = Math.round(cutW * GRID_SCALE);
                     const cutDHigh = Math.round(cutD * GRID_SCALE);
 
@@ -875,32 +1185,40 @@ export const generateCityLevel = (
 
                 if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
                     // Update Surface Grid
-                    sGrid[gridX][gridZ] = surfaceType;
+                    // sGrid[gridX][gridZ] = surfaceType; // REMOVED: Always grass on ground
 
-                    // Skip collision update for streets
-                    if (obj.type === 'street') continue;
+
 
                     const topY = obj.position[1] + h / 2;
                     const collisionH = topY + (obj.type !== 'ruin' ? 0.3 : 0);
-                    if (obj.position[1] - h/2 > 1.0) {
-                         bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], collisionH);
+                    if (obj.position[1] - h / 2 > 1.0) {
+                        bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], collisionH);
                     } else {
-                         oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], collisionH);
+                        oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], collisionH);
                     }
                 }
             }
         }
+    });
 
+    // --- SECOND PASS: collision logic for ALL DETAILS (so they sit correctly on populated grids) ---
+    objects.forEach(obj => {
         const details = [
-            ...(obj.attachedChimneys || []).map(c => ({...c, isChimney: true, detailType: 'chimney' })),
-            ...(obj.acs || []).map(a => ({...a, isChimney: false, detailType: a.type }))
+            ...(obj.attachedChimneys || []).map(c => ({ ...c, isChimney: true, detailType: 'chimney' })),
+            ...(obj.acs || []).map(a => ({ ...a, isChimney: false, detailType: a.type }))
         ];
 
         details.forEach(det => {
-            const dW = det.scale[0];
+            let dW = det.scale[0];
             const dH = det.scale[1];
-            const dD = det.scale[2];
-            
+            let dD = det.scale[2];
+
+            if (det.rotation !== undefined && Math.abs(Math.sin(det.rotation)) > 0.5) {
+                const temp = dW;
+                dW = dD;
+                dD = temp;
+            }
+
             let absX = obj.position[0] + det.pos[0];
             const absY = obj.position[1] + det.pos[1];
             let absZ = obj.position[2] + det.pos[2];
@@ -910,48 +1228,78 @@ export const generateCityLevel = (
             const dWHigh = Math.round(dW * GRID_SCALE);
             const dDHigh = Math.round(dD * GRID_SCALE);
 
-            for(let dx = 0; dx < dWHigh; dx++) {
-                for(let dz = 0; dz < dDHigh; dz++) {
-                     const gridX = dStartX + dx;
-                     const gridZ = dStartZ + dz;
+            for (let dx = 0; dx < dWHigh; dx++) {
+                for (let dz = 0; dz < dDHigh; dz++) {
+                    const gridX = dStartX + dx;
+                    const gridZ = dStartZ + dz;
 
-                     if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
-                         const topH = absY + dH / 2;
-                         if (absY - dH/2 > 2.0) {
-                             if (oGrid[gridX][gridZ] > 0) {
-                                 oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
-                             } else {
-                                 bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], topH);
-                             }
-                         } else {
-                             oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
-                         }
-                     }
+                    if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
+                        const topH = absY + dH / 2;
+                        if (absY - dH / 2 > 2.0) {
+                            if (oGrid[gridX][gridZ] > 0) {
+                                oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
+                            } else {
+                                bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], topH);
+                            }
+                        } else {
+                            oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
+                        }
+                    }
                 }
             }
         });
     });
 
     // --- CALCULATE RANDOM SPAWN POINT ---
-    let spawnPos = new THREE.Vector3(0, 10, 0); // Fallback
-    for(let k=0; k<100; k++) {
-        // Try random positions
-        const rx = Math.floor(Math.random() * size);
-        const rz = Math.floor(Math.random() * size);
-        
+    let spawnPos = new THREE.Vector3(0, 0, 0);
+    let foundSafe = false;
+
+    for (let k = 0; k < 1000; k++) {
+        // Try random positions within a safer inner bound (avoiding map edges completely)
+        const safePadding = 10;
+        const rx = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
+        const rz = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
+
         // Check if it's street (0) and not water
         const logicX = rx - halfSize;
         const logicZ = rz - halfSize;
-        
-        if (tGrid[rx][rz] === 0 && !isWaterLogic(logicX, logicZ)) {
-             spawnPos.set(logicX, 2, logicZ);
-             break;
+
+        const gx = worldToIndex(logicX, halfSize, size);
+        const gz = worldToIndex(logicZ, halfSize, size);
+
+        // Check if tGrid is street/empty AND oGrid is not too high (avoid spawning inside objects)
+        if (tGrid[rx][rz] === 0 && !isWaterLogic(logicX, logicZ) && oGrid[gx][gz] < 2.0) {
+            const groundH = oGrid[gx][gz];
+            spawnPos.set(logicX, groundH + 1.0, logicZ);
+            foundSafe = true;
+            break;
         }
     }
 
+    // If no safe spot found on street, try ANY spot that isn't too high
+    if (!foundSafe) {
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                if (oGrid[x][z] < 2.0 && wGrid[x][z] === 0) {
+                    const logicX = (x + 0.5) / GRID_SCALE - halfSize;
+                    const logicZ = (z + 0.5) / GRID_SCALE - halfSize;
+                    spawnPos.set(logicX, oGrid[x][z] + 1.0, logicZ);
+                    foundSafe = true;
+                    break;
+                }
+            }
+            if (foundSafe) break;
+        }
+    }
+
+    // Ultimate fallback if map is completely filled (unlikely)
+    if (!foundSafe) {
+        spawnPos.set(0, 10, 0);
+    }
+
     // Populate sGrid with Water where applicable (if not overwritten by objects)
-    for(let x=0; x<gridSize; x++) {
-        for(let z=0; z<gridSize; z++) {
+    for (let x = 0; x < gridSize; x++) {
+        for (let z = 0; z < gridSize; z++) {
             if (wGrid[x][z] === 1 && sGrid[x][z] === 0) {
                 sGrid[x][z] = 1; // Water
             }

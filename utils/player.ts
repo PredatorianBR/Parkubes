@@ -9,7 +9,7 @@ export const updatePlayerPhysics = (
     pos: THREE.Vector3,
     velocity: THREE.Vector3,
     isGrounded: React.MutableRefObject<boolean>,
-    isChargingRef: React.MutableRefObject<boolean>, 
+    isChargingRef: React.MutableRefObject<boolean>,
     landingAnimTimer: React.MutableRefObject<number>,
     jumpDelayTimer: React.MutableRefObject<number>,
     airTimeHighPoint: React.MutableRefObject<number>,
@@ -22,7 +22,7 @@ export const updatePlayerPhysics = (
     speedSettings: number,
     occupancyGrid: number[][],
     bridgeGrid: number[][],
-    waterGrid: number[][], 
+    waterGrid: number[][],
     worldSize: number,
     canMove: boolean,
     rollTimer: React.MutableRefObject<number>,
@@ -34,7 +34,7 @@ export const updatePlayerPhysics = (
     camera: THREE.Camera, // ADDED: Camera for relative movement
     lastFallDistRef: React.MutableRefObject<number>
 ) => {
-    
+
     // 1. Calculate Input Direction Relative to Camera
     const inputDir = new THREE.Vector3(0, 0, 0);
     let isAnalogRunning = false;
@@ -51,17 +51,18 @@ export const updatePlayerPhysics = (
         camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
         // Analog Input Priority
-        if (keys.current.analog && (keys.current.analog.x !== 0 || keys.current.analog.y !== 0)) {
-             const joyX = keys.current.analog.x;
-             const joyY = -keys.current.analog.y; // Invert Y (Screen Y is down, World Z is forward/back)
-             
-             // Check magnitude for running
-             const mag = Math.sqrt(joyX*joyX + joyY*joyY);
-             if (mag > 0.9) isAnalogRunning = true;
+        const analogInput: any = keys.current.analog;
+        if (analogInput && (analogInput.x !== 0 || analogInput.y !== 0)) {
+            const joyX = analogInput.x;
+            const joyY = -analogInput.y; // Invert Y (Screen Y is down, World Z is forward/back)
 
-             // In screen space, Up (-Y) means Forward. Right (+X) means Right.
-             inputDir.addScaledVector(camForward, joyY);
-             inputDir.addScaledVector(camRight, joyX);
+            // Check magnitude for running
+            const mag = Math.sqrt(joyX * joyX + joyY * joyY);
+            if (mag > 0.9) isAnalogRunning = true;
+
+            // In screen space, Up (-Y) means Forward. Right (+X) means Right.
+            inputDir.addScaledVector(camForward, joyY);
+            inputDir.addScaledVector(camRight, joyX);
         } else {
             // Keyboard Fallback
             if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
@@ -82,11 +83,11 @@ export const updatePlayerPhysics = (
         stunTimer.current -= dt;
         effectiveStunned = true;
         if (stunTimer.current <= 0) {
-            effectiveStunned = false; 
-            stumbleTimer.current = 0; 
+            effectiveStunned = false;
+            stumbleTimer.current = 0;
         }
     } else {
-        effectiveStunned = stunned; 
+        effectiveStunned = stunned;
     }
 
     // Input Detection
@@ -95,26 +96,26 @@ export const updatePlayerPhysics = (
 
     // --- JUMP BUFFER (For Roll) ---
     if (justPressedJump) {
-        jumpBufferTimer.current = 0.2; 
+        jumpBufferTimer.current = 0.2;
     }
     if (jumpBufferTimer.current > 0) {
         jumpBufferTimer.current -= dt;
         if (jumpBufferTimer.current < 0) jumpBufferTimer.current = 0;
     }
-    
+
     // Capture previous grounded state
     const wasGrounded = isGrounded.current;
 
     // --- PRE-JUMP LOGIC ---
     if (justPressedJump && isGrounded.current && jumpDelayTimer.current <= 0 && !stunned && rollTimer.current <= 0) {
-        jumpDelayTimer.current = 0.05; 
+        jumpDelayTimer.current = 0.05;
     }
 
     let performJump = false;
     let isVisualPreJumping = false;
 
     if (jumpDelayTimer.current > 0) {
-        isVisualPreJumping = true; 
+        isVisualPreJumping = true;
         jumpDelayTimer.current -= dt;
         if (jumpDelayTimer.current <= 0) {
             performJump = true;
@@ -139,12 +140,12 @@ export const updatePlayerPhysics = (
         isGrounded: isGrounded.current,
         isClimbing: false,
         isCharging: isChargingRef.current,
-        isRolling: rollTimer.current > 0, 
+        isRolling: rollTimer.current > 0,
         didStepUp: false,
         stamina: stamina.current,
         stunned: effectiveStunned,
-        stumbleTimer: stumbleTimer.current, 
-        stumbleVel: stumbleVelocityRef.current, 
+        stumbleTimer: stumbleTimer.current,
+        stumbleVel: stumbleVelocityRef.current,
         airTimeHigh: airTimeHighPoint.current,
         lastDir: playerLastDir.current,
         noiseLevel: 0
@@ -153,15 +154,15 @@ export const updatePlayerPhysics = (
     const inputs = {
         dt: dt,
         moveDir: inputDir,
-        actions: { 
-            jump: performJump,  
-            charge: isVisualPreJumping, 
-            climb: isJumpDown, 
+        actions: {
+            jump: performJump,
+            charge: isVisualPreJumping,
+            climb: isJumpDown,
             run: keys.current['shift'] || isAnalogRunning,
-            attemptRoll: jumpBufferTimer.current > 0 
+            attemptRoll: jumpBufferTimer.current > 0
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
-        world: { oGrid: occupancyGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize } 
+        world: { oGrid: occupancyGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize }
     };
 
     // 4. Run Physics Engine
@@ -172,14 +173,14 @@ export const updatePlayerPhysics = (
 
     // TRIGGER STEP UP ANIMATION
     if (nextState.didStepUp && stepUpTimer.current <= 0) {
-        stepUpTimer.current = 0.25; 
+        stepUpTimer.current = 0.25;
     }
 
     // CHECK IF WE ENTERED ROLL STATE
     if (nextState.isRolling && rollTimer.current <= 0) {
-        rollTimer.current = 0.6; 
-        jumpBufferTimer.current = 0; 
-        landingAnimTimer.current = 0; 
+        rollTimer.current = 0.6;
+        jumpBufferTimer.current = 0;
+        landingAnimTimer.current = 0;
     }
 
     // 5. Apply Results back to Mutable Refs
@@ -187,21 +188,21 @@ export const updatePlayerPhysics = (
     velocity.copy(nextState.vel);
     isGrounded.current = nextState.isGrounded;
     isChargingRef.current = nextState.isCharging;
-    isRollingRef.current = nextState.isRolling; 
+    isRollingRef.current = nextState.isRolling;
     stamina.current = nextState.stamina;
     airTimeHighPoint.current = nextState.airTimeHigh;
     playerLastDir.current.copy(nextState.lastDir);
-    stumbleTimer.current = nextState.stumbleTimer; 
-    stumbleVelocityRef.current.copy(nextState.stumbleVel); 
+    stumbleTimer.current = nextState.stumbleTimer;
+    stumbleVelocityRef.current.copy(nextState.stumbleVel);
 
     // Handle Landing Event
     let justLanded = false;
     if (!wasGrounded && nextState.isGrounded) {
-         landingAnimTimer.current = 0.3;
-         lastFallDistRef.current = currentState.airTimeHigh - nextState.pos.y;
-         justLanded = true;
+        landingAnimTimer.current = 0.3;
+        lastFallDistRef.current = currentState.airTimeHigh - nextState.pos.y;
+        justLanded = true;
     }
-    
+
     if (landingAnimTimer.current > 0) {
         landingAnimTimer.current -= dt;
         if (landingAnimTimer.current < 0) landingAnimTimer.current = 0;
@@ -209,23 +210,23 @@ export const updatePlayerPhysics = (
 
     // Handle Fall Damage
     if (nextState.stunned && !effectiveStunned) {
-         const fallSeverity = (nextState.airTimeHigh - nextState.pos.y) - 2.5; 
-         stunTimer.current = Math.max(2.0, fallSeverity * 0.8);
-         stumbleTimer.current = 0.15; 
-         effectiveStunned = true;
+        const fallSeverity = (nextState.airTimeHigh - nextState.pos.y) - 2.5;
+        stunTimer.current = Math.max(2.0, fallSeverity * 0.8);
+        stumbleTimer.current = 0.15;
+        effectiveStunned = true;
     }
 
     const stepUpFactor = stepUpTimer.current / 0.25;
 
-    return { 
-        isRunning: keys.current['shift'] && inputDir.lengthSq() > 0, 
-        isClimbing: nextState.isClimbing, 
-        isCharging: nextState.isCharging || isVisualPreJumping, 
-        isRolling: nextState.isRolling, 
-        pMoving: inputDir.lengthSq() > 0, 
-        pDir: new THREE.Vector3(nextState.lastDir.x, 0, nextState.lastDir.y), 
+    return {
+        isRunning: (keys.current['shift'] || isAnalogRunning) && inputDir.lengthSq() > 0,
+        isClimbing: nextState.isClimbing,
+        isCharging: nextState.isCharging || isVisualPreJumping,
+        isRolling: nextState.isRolling,
+        pMoving: inputDir.lengthSq() > 0,
+        pDir: new THREE.Vector3(nextState.lastDir.x, 0, nextState.lastDir.y),
         effectiveStunned,
-        isStumbling: stumbleTimer.current > 0, 
+        isStumbling: stumbleTimer.current > 0,
         isGrounded: nextState.isGrounded,
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
