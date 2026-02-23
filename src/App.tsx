@@ -3,8 +3,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
 import { VoxelSeek } from './components/VoxelSeek';
-import { GameInterface } from './components/GameInterface';
-import { OnScreenControls } from './components/OnScreenControls';
+import { GameInterface } from './components/ui/GameInterface';
+import { OnScreenControls } from './components/ui/OnScreenControls';
 import { GameStatus, GameState, GameSettings } from './types';
 import * as THREE from 'three';
 

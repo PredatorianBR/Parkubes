@@ -1,8 +1,8 @@
 import React from 'react';
-import { GameStatus, GameState, GameSettings } from '../types';
-import { MainMenu } from './ui/MainMenu';
-import { InGameMenu } from './ui/InGameMenu';
-import { HUD } from './ui/HUD';
+import { GameStatus, GameState, GameSettings } from '../../types';
+import { MainMenu } from './MainMenu';
+import { InGameMenu } from './InGameMenu';
+import { HUD } from './HUD';
 
 interface GameInterfaceProps {
     gameState: GameState;
