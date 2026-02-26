@@ -161,6 +161,13 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!debugMode) {
+      setShowGrid(false);
+      setShowCollision(false);
+    }
+  }, [debugMode]);
+
+  useEffect(() => {
     if (gameState.status === GameStatus.PREP) {
       setShowMission(true);
       const timeout = setTimeout(() => { setShowMission(false); }, 3000);

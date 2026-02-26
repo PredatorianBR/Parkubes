@@ -1,7 +1,7 @@
 
 import * as THREE from 'three';
 import { VoxelObject, GameSettings, Position } from '../types';
-import { worldToIndex, GRID_SCALE } from './physics';
+import { worldToIndex, GRID_SCALE, PLAYER_HEIGHT } from './physics';
 
 export const findSpawnPos = (
     size: number,
@@ -293,7 +293,8 @@ export const generateCityLevel = (
         let typeId = typeIdMap[selectedType];
 
         if (selectedType === 'farm') {
-            if (!((bw >= 4 && bd >= 8) || (bw >= 8 && bd >= 4))) return null;
+            // New Requirement: Enforce minimum width/depth of 3 voxels for the farm block
+            if (bw < 3 || bd < 3) return null;
 
             // Check gap rule for farm (treated as construction)
             for (let i = -2; i < bw + 2; i++) {
@@ -311,6 +312,24 @@ export const generateCityLevel = (
                 }
             }
 
+            // Enforce that the resulting terrestrial area (after river cutting) also respects the minimum width/depth of 3
+            let minLX = bw, maxLX = -1, minLZ = bd, maxLZ = -1;
+            let possibleCount = 0;
+            for (let i = 0; i < bw; i++) {
+                for (let j = 0; j < bd; j++) {
+                    if (!isWaterLogic(bx + i, bz + j)) {
+                        possibleCount++;
+                        if (i < minLX) minLX = i;
+                        if (i > maxLX) maxLX = i;
+                        if (j < minLZ) minLZ = j;
+                        if (j > maxLZ) maxLZ = j;
+                    }
+                }
+            }
+
+            const landW = maxLX - minLX + 1;
+            const landD = maxLZ - minLZ + 1;
+            if (landW < 3 || landD < 3 || possibleCount < 9) return null; // USER REQUEST: minimum 3x3 (9 voxels)
             let placedCount = 0;
             for (let i = 0; i < bw; i++) {
                 for (let j = 0; j < bd; j++) {
@@ -1095,29 +1114,70 @@ export const generateCityLevel = (
 
         function placeInPass(cat: 'farm' | 'building' | 'ruins') {
             let x = -halfSize + 2;
+            let clusterX = 0;
+
             while (x < halfSize - 2) {
                 let blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
                 if (blockW % 2 !== 0) blockW -= 1;
                 blockW = Math.max(4, blockW);
                 if (x + blockW >= halfSize - 1) break;
 
+                // Decide if this strip will attempt to form Z-axis pairs
+                const stripPairZ = Math.random() > 0.5;
+                const maxZ = stripPairZ ? 2 : 1;
+
+                // If this strip has Z-pairs, it must be isolated in X
+                if (stripPairZ && clusterX > 0) {
+                    x += baseStreetWidth;
+                    clusterX = 0;
+                }
+
                 let z = -halfSize + 2;
+                let clusterZ = 0;
+                let placedInStrip = false;
+
                 while (z < halfSize - 2) {
                     let blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
                     if (blockD % 2 !== 0) blockD -= 1;
                     blockD = Math.max(4, blockD);
                     if (z + blockD >= halfSize - 1) break;
 
+                    // Limit adjacent constructions in Z direction based on strip mode
+                    if (clusterZ >= maxZ) {
+                        z += baseStreetWidth;
+                        clusterZ = 0;
+                        continue;
+                    }
+
                     const dec = placeBuilding(x, z, blockW, blockD, undefined, cat);
                     if (dec) {
                         decorators.push(dec);
                         z += blockD;
+                        clusterZ++;
+                        placedInStrip = true;
                     } else {
-                        // If spot failed, skip baseStreetWidth to try to satisfy gap
                         z += baseStreetWidth;
+                        clusterZ = 0;
                     }
                 }
+
                 x += blockW;
+                if (placedInStrip) {
+                    if (stripPairZ) {
+                        // Isolated strip (already contains Z-pairs or singletons)
+                        x += baseStreetWidth;
+                        clusterX = 0;
+                    } else {
+                        clusterX++;
+                        if (clusterX >= 2) {
+                            // End of X-axis pair
+                            x += baseStreetWidth;
+                            clusterX = 0;
+                        }
+                    }
+                } else {
+                    clusterX = 0;
+                }
             }
         }
     }
@@ -1127,21 +1187,88 @@ export const generateCityLevel = (
     decorators.forEach(d => d());
 
     // Fences
+    const visitedForFences = new Set<string>();
     for (let x = 0; x < size; x++) {
         for (let z = 0; z < size; z++) {
-            if (tGrid[x][z] === 4) {
-                let isEdge = false;
-                const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-                for (const [dx, dz] of neighbors) {
-                    const nx = x + dx;
-                    const nz = z + dz;
-                    if (nx < 0 || nx >= size || nz < 0 || nz >= size || tGrid[nx][nz] !== 4) {
-                        isEdge = true;
+            const type = tGrid[x][z];
+            const key = `${x},${z}`;
+            if ((type === 4 || type === 1) && !visitedForFences.has(key)) {
+                // Determine cluster for this type
+                let clusterMinX = x, clusterMaxX = x, clusterMinZ = z, clusterMaxZ = z;
+                const clusterTiles: [number, number][] = [];
+                const clusterSet = new Set<string>();
+                const queue: [number, number][] = [[x, z]];
+
+                clusterSet.add(key);
+                visitedForFences.add(key);
+
+                while (queue.length > 0) {
+                    const [cx, cz] = queue.shift()!;
+                    clusterTiles.push([cx, cz]);
+                    clusterMinX = Math.min(clusterMinX, cx);
+                    clusterMaxX = Math.max(clusterMaxX, cx);
+                    clusterMinZ = Math.min(clusterMinZ, cz);
+                    clusterMaxZ = Math.max(clusterMaxZ, cz);
+
+                    const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                    for (const [ndx, ndz] of neighbors) {
+                        const nx = cx + ndx;
+                        const nz = cz + ndz;
+                        if (nx >= 0 && nx < size && nz >= 0 && nz < size && tGrid[nx][nz] === type) {
+                            const nkey = `${nx},${nz}`;
+                            if (!clusterSet.has(nkey)) {
+                                clusterSet.add(nkey);
+                                visitedForFences.add(nkey);
+                                queue.push([nx, nz]);
+                            }
+                        }
                     }
                 }
-                if (isEdge) {
-                    if (Math.random() > 0.02) {
-                        fenceLocations.add(`${x},${z}`);
+
+                const clusterW = clusterMaxX - clusterMinX + 1;
+                const clusterD = clusterMaxZ - clusterMinZ + 1;
+
+                // Minimum 3x3 cluster to warrant a fence
+                if (clusterW >= 3 && clusterD >= 3) {
+                    const margin = 3; // distance 3 = 2 empty voxels between house and fence
+                    const dilatedSet = new Set<string>();
+                    for (const [tx, tz] of clusterTiles) {
+                        for (let dx = -margin; dx <= margin; dx++) {
+                            for (let dz = -margin; dz <= margin; dz++) {
+                                const nx = tx + dx;
+                                const nz = tz + dz;
+                                if (nx >= 0 && nx < size && nz >= 0 && nz < size) {
+                                    dilatedSet.add(`${nx},${nz}`);
+                                }
+                            }
+                        }
+                    }
+
+                    for (const dKey of dilatedSet) {
+                        const [fx, fz] = dKey.split(',').map(Number);
+
+                        // Fence criteria:
+                        // 1. Must be empty space/ground (tGrid === 0)
+                        // 2. Must NOT be water
+                        // 3. Must be on the border of the dilated set that is NOT inside the cluster
+                        if (tGrid[fx][fz] === 0 && !isWaterLogic(fx - halfSize, fz - halfSize)) {
+                            let isBorder = false;
+                            const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                            for (const [ndx, ndz] of neighbors) {
+                                const nx = fx + ndx;
+                                const nz = fz + ndz;
+                                if (nx < 0 || nx >= size || nz < 0 || nz >= size || !dilatedSet.has(`${nx},${nz}`)) {
+                                    isBorder = true;
+                                    break;
+                                }
+                            }
+
+                            if (isBorder) {
+                                if (Math.random() > 0.02) {
+                                    fenceLocations.add(dKey);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1194,7 +1321,7 @@ export const generateCityLevel = (
                 const logicZ = z - halfSize + 0.5;
 
                 // Exactly 1 huge crop cluster per farm block
-                const scaleY = 4.2 + (Math.random() * 0.4);
+                const scaleY = PLAYER_HEIGHT;
                 objects.push({
                     id: uid(`wheat-${logicX}-${logicZ}`),
                     position: [logicX, 0, logicZ], // Anchor geometry bottom to floor

@@ -144,7 +144,7 @@ export const InGameMenu: React.FC<InGameMenuProps> = ({
                         RESPAWN
                     </button>
                     <button onClick={resetToMenu} className="pixel-font bg-red-900/40 hover:bg-red-800 text-white text-[8px] py-2 rounded transition-colors border border-red-500/30">
-                        SAIR
+                        Sair para o menu principal
                     </button>
                 </div>
             )}

@@ -239,11 +239,8 @@ export const updateEntityPhysics = (
         }
     }
 
-    // isInWater is true if ANY point is in water (for surface/visuals)
-    let isInWater = pointsInWater > 0 && next.pos.y < 0.5;
-
-    // isFullyInWater is true only if ALL points are in water (for current flow)
-    const isFullyInWater = pointsInWater === checkPoints.length && next.pos.y < 0.5;
+    const waterRatio = pointsInWater / checkPoints.length;
+    const isInWater = waterRatio > 0 && next.pos.y < -0.3;
 
     // --- CURRENT FLOW (MOVED TO END) ---
     // Moved to end of function to ensure it persists
@@ -496,9 +493,8 @@ export const updateEntityPhysics = (
     }
 
     // --- FINAL CURRENT FLOW APPLICATION ---
-    if (isFullyInWater && world.riverOrientation !== -1 && !next.isClimbing) {
-        const flowStrength = world.riverFlow;
-        const halfSize = Math.floor(world.size / 2);
+    if (isInWater && world.riverOrientation !== -1 && !next.isClimbing) {
+        const flowStrength = world.riverFlow * waterRatio;
         const margin = PLAYER_RADIUS + 0.1;
         const minBound = -halfSize + margin;
         const maxBound = halfSize - margin;
@@ -508,6 +504,13 @@ export const updateEntityPhysics = (
         else if (world.riverOrientation === 2) push.z = -flowStrength * dt; // S->N
         else if (world.riverOrientation === 3) push.x = flowStrength * dt;  // W->E
         else if (world.riverOrientation === 1) push.x = -flowStrength * dt; // E->W
+
+        // Add "Empuxo" (Buoyancy/Lift) - Character bobs and floats slightly higher with stronger flow
+        if (next.isGrounded && flowStrength > 0) {
+            const bobbing = Math.sin(Date.now() * 0.005) * 0.05 * (flowStrength / 5);
+            const lift = (flowStrength * 0.12); // Up to 0.6m lift
+            next.pos.y = THREE.MathUtils.lerp(next.pos.y, WATER_DEPTH_LEVEL + lift + bobbing, dt * 4.0);
+        }
 
         next.pos.add(push);
 

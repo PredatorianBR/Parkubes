@@ -469,6 +469,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const stumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
     const landingAnimTimer = useRef(0);
     const lastFallDist = useRef(0);
+    const farmStationaryTimer = useRef(0);
 
     // Character Refs for direct manipulation (if needed)
     const characterGroup = useRef<THREE.Group>(null!);
@@ -590,7 +591,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             camera, // Pass Camera
             lastFallDist,
             mapData?.riverOrientation ?? -1,
-            mapData?.riverFlow ?? 0
+            settings.riverFlow
         );
 
         // Update Character Transform
@@ -639,15 +640,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
         // --- HIDING LOGIC ---
         let isHiding = false;
-        if (mapData && isGrounded.current) {
-            const halfSize = Math.floor(settings.worldSize / 2);
-            const ix = worldToIndex(playerPos.current.x, halfSize, settings.worldSize);
-            const iz = worldToIndex(playerPos.current.z, halfSize, settings.worldSize);
-            // Check tGrid for Farm type (4)
-            if (mapData.tGrid[ix]?.[iz] === 4) {
-                isHiding = true;
-            }
-        }
+        farmStationaryTimer.current = 0; // Reset timer as it's no longer used
 
         const horizontalVel = new THREE.Vector2(playerVel.current.x, playerVel.current.z);
         const currentMoveSpeed = horizontalVel.length();
