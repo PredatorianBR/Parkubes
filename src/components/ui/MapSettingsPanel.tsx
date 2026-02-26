@@ -6,44 +6,29 @@ interface MapSettingsPanelProps {
     settings: GameSettings;
     updateSetting: (key: keyof GameSettings, value: any) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
-    toggleLock: (key: string) => void;
     resetRatios: () => void;
     showWireframe?: boolean;
     setShowWireframe?: (val: boolean) => void;
 }
 
 export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
-    settings, updateSetting, updateRatio, toggleLock, resetRatios, showWireframe, setShowWireframe
+    settings, updateSetting, updateRatio, resetRatios, showWireframe, setShowWireframe
 }) => {
-    const calculateEmptySpace = () => {
-        const r = settings.ratios;
-        const used = r.farm + r.ruins + r.house + r.highrise + r.factory;
-        return Math.max(0, 100 - used);
-    };
 
     const renderRatioSlider = (key: keyof GameSettings['ratios'], label: string, colorClass: string) => {
-        const isLocked = settings.lockedRatios.includes(key);
         return (
             <div className="flex flex-col gap-1 mb-2">
                 <div className="flex justify-between items-center">
                     <label className="pixel-font text-[10px] text-gray-400">{label}</label>
                     <div className="flex items-center gap-2">
                         <span className="pixel-font text-[10px] text-white w-6 text-right">{settings.ratios[key]}%</span>
-                        <button
-                            onClick={() => toggleLock(key)}
-                            className={`p-1 rounded hover:bg-white/10 transition-colors ${isLocked ? 'text-yellow-400' : 'text-gray-600'}`}
-                            title={isLocked ? "Destravar" : "Travar"}
-                        >
-                            <LockIcon locked={isLocked} />
-                        </button>
                     </div>
                 </div>
                 <input
                     type="range" min="0" max="100" step="1"
                     value={settings.ratios[key]}
                     onChange={(e) => updateRatio(key, parseInt(e.target.value))}
-                    className={`w-full ${colorClass} ${isLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    disabled={isLocked}
+                    className={`w-full ${colorClass}`}
                 />
             </div>
         );
@@ -68,32 +53,38 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
 
                 <div className="flex flex-col gap-2">
                     <label className="pixel-font text-[10px] text-gray-400 flex justify-between">
-                        LARG. RIO <span>{settings.riverWidth}</span>
+                        LARG. RIO <span>{settings.riverWidth === 0 ? 'DESLIGADO' : settings.riverWidth}</span>
                     </label>
                     <input
-                        type="range" min="0" max="6" step="1"
+                        type="range" min="0" max="5" step="1"
                         value={settings.riverWidth}
                         onChange={(e) => updateSetting('riverWidth', parseInt(e.target.value))}
                         className="w-full accent-blue-600"
                     />
                 </div>
+
+                <div className={`flex flex-col gap-2 ${settings.riverWidth === 0 ? 'opacity-40' : ''}`}>
+                    <label className="pixel-font text-[10px] text-gray-400 flex justify-between">
+                        FORÇA CORRENTEZA <span>{settings.riverWidth === 0 ? '-' : Math.floor(settings.riverFlow)}</span>
+                    </label>
+                    <input
+                        type="range" min="0" max="5" step="1"
+                        value={Math.floor(settings.riverFlow)}
+                        onChange={(e) => updateSetting('riverFlow', parseInt(e.target.value))}
+                        className={`w-full accent-cyan-400 ${settings.riverWidth === 0 ? 'cursor-not-allowed' : ''}`}
+                        disabled={settings.riverWidth === 0}
+                    />
+                </div>
             </div>
 
             <div className="flex justify-between items-end mt-4 mb-2 border-b border-white/10 pb-2">
-                <h3 className="pixel-font text-xs text-blue-300">TERRENO (Restante: {calculateEmptySpace()}%)</h3>
+                <h3 className="pixel-font text-xs text-blue-300">BIOMAS (COBERTURA %)</h3>
                 <button
                     onClick={resetRatios}
                     className="pixel-font text-[8px] text-red-400 hover:text-red-300 border border-red-500/30 px-2 py-1 rounded bg-red-900/20"
                 >
-                    RESETAR
+                    RESETAR / ALEATORIZAR
                 </button>
-            </div>
-
-            <div className="bg-white/5 p-2 mb-2 rounded border border-white/5">
-                <label className="pixel-font text-[10px] text-gray-500 block">ESPAÇO VAZIO E OUTROS</label>
-                <div className="w-full bg-gray-800 h-2 rounded-full mt-1 overflow-hidden">
-                    <div className="bg-gray-500 h-full transition-all duration-300" style={{ width: `${calculateEmptySpace()}%` }}></div>
-                </div>
             </div>
 
             {renderRatioSlider('farm', 'PLANTAÇÕES', 'accent-green-600')}
@@ -147,3 +138,4 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
         </div>
     );
 };
+

@@ -12,12 +12,12 @@ export const ROLL_SPEED_MULT = 1.3;
 export const CLIMB_THRESHOLD = 0.6;
 export const MAX_CLIMB_HEIGHT = 1000.0;
 export const PLAYER_HEIGHT = 4.0;
-export const GROUND_DEPTH = 5.0; // PLAYER_HEIGHT + 1
+export const GROUND_DEPTH = 4.0; // Terreno e Rio com profundidade 4
 export const FALL_DAMAGE_HEIGHT = 7.0;
 export const PLAYER_RADIUS = 0.8; // Slightly reduced to fit better in 0.5m gaps if needed
 
 // Water Physics
-export const WATER_DEPTH_LEVEL = -2.6; // Character floats with head out (surface -0.2 - body 2.4)
+export const WATER_DEPTH_LEVEL = -2.6; // Nível de flutuação padrão (pés do boneco)
 export const WATER_MOVE_SPEED_MULT = 0.4;
 export const WATER_JUMP_DAMPING = 0.6;
 
@@ -197,7 +197,7 @@ interface PhysicsInput {
     moveDir: THREE.Vector3;
     actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean };
     stats: { speed: number; climbSpeed: number };
-    world: { oGrid: number[][]; bGrid: number[][]; wGrid: number[][]; size: number };
+    world: { oGrid: number[][]; bGrid: number[][]; wGrid: number[][]; size: number; riverOrientation: number; riverFlow: number };
 }
 
 export const updateEntityPhysics = (
@@ -216,8 +216,37 @@ export const updateEntityPhysics = (
     const { dt, moveDir, actions, stats, world } = input;
 
     // 0. Environment Check
-    const groundHeightCurrent = getTerrainHeight(next.pos.x, next.pos.z, next.pos.y, world.oGrid, world.bGrid, world.wGrid, world.size);
-    const isInWater = next.pos.y < -0.5 && groundHeightCurrent <= WATER_DEPTH_LEVEL;
+    const radius = PLAYER_RADIUS;
+    const halfSize = Math.floor(world.size / 2);
+    const checkPoints = [
+        [0, 0],
+        [radius * 0.7, 0],
+        [-radius * 0.7, 0],
+        [0, radius * 0.7],
+        [0, -radius * 0.7],
+        [radius * 0.5, radius * 0.5],
+        [-radius * 0.5, radius * 0.5],
+        [radius * 0.5, -radius * 0.5],
+        [-radius * 0.5, -radius * 0.5]
+    ];
+
+    let pointsInWater = 0;
+    for (const [ox, oz] of checkPoints) {
+        const ix = worldToIndex(next.pos.x + ox, halfSize, world.size);
+        const iz = worldToIndex(next.pos.z + oz, halfSize, world.size);
+        if (world.wGrid[ix]?.[iz] === 1) {
+            pointsInWater++;
+        }
+    }
+
+    // isInWater is true if ANY point is in water (for surface/visuals)
+    let isInWater = pointsInWater > 0 && next.pos.y < 0.5;
+
+    // isFullyInWater is true only if ALL points are in water (for current flow)
+    const isFullyInWater = pointsInWater === checkPoints.length && next.pos.y < 0.5;
+
+    // --- CURRENT FLOW (MOVED TO END) ---
+    // Moved to end of function to ensure it persists
 
     // 1. Status Effects (Stun / Stumble)
     if (next.stunned) {
@@ -466,5 +495,31 @@ export const updateEntityPhysics = (
         next.isCharging = false;
     }
 
+    // --- FINAL CURRENT FLOW APPLICATION ---
+    if (isFullyInWater && world.riverOrientation !== -1 && !next.isClimbing) {
+        const flowStrength = world.riverFlow;
+        const halfSize = Math.floor(world.size / 2);
+        const margin = PLAYER_RADIUS + 0.1;
+        const minBound = -halfSize + margin;
+        const maxBound = halfSize - margin;
+
+        const push = new THREE.Vector3(0, 0, 0);
+        if (world.riverOrientation === 0) push.z = flowStrength * dt;      // N->S
+        else if (world.riverOrientation === 2) push.z = -flowStrength * dt; // S->N
+        else if (world.riverOrientation === 3) push.x = flowStrength * dt;  // W->E
+        else if (world.riverOrientation === 1) push.x = -flowStrength * dt; // E->W
+
+        next.pos.add(push);
+
+        // Resolve multiple times to prevent corner sticking when pushed by current
+        for (let i = 0; i < 3; i++) {
+            resolveWallCollisions(next.pos, world);
+        }
+
+        // Final map boundary clamping
+        next.pos.x = THREE.MathUtils.clamp(next.pos.x, minBound, maxBound);
+        next.pos.z = THREE.MathUtils.clamp(next.pos.z, minBound, maxBound);
+    }
+
     return next;
-};
+}

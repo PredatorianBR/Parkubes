@@ -7,8 +7,34 @@ import { GameInterface } from './components/ui/GameInterface';
 import { OnScreenControls } from './components/ui/OnScreenControls';
 import { GameStatus, GameState, GameSettings } from './types';
 import * as THREE from 'three';
+const getRandomSettings = () => {
+  // Randomize Ratios (Sum to 100)
+  const keys = ['farm', 'house', 'highrise', 'factory', 'ruins'] as const;
+  let rawValues = keys.map(() => Math.random());
+  const sum = rawValues.reduce((a, b) => a + b, 0);
+  const normalized = rawValues.map(v => Math.round((v / sum) * 100));
+
+  // Fix potential rounding issues to ensure sum is exactly 100
+  let currentSum = normalized.reduce((a, b) => a + b, 0);
+  if (currentSum !== 100) {
+    normalized[0] += (100 - currentSum);
+  }
+
+  return {
+    ratios: {
+      farm: normalized[0],
+      house: normalized[1],
+      highrise: normalized[2],
+      factory: normalized[3],
+      ruins: normalized[4]
+    },
+    riverWidth: Math.floor(Math.random() * 6), // 0 to 5
+    riverFlow: Math.floor(Math.random() * 6)    // 0 to 5
+  };
+};
 
 const App: React.FC = () => {
+  const initialRandom = getRandomSettings();
   const [gameState, setGameState] = useState<GameState>({
     status: GameStatus.IDLE,
     match: {
@@ -23,19 +49,11 @@ const App: React.FC = () => {
       worldSize: 40,
       playerSpeed: 0.85,
       staminaDuration: 2.0,
-      riverWidth: 6,
       cameraZoom: 15,
-      cameraFollow: true, // DEFAULT TRUE
-      lockedRatios: [],
-      ratios: {
-        farm: 20,
-        house: 30,
-        highrise: 20,
-        factory: 15,
-        ruins: 10
-      }
+      cameraFollow: true,
+      ...initialRandom
     },
-    mapId: 0
+    mapId: Math.floor(Math.random() * 1000)
   });
 
   const [debugMode, setDebugMode] = useState(false);
@@ -93,58 +111,30 @@ const App: React.FC = () => {
     });
   };
 
-  const toggleLock = (key: string) => {
+  const resetRatios = () => {
     setGameState(prev => {
-      const isLocked = prev.settings.lockedRatios.includes(key);
-      const newLocked = isLocked
-        ? prev.settings.lockedRatios.filter(k => k !== key)
-        : [...prev.settings.lockedRatios, key];
-
+      const newRandom = getRandomSettings();
       return {
         ...prev,
-        settings: { ...prev.settings, lockedRatios: newLocked }
+        settings: {
+          ...prev.settings,
+          ...newRandom
+        },
+        mapId: prev.mapId + 1
       };
     });
   };
 
-  const resetRatios = () => {
-    setGameState(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings,
-        lockedRatios: [],
-        ratios: {
-          farm: 20,
-          house: 30,
-          highrise: 20,
-          factory: 15,
-          ruins: 10
-        }
-      },
-      mapId: prev.mapId + 1 // Always regen on reset
-    }));
-  };
-
-  const updateRatio = (changedKey: keyof GameSettings['ratios'], rawNewValue: number) => {
+  const updateRatio = (changedKey: keyof GameSettings['ratios'], newValue: number) => {
     setGameState(prev => {
-      const ratios = { ...prev.settings.ratios };
-      let otherSum = 0;
-      (Object.keys(ratios) as Array<keyof GameSettings['ratios']>).forEach(k => {
-        if (k !== changedKey) {
-          // @ts-ignore
-          otherSum += ratios[k];
-        }
-      });
-      const maxAvailable = 100 - otherSum;
-      const newValue = Math.min(Math.max(0, rawNewValue), maxAvailable);
-      ratios[changedKey] = newValue;
+      const ratios = { ...prev.settings.ratios, [changedKey]: newValue };
       return {
         ...prev,
         settings: { ...prev.settings, ratios },
-        mapId: prev.mapId + 1 // Regen on ratio change
+        mapId: prev.mapId + 1
       };
     });
-  }
+  };
 
   const nextRound = useCallback(() => {
     setGameState(prev => {
@@ -194,7 +184,7 @@ const App: React.FC = () => {
 
   return (
     <div className="relative w-full h-screen bg-gray-950 select-none overflow-hidden">
-      <Canvas shadows gl={{ antialias: true, shadowMapType: THREE.PCFSoftShadowMap }}>
+      <Canvas shadows gl={{ antialias: true }}>
         <OrthographicCamera
           makeDefault
           position={[100, 100, 100]}
@@ -241,7 +231,6 @@ const App: React.FC = () => {
         resetToMenu={resetToMenu}
         updateSetting={updateSetting}
         updateRatio={updateRatio}
-        toggleLock={toggleLock}
         resetRatios={resetRatios}
         showMission={showMission}
         setIsEditing={setIsEditing}

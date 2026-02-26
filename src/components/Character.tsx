@@ -108,7 +108,7 @@ const ParticleEffects: React.FC<{
                 spawnPos,
                 new THREE.Vector3(0, -3, 0),
                 '#38bdf8',
-                0.25,
+                0.4, // Increased from 0.25
                 0.5
             );
         }
@@ -117,7 +117,7 @@ const ParticleEffects: React.FC<{
         if (justLanded) {
             if (fallDistance > 1.5) {
                 let count = currentSurface === 1 ? 15 : 12;
-                let scaleBase = 0.1;
+                let scaleBase = 0.25; // Increased from 0.1
                 let spread = 0.8;
                 let color = '#a8a29e';
 
@@ -127,7 +127,7 @@ const ParticleEffects: React.FC<{
 
                 if (stunned) {
                     count = 30;
-                    scaleBase = 0.25;
+                    scaleBase = 0.45; // Increased from 0.25
                     spread = 1.2;
                     color = '#78716c';
                 }
@@ -205,7 +205,7 @@ const ParticleEffects: React.FC<{
                     spawnPos,
                     forward.clone().multiplyScalar(1.2).add(new THREE.Vector3(0, 0.5, 0)),
                     '#f3f4f6',
-                    0.15 + Math.random() * 0.1,
+                    0.4 + Math.random() * 0.2, // Increased from 0.15 + 0.1
                     0.8
                 );
             }
@@ -490,6 +490,12 @@ export const Character: React.FC<CharacterProps> = ({
         // Apply Lerps
         const squashLerpSpeed = delta * 20;
 
+        // Floating Animation (Water)
+        let floatingY = 0;
+        if (currentSurface === 1 && isGrounded && !isClimbing && !isRolling && !stunned) {
+            floatingY = Math.sin(time * 2.0) * 0.06;
+        }
+
         // Apply Container Rotation
         if (modelGroup.current) {
             const currentBaseY = modelGroup.current.position.y;
@@ -506,7 +512,7 @@ export const Character: React.FC<CharacterProps> = ({
                 nextBaseY = THREE.MathUtils.lerp(currentBaseY, targetPivotY, rotLerpSpeed);
             }
 
-            modelGroup.current.position.y = nextBaseY + bobY;
+            modelGroup.current.position.y = nextBaseY + bobY + floatingY;
             modelGroup.current.position.z = THREE.MathUtils.lerp(modelGroup.current.position.z, targetZOffset, delta * 15);
         }
 

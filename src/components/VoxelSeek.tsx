@@ -6,7 +6,7 @@ import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUti
 import { GameStatus, VoxelObject, GameSettings, Position } from '../types';
 import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
-import { generateCityLevel } from '../utils/levelGen';
+import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
 import { worldToIndex, GRID_SCALE } from '../utils/physics';
 import { VoxelGround } from './environment/VoxelGround';
@@ -476,7 +476,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const staminaFill = useRef<HTMLDivElement>(null!);
 
     // Map Data
-    const [mapData, setMapData] = useState<{ objects: VoxelObject[], oGrid: number[][], bGrid: number[][], wGrid: number[][], sGrid: number[][], spawnPos: THREE.Vector3 } | null>(null);
+    const [mapData, setMapData] = useState<{ objects: VoxelObject[], oGrid: number[][], bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, riverOrientation: number, riverFlow: number } | null>(null);
 
     // Character Visual State (for animation props)
     const [visualState, setVisualState] = useState({
@@ -493,40 +493,67 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         landingFactor: 0,
         currentSurface: 0,
         fallDistance: 0,
-        justLanded: false
+        justLanded: false,
+        isHiding: false
     });
 
-    // Initialization
+    // Initialization & Map Regeneration
     useEffect(() => {
-        // Generate Level
+        // Generate Level (Full regeneration on structural settings or mapId change)
         const spawn = new THREE.Vector2(0, 0);
         const data = generateCityLevel(spawn, settings, mapId, debugMode);
         setMapData(data);
 
-        // Reset Player to NEW SPAWN POS
+        // Reset Player to Initial Spawn
         playerPos.current.copy(data.spawnPos);
         playerVel.current.set(0, 0, 0);
         stamina.current = 100;
         stunTimer.current = 0;
+    }, [settings.worldSize, settings.riverWidth, settings.ratios, mapId]);
 
-        // Notify Prep Complete ONLY IF IN PREP STATUS (Avoids auto-start when editing menu)
-        if (status === GameStatus.PREP) {
-            onPrepComplete();
-        }
-    }, [settings.worldSize, settings.riverWidth, settings.ratios, mapId, debugMode]);
-
-    // RESET CAMERA ON PREP (RESPAWN)
+    // Handle Match Start or Respawn (PREP status)
     useEffect(() => {
-        if (status === GameStatus.PREP) {
+        if (status === GameStatus.PREP && mapData) {
+            // 1. Recalculate a fresh random spawn point on the current map
+            const halfSize = Math.floor(settings.worldSize / 2);
+            const gridSize = settings.worldSize * GRID_SCALE;
+
+            const isWaterLogic = (lx: number, lz: number) => {
+                const startX = worldToIndex(lx, halfSize, settings.worldSize);
+                const startZ = worldToIndex(lz, halfSize, settings.worldSize);
+                if (startX >= 0 && startX < gridSize && startZ >= 0 && startZ < gridSize) {
+                    return mapData.wGrid[startX][startZ] === 1;
+                }
+                return false;
+            };
+
+            const newSpawn = findSpawnPos(
+                settings.worldSize,
+                halfSize,
+                mapData.tGrid,
+                mapData.oGrid,
+                mapData.wGrid,
+                isWaterLogic
+            );
+
+            // 2. Reset Player State to the new random spawn
+            playerPos.current.copy(newSpawn);
+            playerVel.current.set(0, 0, 0);
+            stamina.current = 100;
+            stunTimer.current = 0;
+
+            // 3. Reset Camera & Controls
             if (controls) {
                 // @ts-ignore
                 if (controls.reset) controls.reset();
             }
-            // Force Isometric Defaults
             camera.position.set(100, 100, 100);
             camera.lookAt(0, 0, 0);
+
+            // 4. Notify Prep Complete
+            onPrepComplete();
         }
-    }, [status, camera, controls]);
+    }, [status, mapData]); // Triggers on status change (Respawn/Iniciar) or Map change
 
     useFrame((state, delta) => {
         if (!mapData) return;
@@ -561,7 +588,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             stumbleTimer,
             stumbleVelocity,
             camera, // Pass Camera
-            lastFallDist
+            lastFallDist,
+            mapData?.riverOrientation ?? -1,
+            mapData?.riverFlow ?? 0
         );
 
         // Update Character Transform
@@ -608,6 +637,18 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             }
         }
 
+        // --- HIDING LOGIC ---
+        let isHiding = false;
+        if (mapData && isGrounded.current) {
+            const halfSize = Math.floor(settings.worldSize / 2);
+            const ix = worldToIndex(playerPos.current.x, halfSize, settings.worldSize);
+            const iz = worldToIndex(playerPos.current.z, halfSize, settings.worldSize);
+            // Check tGrid for Farm type (4)
+            if (mapData.tGrid[ix]?.[iz] === 4) {
+                isHiding = true;
+            }
+        }
+
         const horizontalVel = new THREE.Vector2(playerVel.current.x, playerVel.current.z);
         const currentMoveSpeed = horizontalVel.length();
 
@@ -626,7 +667,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             landingFactor: physicsOutput.landingFactor,
             currentSurface: currentSurface,
             fallDistance: physicsOutput.fallDistance,
-            justLanded: physicsOutput.justLanded
+            justLanded: physicsOutput.justLanded,
+            isHiding: isHiding
         };
 
         // Simple shallow compare
@@ -645,6 +687,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         else if (newVisualState.currentSurface !== visualState.currentSurface) changed = true;
         else if (Math.abs(newVisualState.fallDistance - visualState.fallDistance) > 0.1) changed = true;
         else if (newVisualState.justLanded !== visualState.justLanded) changed = true;
+        else if (newVisualState.isHiding !== visualState.isHiding) changed = true;
 
         if (changed) {
             setVisualState(newVisualState);
@@ -685,7 +728,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         return (
             <>
                 <VoxelGround size={settings.worldSize} waterGrid={mapData.wGrid} sGrid={mapData.sGrid} debugMode={debugMode} showGrid={showGrid} />
-                <VoxelWater size={settings.worldSize} waterGrid={mapData.wGrid} />
+                <VoxelWater size={settings.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={settings.riverFlow} />
                 {mapData.objects.map(obj => {
                     if (obj.type === 'wheat') return null;
                     if (obj.type === 'ruin') return <RuinBlock key={obj.id} position={new THREE.Vector3(...obj.position)} scale={obj.scale} color={obj.color} showGrid={showGrid} />;
@@ -715,7 +758,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 <WheatField wheatObjects={mapData.objects.filter(o => o.type === 'wheat')} playerPos={playerPos} />
             </>
         );
-    }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe]);
+    }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe, settings.riverFlow]);
 
     if (!mapData) return null;
 
@@ -725,29 +768,32 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             {debugMode && mapData && (
                 <CollisionDebug oGrid={mapData.oGrid} bGrid={mapData.bGrid} size={settings.worldSize} visible={!!showCollision} />
             )}
-            <Character
-                groupRef={characterGroup}
-                staminaFillRef={staminaFill}
-                staminaGroupRef={staminaGroup}
-                stunned={visualState.stunned}
-                isCharging={visualState.isCharging}
-                isRolling={visualState.isRolling}
-                isStumbling={visualState.isStumbling}
-                isClimbing={visualState.isClimbing}
-                isRunning={visualState.isRunning}
-                isMoving={visualState.isMoving}
-                moveSpeed={visualState.moveSpeed}
-                isGrounded={visualState.isGrounded}
-                stepUpFactor={visualState.stepUpFactor}
-                landingFactor={visualState.landingFactor}
-                stunTimerRef={stunTimer}
-                rollTimerRef={rollTimer}
-                staminaRef={stamina}
-                currentSurface={visualState.currentSurface}
-                fallDistance={visualState.fallDistance}
-                justLanded={visualState.justLanded}
-                overlayContent={null}
-            />
+            {status !== GameStatus.IDLE && (
+                <Character
+                    groupRef={characterGroup}
+                    staminaFillRef={staminaFill}
+                    staminaGroupRef={staminaGroup}
+                    stunned={visualState.stunned}
+                    isCharging={visualState.isCharging}
+                    isRolling={visualState.isRolling}
+                    isStumbling={visualState.isStumbling}
+                    isClimbing={visualState.isClimbing}
+                    isRunning={visualState.isRunning}
+                    isMoving={visualState.isMoving}
+                    moveSpeed={visualState.moveSpeed}
+                    isGrounded={visualState.isGrounded}
+                    stepUpFactor={visualState.stepUpFactor}
+                    landingFactor={visualState.landingFactor}
+                    stunTimerRef={stunTimer}
+                    rollTimerRef={rollTimer}
+                    staminaRef={stamina}
+                    currentSurface={visualState.currentSurface}
+                    fallDistance={visualState.fallDistance}
+                    justLanded={visualState.justLanded}
+                    isHiding={visualState.isHiding}
+                    overlayContent={null}
+                />
+            )}
         </group>
     );
 };

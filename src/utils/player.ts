@@ -32,7 +32,9 @@ export const updatePlayerPhysics = (
     stumbleTimer: React.MutableRefObject<number>,
     stumbleVelocityRef: React.MutableRefObject<THREE.Vector3>,
     camera: THREE.Camera, // ADDED: Camera for relative movement
-    lastFallDistRef: React.MutableRefObject<number>
+    lastFallDistRef: React.MutableRefObject<number>,
+    riverOrientation: number,
+    riverFlow: number
 ) => {
 
     // 1. Calculate Input Direction Relative to Camera
@@ -162,7 +164,7 @@ export const updatePlayerPhysics = (
             attemptRoll: jumpBufferTimer.current > 0
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
-        world: { oGrid: occupancyGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize }
+        world: { oGrid: occupancyGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, riverOrientation, riverFlow }
     };
 
     // 4. Run Physics Engine

@@ -23,8 +23,9 @@ export interface GameSettings {
     highrise: number;
     factory: number;
   };
-  lockedRatios: string[];
+
   riverWidth: number;
+  riverFlow: number;
   cameraZoom: number;
   cameraFollow: boolean;
 }

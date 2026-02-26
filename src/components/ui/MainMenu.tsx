@@ -12,7 +12,7 @@ interface MainMenuProps {
     resetToMenu: () => void;
     updateSetting: (key: keyof GameSettings, value: any) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
-    toggleLock: (key: string) => void;
+
     resetRatios: () => void;
     showWireframe?: boolean;
     setShowWireframe?: (val: boolean) => void;
@@ -21,7 +21,7 @@ interface MainMenuProps {
 
 export const MainMenu: React.FC<MainMenuProps> = ({
     gameState, debugMode, setDebugMode, startGame, playAgain, nextRound, resetToMenu,
-    updateSetting, updateRatio, toggleLock, resetRatios, showWireframe, setShowWireframe, setIsEditing
+    updateSetting, updateRatio, resetRatios, showWireframe, setShowWireframe, setIsEditing
 }) => {
     if (gameState.status !== GameStatus.IDLE && gameState.status !== GameStatus.GAME_OVER && gameState.status !== GameStatus.ROUND_OVER) {
         return null;
@@ -54,7 +54,6 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                         settings={gameState.settings}
                         updateSetting={updateSetting}
                         updateRatio={updateRatio}
-                        toggleLock={toggleLock}
                         resetRatios={resetRatios}
                         showWireframe={showWireframe}
                         setShowWireframe={setShowWireframe}

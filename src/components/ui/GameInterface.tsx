@@ -22,14 +22,14 @@ interface GameInterfaceProps {
     resetToMenu: () => void;
     updateSetting: (key: keyof GameSettings, value: any) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
-    toggleLock: (key: string) => void;
+
     resetRatios: () => void;
     showMission: boolean;
     setIsEditing: (val: boolean) => void;
 }
 
 export const GameInterface: React.FC<GameInterfaceProps> = ({
-    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, toggleLock, resetRatios, showMission, setIsEditing
+    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing
 }) => {
 
     return (
@@ -76,7 +76,6 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
                 resetToMenu={resetToMenu}
                 updateSetting={updateSetting}
                 updateRatio={updateRatio}
-                toggleLock={toggleLock}
                 resetRatios={resetRatios}
                 showWireframe={showWireframe}
                 setShowWireframe={setShowWireframe}
