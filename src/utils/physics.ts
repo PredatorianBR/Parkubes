@@ -2,19 +2,19 @@
 import * as THREE from 'three';
 
 // --- CONSTANTS ---
-export const GRID_SCALE = 1; // 1 Grid cell per 1 World Unit (1.0m precision)
+export const GRID_SCALE = 1;
 
 export const GRAVITY = 60.0;
 export const JUMP_FORCE = 18.0;
 export const CLIMB_SPEED = 12.0;
-export const MOVE_SPEED_BASE = 16.0;
+export const MOVE_SPEED_BASE = 12.0;
 export const ROLL_SPEED_MULT = 1.3;
 export const CLIMB_THRESHOLD = 0.6;
 export const MAX_CLIMB_HEIGHT = 1000.0;
 export const PLAYER_HEIGHT = 4.0;
 export const GROUND_DEPTH = 4.0; // Terreno e Rio com profundidade 4
 export const FALL_DAMAGE_HEIGHT = 7.0;
-export const PLAYER_RADIUS = 0.8; // Slightly reduced to fit better in 0.5m gaps if needed
+export const PLAYER_RADIUS = 0.8;
 
 // Water Physics
 export const WATER_DEPTH_LEVEL = -2.6; // Nível de flutuação padrão (pés do boneco)
@@ -38,7 +38,6 @@ export const NOISE_LAND = 12.0;
 
 // --- HELPERS ---
 
-// UPDATED: Now maps to high-resolution grid
 export const worldToIndex = (val: number, halfSize: number, worldSize: number) =>
     THREE.MathUtils.clamp(Math.floor((val + halfSize) * GRID_SCALE), 0, (worldSize * GRID_SCALE) - 1);
 
@@ -494,7 +493,7 @@ export const updateEntityPhysics = (
 
     // --- FINAL CURRENT FLOW APPLICATION ---
     if (isInWater && world.riverOrientation !== -1 && !next.isClimbing) {
-        const flowStrength = world.riverFlow * waterRatio;
+        const flowStrength = world.riverFlow * waterRatio * 3.0;
         const margin = PLAYER_RADIUS + 0.1;
         const minBound = -halfSize + margin;
         const maxBound = halfSize - margin;

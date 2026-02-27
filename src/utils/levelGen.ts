@@ -150,14 +150,14 @@ export const generateCityLevel = (
 
         riverOrientation = startEdge;
 
-        // Randomize width: 50% to 150% of base width, snapped to integers 1-6
-        const baseWidth = settings.riverWidth;
-        const randomWidth = Math.round(THREE.MathUtils.clamp(baseWidth * (0.5 + Math.random() * 1.0), 1, 6));
+        // Width: setting is the maximum, minimum is max - 2 (but at least 1)
+        const maxWidth = settings.riverWidth;
+        const minWidth = Math.max(1, maxWidth - 2);
 
         // Walk from Start to Finish
         const maxSteps = size * 3;
         for (let i = 0; i < maxSteps; i++) {
-            const width = Math.floor(Math.random() * (randomWidth * 0.5)) + randomWidth;
+            const width = minWidth + Math.floor(Math.random() * (maxWidth - minWidth + 1));
             const rWidth = Math.round(width / 2);
 
             for (let wx = -rWidth; wx < rWidth; wx++) {

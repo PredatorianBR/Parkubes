@@ -1,6 +1,6 @@
 
 import React, { useRef } from 'react';
-import { Billboard, Html } from '@react-three/drei';
+import { Html } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -16,10 +16,10 @@ interface CharacterProps {
     isClimbing?: boolean;
     isRunning?: boolean;
     isMoving?: boolean;
-    moveSpeed?: number; // Added
-    isGrounded?: boolean; // Added Prop
+    moveSpeed?: number;
+    isGrounded?: boolean;
     landingFactor?: number;
-    stepUpFactor?: number; // 0 to 1
+    stepUpFactor?: number;
     stunTimerRef?: React.MutableRefObject<number>;
     rollTimerRef?: React.MutableRefObject<number>;
     isHiding?: boolean;
@@ -40,7 +40,7 @@ const ParticleEffects: React.FC<{
     stunned: boolean;
     fallDistance: number;
     justLanded: boolean;
-    isTiredBreathingRef?: React.MutableRefObject<boolean>; // Changed to Ref
+    isTiredBreathingRef?: React.MutableRefObject<boolean>;
 }> = ({ isRunning, isMoving, isGrounded, currentSurface, staminaRef, landingFactor, playerGroup, stunned, fallDistance, justLanded, isTiredBreathingRef }) => {
     const meshRef = useRef<THREE.InstancedMesh>(null!);
     const particles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; color: THREE.Color; scale: number; active: boolean }[]>([]);
@@ -71,10 +71,10 @@ const ParticleEffects: React.FC<{
         }
     };
 
-    const prevLanding = useRef(0);
+
     const wasInWater = useRef(false);
     const wetTimer = useRef(0);
-    const lastBreathCycle = useRef(0); // Only keep cycle tracker
+    const lastBreathCycle = useRef(0);
 
     useFrame((state, delta) => {
         if (!meshRef.current || !playerGroup.current) return;
@@ -108,7 +108,7 @@ const ParticleEffects: React.FC<{
                 spawnPos,
                 new THREE.Vector3(0, -3, 0),
                 '#38bdf8',
-                0.4, // Increased from 0.25
+                0.4,
                 0.5
             );
         }
@@ -117,7 +117,7 @@ const ParticleEffects: React.FC<{
         if (justLanded) {
             if (fallDistance > 1.5) {
                 let count = currentSurface === 1 ? 15 : 12;
-                let scaleBase = 0.25; // Increased from 0.1
+                let scaleBase = 0.25;
                 let spread = 0.8;
                 let color = '#a8a29e';
 
@@ -127,7 +127,7 @@ const ParticleEffects: React.FC<{
 
                 if (stunned) {
                     count = 30;
-                    scaleBase = 0.45; // Increased from 0.25
+                    scaleBase = 0.45;
                     spread = 1.2;
                     color = '#78716c';
                 }
@@ -146,7 +146,6 @@ const ParticleEffects: React.FC<{
                 }
             }
         }
-        prevLanding.current = landingFactor;
 
         // 4. Water Splash & Dripping
         const playerY = playerGroup.current.position.y;
@@ -205,7 +204,7 @@ const ParticleEffects: React.FC<{
                     spawnPos,
                     forward.clone().multiplyScalar(1.2).add(new THREE.Vector3(0, 0.5, 0)),
                     '#f3f4f6',
-                    0.4 + Math.random() * 0.2, // Increased from 0.15 + 0.1
+                    0.4 + Math.random() * 0.2,
                     0.8
                 );
             }
@@ -226,7 +225,7 @@ const ParticleEffects: React.FC<{
                     p.active = false;
                     dummy.scale.set(0, 0, 0);
                 } else {
-                    const s = p.scale * (p.life / 0.5); // Fade out scale
+                    const s = p.scale * (p.life / 0.5);
                     dummy.position.copy(p.pos);
                     dummy.scale.set(s, s, s);
                     dummy.rotation.set(Math.random(), Math.random(), Math.random());
@@ -263,8 +262,8 @@ export const Character: React.FC<CharacterProps> = ({
     isClimbing = false,
     isRunning = false,
     isMoving = false,
-    moveSpeed = 0, // Default 0
-    isGrounded = true, // Default true
+    moveSpeed = 0,
+    isGrounded = true,
     landingFactor = 0,
     stepUpFactor = 0,
     stunTimerRef,
@@ -286,9 +285,12 @@ export const Character: React.FC<CharacterProps> = ({
 
     // Animation State Refs
     const idleTimer = useRef(0);
-    const walkPhase = useRef(0); // For movement sync
-    const baseYRef = useRef(0); // Track base height to avoid infinite growth
-    const idleState = useRef(0); // 0: Breath, 1: Look, 2: Shift
+    const walkPhase = useRef(0);
+    const baseYRef = useRef(0);
+    const baseRotX = useRef(0);
+    const baseRotZ = useRef(0);
+    const baseRotYModel = useRef(0);
+    const idleState = useRef(0);
     const idleTargetRotY = useRef(0);
 
     // Tired Breath State
@@ -395,58 +397,69 @@ export const Character: React.FC<CharacterProps> = ({
         let targetRotZ = bodyRotZ;
         let targetZOffset = 0;
         let targetPivotY = 0;
-        let rotLerpSpeed = delta * 15; // Initialize early for use in movement block
+        let rotLerpSpeed = delta * 15;
 
-        if (isStumbling) {
-            // Logic handled below
-        } else if (isHiding) {
-            // Logic handled below
-        }
-
-        // --- REWRITTEN MOVEMENT SYSTEM (PENGUIN STYLE) ---
+        // --- MOVEMENT ANIMATION ---
         if (isMoving && isGrounded && !stunned && !isRolling) {
-            // Calculate a normalized speed factor (0 to ~1.8)
-            const speedFact = Math.min(moveSpeed / 6, 1.8);
-            const freq = isRunning ? 18 : 12;
-            walkPhase.current += delta * freq * speedFact;
+            const speedFact = Math.min(moveSpeed / 6, 1.5);
+            const inWater = currentSurface === 1;
 
-            const t = walkPhase.current;
+            if (inWater) {
+                // --- SWIMMING ANIMATION ---
+                const swimFreq = 8;
+                walkPhase.current += delta * swimFreq * speedFact;
+                const t = walkPhase.current;
 
-            // 1. Vertical Bobbing (Bounce while walking)
-            // Using abs(sin) for a bounce effect against the ground
-            bobY = Math.abs(Math.sin(t)) * (isRunning ? 0.7 : 0.4);
+                // Body tilts forward as if swimming
+                targetRotX = 0.5 * speedFact;
 
-            // 2. Waddle Sway (Extreme Z-axis tilt)
-            // Changed to sin to start at neutral (0) instead of max (1)
-            targetRotZ = Math.sin(t) * (isRunning ? 0.5 : 0.35);
+                // Kicking motion: subtle side-to-side body roll
+                targetRotZ = Math.sin(t) * 0.05;
 
-            // 3. Side Shift (Physical weight transfer on X)
-            // Changed to sin to sync with sway and start at neutral
-            const sideShift = Math.sin(t) * (isRunning ? 0.4 : 0.25);
-            if (modelGroup.current) {
-                modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, sideShift, delta * 20);
+                // Vertical bob from kicking (main motion)
+                bobY = Math.sin(t * 2) * 0.12;
+
+                // Slight yaw wiggle
+                targetRotY = Math.sin(t) * 0.03;
+                headRotY = -targetRotY * 1.0;
+            } else {
+                // --- GROUND WALK/RUN ANIMATION (STEP/HOP STYLE) ---
+                const freq = isRunning ? 16 : 10;
+                walkPhase.current += delta * freq * speedFact;
+                const t = walkPhase.current;
+
+                // 1. Vertical hop
+                const rawDip = Math.pow(Math.abs(Math.cos(t)), 3);
+                bobY = (1 - rawDip) * (isRunning ? 0.7 : 0.35);
+
+                // 2. Landing squash
+                moveSquash = rawDip * (isRunning ? 0.08 : 0.04);
+
+                // 3. Waddle sway (side-to-side tilt)
+                targetRotZ = Math.sin(t) * (isRunning ? 0.2 : 0.12);
+
+                // 4. Side shift for weight transfer
+                const sideShift = Math.sin(t) * (isRunning ? 0.2 : 0.1);
+                if (modelGroup.current) {
+                    modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, sideShift, delta * 18);
+                }
+
+                // 5. Forward lean
+                targetRotX = (isRunning ? 0.22 : 0.12) * speedFact;
+
+                // 6. Horizontal wiggle
+                targetRotY = Math.sin(t) * (isRunning ? 0.15 : 0.07);
+
+                // 7. Head counter-sway
+                headRotY = -targetRotY * 1.2;
             }
 
-            // 4. Forward Lean (Rotation X)
-            targetRotX = (isRunning ? 0.5 : 0.2) * speedFact;
-
-            // 5. Horizontal Wiggle (Rotation Y)
-            targetRotY = Math.sin(t) * (isRunning ? 0.35 : 0.2);
-
-            // 6. Squash & Stretch (Synced with impact at t=n*PI)
-            // Changed to positive Cosine so that t=0 (impact) is max squash
-            moveSquash = Math.cos(t * 2) * (isRunning ? 0.25 : 0.15);
-
-            // Head response to the waddle
-            headRotY = -targetRotY * 1.5;
-
-            rotLerpSpeed = delta * 25;
+            rotLerpSpeed = delta * 22;
         } else {
-            // Reset positions and reset phase when stopping
             if (modelGroup.current) {
-                modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, 0, delta * 15);
+                modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, 0, delta * 12);
             }
-            walkPhase.current = THREE.MathUtils.lerp(walkPhase.current, 0, delta * 5);
+            walkPhase.current = THREE.MathUtils.lerp(walkPhase.current, 0, delta * 6);
         }
 
         // Combine Squash components
@@ -516,20 +529,31 @@ export const Character: React.FC<CharacterProps> = ({
 
         // Floating Animation (Water)
         let floatingY = 0;
+        let floatingRotX = 0;
+        let floatingRotZ = 0;
         if (currentSurface === 1 && isGrounded && !isClimbing && !isRolling && !stunned) {
-            floatingY = Math.sin(time * 2.0) * 0.06;
+            // Vertical bob - gentle up/down (main motion)
+            floatingY = Math.sin(time * 1.8) * 0.1;
+            // Side-to-side tilt (very subtle)
+            floatingRotZ = Math.sin(time * 1.2) * 0.01;
+            // Forward/back rock (very subtle)
+            floatingRotX = Math.sin(time * 1.5 + 1.0) * 0.01;
         }
 
         // Apply Container Rotation and Position
         if (modelGroup.current) {
             if (applyRoll) {
                 modelGroup.current.rotation.x = targetRotX;
+                baseRotX.current = targetRotX;
                 baseYRef.current = THREE.MathUtils.lerp(baseYRef.current, targetPivotY, delta * 20);
             } else {
-                if (modelGroup.current.rotation.x > Math.PI) modelGroup.current.rotation.x -= Math.PI * 2;
-                modelGroup.current.rotation.x = THREE.MathUtils.lerp(modelGroup.current.rotation.x, targetRotX, rotLerpSpeed);
-                modelGroup.current.rotation.z = THREE.MathUtils.lerp(modelGroup.current.rotation.z, targetRotZ, rotLerpSpeed);
-                modelGroup.current.rotation.y = THREE.MathUtils.lerp(modelGroup.current.rotation.y, targetRotY, rotLerpSpeed);
+                if (baseRotX.current > Math.PI) baseRotX.current -= Math.PI * 2;
+                baseRotX.current = THREE.MathUtils.lerp(baseRotX.current, targetRotX, rotLerpSpeed);
+                baseRotZ.current = THREE.MathUtils.lerp(baseRotZ.current, targetRotZ, rotLerpSpeed);
+                baseRotYModel.current = THREE.MathUtils.lerp(baseRotYModel.current, targetRotY, rotLerpSpeed);
+                modelGroup.current.rotation.x = baseRotX.current + floatingRotX;
+                modelGroup.current.rotation.z = baseRotZ.current + floatingRotZ;
+                modelGroup.current.rotation.y = baseRotYModel.current;
                 baseYRef.current = THREE.MathUtils.lerp(baseYRef.current, targetPivotY, rotLerpSpeed);
             }
 
@@ -559,20 +583,20 @@ export const Character: React.FC<CharacterProps> = ({
         }
     });
 
-    // Reduced width/depth from 0.8 to 0.7 to minimize wall clipping during rotation
+
     return (
         <>
             <ParticleEffects
-                isRunning={isRunning || false}
-                isMoving={isMoving || false}
-                isGrounded={isGrounded || false}
-                currentSurface={currentSurface || 0}
+                isRunning={isRunning}
+                isMoving={isMoving}
+                isGrounded={isGrounded}
+                currentSurface={currentSurface}
                 staminaRef={staminaRef}
-                landingFactor={landingFactor || 0}
+                landingFactor={landingFactor}
                 playerGroup={groupRef}
-                stunned={stunned || false}
-                fallDistance={fallDistance || 0}
-                justLanded={justLanded || false}
+                stunned={stunned}
+                fallDistance={fallDistance}
+                justLanded={justLanded}
                 isTiredBreathingRef={isTiredBreathing}
             />
             <group ref={groupRef}>

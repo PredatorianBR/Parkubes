@@ -654,7 +654,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const stumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
     const landingAnimTimer = useRef(0);
     const lastFallDist = useRef(0);
-    const farmStationaryTimer = useRef(0);
+    const prevPlayerPos = useRef(new THREE.Vector3(0, 10, 0));
+    const smoothedMoveSpeed = useRef(0);
 
     // Character Refs for direct manipulation (if needed)
     const characterGroup = useRef<THREE.Group>(null!);
@@ -829,10 +830,13 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
         // --- HIDING LOGIC ---
         let isHiding = false;
-        farmStationaryTimer.current = 0; // Reset timer as it's no longer used
 
-        const horizontalVel = new THREE.Vector2(playerVel.current.x, playerVel.current.z);
-        const currentMoveSpeed = horizontalVel.length();
+        const dx = playerPos.current.x - prevPlayerPos.current.x;
+        const dz = playerPos.current.z - prevPlayerPos.current.z;
+        const rawMoveSpeed = dt > 0 ? Math.sqrt(dx * dx + dz * dz) / dt : 0;
+        smoothedMoveSpeed.current = THREE.MathUtils.lerp(smoothedMoveSpeed.current, rawMoveSpeed, dt * 10);
+        const currentMoveSpeed = smoothedMoveSpeed.current;
+        prevPlayerPos.current.copy(playerPos.current);
 
         // Sync Visual State
         const newVisualState = {
