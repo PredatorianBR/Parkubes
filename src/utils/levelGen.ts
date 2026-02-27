@@ -481,14 +481,15 @@ export const generateCityLevel = (
             }
         }
 
-        let height = 6;
+        const floorH = PLAYER_HEIGHT * 1.5; // One floor = 1.5 characters
+        let height = floorH;
         if (type === 'house') {
-            height = (Math.floor(Math.random() * 3) + 3) * 2;
+            height = (Math.floor(Math.random() * 2) + 1) * floorH; // 1-2 floors
         } else if (type === 'factory') {
-            height = (Math.floor(Math.random() * 4) + 4) * 2;
+            height = (Math.floor(Math.random() * 2) + 1) * floorH; // 1-2 floors
         } else {
-            height = (Math.floor(Math.random() * 7) + 5) * 2;
-            if (height > 16 && (fillW < 4 || fillD < 4)) height = 16;
+            height = (Math.floor(Math.random() * 5) + 2) * floorH; // 2-6 floors
+            if (height > 3 * floorH && (fillW < 4 || fillD < 4)) height = 3 * floorH;
         }
 
         const canBeL = fillW >= 6 && fillD >= 6;
@@ -562,7 +563,6 @@ export const generateCityLevel = (
         totalBuiltArea += placedCount;
 
         return () => {
-            const floorH = 6;
             const numFloors = Math.max(1, Math.floor(height / floorH));
 
             type WallColumn = {
@@ -681,36 +681,47 @@ export const generateCityLevel = (
                 }
             }
 
-            // Stability: Group by facade and pick the best (most centered) spots first
-            const columnsByFacade: Record<string, WallColumn[]> = {};
+
+            // --- NEW GRID-BASED DECORATION LOGIC ---
+            type Facade = {
+                id: string;
+                normal: { dx: number, dz: number };
+                rot: number;
+                rotVec: number[];
+                columns: WallColumn[];
+                width: number;
+                height: number;
+                occupancy: boolean[][];
+            };
+
+            const facades: Facade[] = [];
+            const facadeMap = new Map<string, WallColumn[]>();
             columns.forEach(col => {
-                if (!columnsByFacade[col.facadeId]) columnsByFacade[col.facadeId] = [];
-                columnsByFacade[col.facadeId].push(col);
+                if (!facadeMap.has(col.facadeId)) facadeMap.set(col.facadeId, []);
+                facadeMap.get(col.facadeId)!.push(col);
             });
 
-            // Sort each facade by minDist (descending) 
-            // For EVEN walls, minDist will be equal for two middle blocks. 
-            // We use biasDist to pick a consistent side (the one with slightly more left padding)
-            Object.values(columnsByFacade).forEach(list => {
-                list.sort((a, b) => {
-                    if (b.minDist !== a.minDist) return b.minDist - a.minDist;
-                    // If minDist is equal, it's an even wall middle. 
-                    // Prefer biasDist = 1 (left-leaning middle) for consistent "feel"
-                    return b.biasDist - a.biasDist;
+            facadeMap.forEach((cols, id) => {
+                const parts = id.split(':');
+                const [dx, dz] = parts[0].split(',').map(Number);
+                const n = { dx, dz };
+
+                // Sort columns linearly.
+                const axis = dx !== 0 ? 'worldZ' : 'worldX';
+                cols.sort((a, b) => a[axis] - b[axis]);
+
+                const vH = Math.round(height);
+                facades.push({
+                    id,
+                    normal: n,
+                    rot: cols[0].rot,
+                    rotVec: cols[0].rotVec,
+                    columns: cols,
+                    width: cols.length,
+                    height: vH,
+                    occupancy: Array(cols.length).fill(null).map(() => Array(vH).fill(false))
                 });
             });
-
-            // Create a flat list that alternates between facades to distribute features evenly
-            const distributedColumns: WallColumn[] = [];
-            const facadeIds = Object.keys(columnsByFacade);
-            let maxColsPerFacade = 0;
-            facadeIds.forEach(id => maxColsPerFacade = Math.max(maxColsPerFacade, columnsByFacade[id].length));
-
-            for (let i = 0; i < maxColsPerFacade; i++) {
-                facadeIds.forEach(id => {
-                    if (columnsByFacade[id][i]) distributedColumns.push(columnsByFacade[id][i]);
-                });
-            }
 
             let doorsPlacedCount = 0;
             let indDoorsCount = 0;
@@ -723,210 +734,287 @@ export const generateCityLevel = (
             }
             let hasChimney = false;
 
-            let factoryWallACs = 0;
-            const floorsWithWallAC = new Array(numFloors).fill(false);
+            // Sort facades by width to prioritize large faces for doors/chimneys
+            facades.sort((a, b) => b.width - a.width);
 
-            for (const col of distributedColumns) {
-                const tX = -col.dz;
-                const tZ = col.dx;
-                const colKey = `${col.worldX},${col.worldZ}`;
-                const colKeyL = `${col.worldX + tX},${col.worldZ + tZ}`;
-                const colKeyR = `${col.worldX - tX},${col.worldZ - tZ}`;
-                const colKeyL2 = `${col.worldX + tX * 2},${col.worldZ + tZ * 2}`;
-                const colKeyR2 = `${col.worldX - tX * 2},${col.worldZ - tZ * 2}`;
+            // PASS 1: Doors and Chimneys (High Priority)
+            for (const f of facades) {
+                const isNearMapEdge = f.columns.some(col => Math.abs(col.worldX) > (halfSize - 6) || Math.abs(col.worldZ) > (halfSize - 6));
 
-                if (
-                    globalColumnOccupied.has(colKey) ||
-                    globalColumnOccupied.has(colKeyL) ||
-                    globalColumnOccupied.has(colKeyR) ||
-                    globalColumnOccupied.has(colKeyL2) ||
-                    globalColumnOccupied.has(colKeyR2)
-                ) {
-                    continue;
-                }
+                // Try to place doors on ground level
+                if (doorsPlacedCount < maxDoors) {
+                    let dType: 'standard' | 'industrial' = (type === 'factory' && indDoorsCount < 1) ? 'industrial' : 'standard';
+                    if (type === 'factory' && Math.random() > 0.5) dType = 'industrial';
 
-                let feature: 'door' | 'chimney' | 'window' | 'none' = 'none';
-                const rand = Math.random();
+                    const dW = dType === 'industrial' ? 4 : 2;
+                    const dH = dType === 'industrial' ? 6 : 4;
 
-                if (type === 'house' && !hasChimney && (fillW >= 8 || fillD >= 8) && rand < 0.4) {
-                    feature = 'chimney';
-                } else if (doorsPlacedCount < maxDoors) {
-                    if (type === 'factory') {
-                        if (indDoorsCount < 1) feature = 'door';
-                        else if (stdDoorsCount < 1) feature = 'door';
-                        else if (rand < 0.5) feature = 'door';
-                        else feature = 'window';
-                    } else {
-                        feature = 'door';
+                    // Define possible starting positions with at least 1-voxel pad from sides
+                    const possibleStarts: number[] = [];
+                    for (let x = 1; x <= f.width - dW - 1; x++) possibleStarts.push(x);
+
+                    // Shuffle starts to allow non-centered placement
+                    for (let i = possibleStarts.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [possibleStarts[i], possibleStarts[j]] = [possibleStarts[j], possibleStarts[i]];
                     }
-                } else {
-                    if (assignedWindows.length === 0) {
-                        feature = 'window';
-                    } else {
-                        if (type === 'factory' && rand < 0.15) feature = 'window';
-                        else if (rand < 0.4) feature = 'window';
 
-                        if (height > 4 && feature === 'none') {
-                            feature = 'window';
+                    for (const startX of possibleStarts) {
+                        let canPlace = true;
+                        // Check area for door + 1 voxel pad (sides and top)
+                        for (let x = startX - 1; x <= startX + dW; x++) {
+                            for (let y = 0; y <= dH; y++) {
+                                if (x < 0 || x >= f.width || y >= f.height || f.occupancy[x][y]) { canPlace = false; break; }
+                            }
+                            if (!canPlace) break;
+                            if (globalColumnOccupied.has(`${f.columns[Math.max(0, Math.min(x, f.width - 1))].worldX},${f.columns[Math.max(0, Math.min(x, f.width - 1))].worldZ}`)) { canPlace = false; break; }
+                        }
+
+                        if (canPlace) {
+                            // Mark occupancy including 1-voxel pad
+                            for (let x = startX - 1; x <= startX + dW; x++) {
+                                for (let y = 0; y <= dH; y++) {
+                                    if (x >= 0 && x < f.width && y < f.height) f.occupancy[x][y] = true;
+                                }
+                            }
+                            // Global occupancy for the columns actually used by the door
+                            for (let x = startX; x < startX + dW; x++) {
+                                globalColumnOccupied.add(`${f.columns[x].worldX},${f.columns[x].worldZ}`);
+                            }
+
+                            const doorWorldH = dType === 'industrial' ? 6.0 : 4.4;
+                            const ly = (doorWorldH / 2) - (height / 2);
+
+                            const firstCol = f.columns[startX];
+                            const lastCol = f.columns[startX + dW - 1];
+                            const worldX = (firstCol.worldX + lastCol.worldX) / 2;
+                            const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2;
+
+                            assignedDoors.push({
+                                pos: [(worldX - f.normal.dx * 0.5) - cx + 0.5, ly, (worldZ - f.normal.dz * 0.5) - cz + 0.5],
+                                rot: f.rotVec as [number, number, number],
+                                type: dType
+                            });
+
+                            doorsPlacedCount++;
+                            if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
+
+                            // Windows above doors (with padding check)
+                            for (let fL = 1; fL < numFloors; fL++) {
+                                const worldY = (fL * floorH) + (floorH / 2);
+                                if (worldY + 1.5 < height) { // Ensure floor height permits window + padding
+                                    const yIdx = Math.floor(worldY);
+                                    const winW = dType === 'industrial' ? 2 : 1;
+                                    const winH = 2;
+                                    const sWX = startX + Math.floor((dW - winW) / 2);
+                                    const sWY = yIdx - Math.floor(winH / 2);
+
+                                    let canPlaceAbove = true;
+                                    for (let ix = sWX - 1; ix <= sWX + winW; ix++) {
+                                        for (let iy = sWY - 1; iy <= sWY + winH; iy++) {
+                                            if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                                canPlaceAbove = false; break;
+                                            }
+                                        }
+                                        if (!canPlaceAbove) break;
+                                    }
+
+                                    if (canPlaceAbove) {
+                                        for (let ix = sWX - 1; ix <= sWX + winW; ix++) {
+                                            for (let iy = sWY - 1; iy <= sWY + winH; iy++) f.occupancy[ix][iy] = true;
+                                        }
+                                        assignedWindows.push({
+                                            pos: [(worldX - f.normal.dx * 0.5) - cx + 0.5, worldY - (height / 2), (worldZ - f.normal.dz * 0.5) - cz + 0.5],
+                                            rot: f.rotVec as [number, number, number]
+                                        });
+                                    }
+                                }
+                            }
+                            break; // Door successfully placed for this facade
                         }
                     }
                 }
 
-
-                if (feature === 'none') continue;
-                globalColumnOccupied.add(colKey);
-                globalColumnOccupied.add(colKeyL);
-                globalColumnOccupied.add(colKeyR);
-
-                if (feature === 'door') {
-                    let dType: 'standard' | 'industrial' = 'standard';
-                    if (type === 'factory') {
-                        if (indDoorsCount < 1) dType = 'industrial';
-                        else if (stdDoorsCount < 1) dType = 'standard';
-                        else dType = Math.random() > 0.5 ? 'industrial' : 'standard';
-                    }
-                    const wallKey = `${col.dx},${col.dz}:${dType}`;
-                    if (buildingWallDoorTypes.has(wallKey)) {
-                        feature = 'window';
-                    } else {
-                        buildingWallDoorTypes.add(wallKey);
-                        const doorHeight = dType === 'industrial' ? 6.0 : 4.4;
-                        const ly = (doorHeight / 2) - (height / 2);
-                        const tX = -col.dz;
-                        const tZ = col.dx;
-                        const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                        const lx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
-                        const lz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
-
-                        assignedDoors.push({
-                            pos: [lx, ly, lz],
-                            rot: col.rotVec as [number, number, number],
-                            type: dType
-                        });
-                        globalWallOccupied.add(getPosKey(col.worldX, 1.25, col.worldZ));
-                        // Mark as occupied for doors (standard covers ~2 voxels, industrial ~4)
-                        globalColumnOccupied.add(colKey);
-                        globalColumnOccupied.add(colKeyL);
-                        globalColumnOccupied.add(colKeyR);
-                        if (dType === 'industrial') {
-                            // Extra padding for wide industrial doors
-                            const colKeyL2 = `${col.worldX + tX * 2},${col.worldZ + tZ * 2}`;
-                            const colKeyR2 = `${col.worldX - tX * 2},${col.worldZ - tZ * 2}`;
-                            globalColumnOccupied.add(colKeyL2);
-                            globalColumnOccupied.add(colKeyR2);
+                // Try to place chimney if residential and has space
+                if (type === 'house' && !hasChimney && f.width >= 6 && !isNearMapEdge && Math.random() < 0.4) {
+                    const cW = 2;
+                    const cX = Math.random() > 0.5 ? 1 : f.width - 1 - cW;
+                    if (cX >= 1 && cX + cW <= f.width - 1) {
+                        let canPlace = true;
+                        // Check area for chimney + 1 voxel pad left/right
+                        for (let x = cX - 1; x <= cX + cW; x++) {
+                            for (let y = 0; y < f.height; y++) {
+                                if (x < 0 || x >= f.width || f.occupancy[x][y]) { canPlace = false; break; }
+                            }
+                            if (!canPlace) break;
+                            if (globalColumnOccupied.has(`${f.columns[Math.max(0, Math.min(x, f.width - 1))].worldX},${f.columns[Math.max(0, Math.min(x, f.width - 1))].worldZ}`)) { canPlace = false; break; }
                         }
 
-                        doorsPlacedCount++;
-                        if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
-
-                        for (let f = 1; f < numFloors; f++) {
-                            const worldY = (f * floorH) + 3.0;
-                            if (worldY + 0.5 < height) {
-                                const lyWin = worldY - (height / 2);
-                                const tX = -col.dz;
-                                const tZ = col.dx;
-                                const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                                const lxWin = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
-                                const lzWin = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
-                                assignedWindows.push({
-                                    pos: [lxWin, lyWin, lzWin],
-                                    rot: col.rotVec as [number, number, number]
-                                });
-                                globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
+                        if (canPlace) {
+                            for (let x = cX - 1; x <= cX + cW; x++) {
+                                for (let y = 0; y < f.height; y++) f.occupancy[x][y] = true;
+                                globalColumnOccupied.add(`${f.columns[x].worldX},${f.columns[x].worldZ}`);
                             }
+
+                            hasChimney = true;
+                            const firstCol = f.columns[cX];
+                            const lastCol = f.columns[cX + cW - 1];
+                            const worldX = (firstCol.worldX + lastCol.worldX) / 2;
+                            const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2;
+
+                            const scaleY = height + 2.0;
+                            attachedChimneys.push({
+                                pos: [(worldX - f.normal.dx * 0.5) - cx + 0.5, (scaleY / 2) - (height / 2), (worldZ - f.normal.dz * 0.5) - cz + 0.5],
+                                scale: [2.0, scaleY, 2.0],
+                                color: colors.chimneyResidential,
+                                smoke: Math.random() > 0.5,
+                                rotation: f.rot
+                            });
                         }
-                        continue;
-                    }
-                }
-
-                if (feature === 'window') {
-                    for (let f = 0; f < numFloors; f++) {
-                        const worldY = (f * floorH) + 3.0;
-                        if (worldY + 0.5 < height) {
-                            // CRITICAL FIX: Check if ground floor is already occupied by a door/detail
-                            if (f === 0 && globalWallOccupied.has(getPosKey(col.worldX, 1.25, col.worldZ))) {
-                                continue;
-                            }
-
-                            const ly = worldY - (height / 2);
-                            const tX = -col.dz;
-                            const tZ = col.dx;
-                            const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                            const lx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
-                            const lz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
-
-                            let canPlaceAC = true;
-                            if (Math.random() < 0.2 && f > 0) {
-                                if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
-                                if ((type === 'house' || type === 'highrise') && floorsWithWallAC[f]) canPlaceAC = false;
-                            } else {
-                                canPlaceAC = false;
-                            }
-
-                            if (canPlaceAC) {
-                                // Wall AC Size Increased: 2.5 width, 1.8 height, 1.2 depth
-                                // To be mounted on wall (depth 1.2, half is 0.6):
-                                // AirCenter distance to WallSurface is 0.5.
-                                // AC Center should be WallSurface + HalfDepth (0.6) = AirCenter - 0.5 + 0.6 = AirCenter + 0.1.
-                                const tX = -col.dz;
-                                const tZ = col.dx;
-                                // No lateral shift for wall ACs - 3-unit width (odd) must stay centered on grid cell (x.5)
-                                const lxAC = (col.worldX + 0.5) - cx;
-                                const lzAC = (col.worldZ + 0.5) - cz;
-
-                                assignedACs.push({
-                                    pos: [lxAC, ly, lzAC],
-                                    scale: [3, 2, 1], // Wall AC size: 3 wide, 2 tall, 1 deep
-                                    color: type === 'house' ? colors.acResidential : colors.acIndustrial,
-                                    rotation: col.rot,
-                                    type: 'wall'
-                                });
-
-                                if (type === 'factory') factoryWallACs++;
-                                if (type === 'house' || type === 'highrise') floorsWithWallAC[f] = true;
-                            } else {
-                                assignedWindows.push({
-                                    pos: [lx, ly, lz],
-                                    rot: col.rotVec as [number, number, number]
-                                });
-                            }
-                            globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                        }
-                    }
-                }
-
-                else if (feature === 'chimney') {
-                    hasChimney = true;
-                    const faceX = col.worldX;
-                    const faceZ = col.worldZ;
-                    const scaleY = height + 2.0;
-                    const ly = (scaleY / 2) - (height / 2);
-                    const tX = -col.dz;
-                    const tZ = col.dx;
-                    const shimneyShift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0.5;
-
-                    const offsetX = -col.dx * 0.5;
-                    const offsetZ = -col.dz * 0.5;
-
-                    attachedChimneys.push({
-                        pos: [(faceX + offsetX) - cx + 0.5 + tX * shimneyShift, ly, (faceZ + offsetZ) - cz + 0.5 + tZ * shimneyShift],
-                        scale: [2.0, scaleY, 2.0],
-                        color: colors.chimneyResidential,
-                        smoke: Math.random() > 0.5,
-                        rotation: col.rot
-                    });
-
-                    for (let f = 0; f < numFloors; f++) {
-                        const worldY = (f * floorH) + 3.0;
-                        if (worldY < height) globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                    }
-
-                    // Mark cells across the street to prevent opposing chimneys from blocking the street
-                    for (let step = 1; step <= 3; step++) {
-                        globalColumnOccupied.add(`${col.worldX + col.dx * step},${col.worldZ + col.dz * step}`);
                     }
                 }
             }
+
+            // PASS 2: Windows and Wall ACs (Deterministic Grid)
+            const winInterval = type === 'factory' ? 6 : (type === 'highrise' ? 3 : 4);
+            const floorsWithWallAC = new Array(numFloors).fill(false);
+            let factoryWallACs = 0;
+            let groundFloorHasWindow = false;
+
+            for (const f of facades) {
+                for (let level = 0; level < numFloors; level++) {
+                    const worldY = (level * floorH) + (floorH / 2);
+                    if (worldY + 1 >= height) continue;
+
+                    const groundY = Math.floor(worldY);
+                    const startOffset = Math.floor((f.width % winInterval) / 2) || 2;
+
+                    for (let x = startOffset; x < f.width - 2; x += winInterval) {
+                        if (f.occupancy[x][groundY]) continue;
+
+                        let placeAC = false;
+                        if (Math.random() < 0.2 && level > 0) {
+                            if (type === 'factory' && factoryWallACs < 1) placeAC = true;
+                            if ((type === 'house' || type === 'highrise') && !floorsWithWallAC[level]) placeAC = true;
+                        }
+
+                        if (placeAC) {
+                            const acW = 3;
+                            const acH = 2;
+                            const sAX = x - Math.floor(acW / 2);
+                            const sAY = groundY - Math.floor(acH / 2);
+
+                            let canPlace = true;
+                            // Check area for AC + 1 voxel pad
+                            for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
+                                for (let iy = sAY - 1; iy <= sAY + acH; iy++) {
+                                    if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                        canPlace = false; break;
+                                    }
+                                }
+                                if (!canPlace) break;
+                            }
+
+                            if (canPlace) {
+                                for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
+                                    for (let iy = sAY - 1; iy <= sAY + acH; iy++) f.occupancy[ix][iy] = true;
+                                }
+
+                                const col = f.columns[x];
+                                assignedACs.push({
+                                    pos: [col.worldX + 0.5 - cx, worldY - (height / 2), col.worldZ + 0.5 - cz],
+                                    scale: [3, 2, 1],
+                                    color: type === 'house' ? colors.acResidential : colors.acIndustrial,
+                                    rotation: f.rot,
+                                    type: 'wall'
+                                });
+                                if (type === 'factory') factoryWallACs++;
+                                floorsWithWallAC[level] = true;
+                            }
+                        } else {
+                            // Place Window
+                            const winW = type === 'factory' ? 4 : 1;
+                            const winH = type === 'factory' ? 2 : 1;
+
+                            const sWinX = x - Math.floor(winW / 2);
+                            const sWinY = groundY - Math.floor(winH / 2);
+
+                            let canPlaceWin = true;
+                            for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                                for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
+                                    if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                        canPlaceWin = false; break;
+                                    }
+                                }
+                                if (!canPlaceWin) break;
+                            }
+
+                            if (canPlaceWin) {
+                                for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                                    for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) f.occupancy[ix][iy] = true;
+                                }
+
+                                const firstCol = f.columns[Math.max(0, sWinX)];
+                                const lastCol = f.columns[Math.min(f.width - 1, sWinX + winW - 1)];
+                                const worldX = (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
+                                const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
+                                const worldYWin = (sWinY + (winH / 2)) - (height / 2);
+
+                                assignedWindows.push({
+                                    pos: [worldX - cx, worldYWin, worldZ - cz],
+                                    rot: f.rotVec as [number, number, number]
+                                });
+                                if (level === 0) groundFloorHasWindow = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Final Ground Floor Check: Force at least one window if building results empty on level 0
+            if (!groundFloorHasWindow && facades.length > 0) {
+                const levelIdx = 0;
+                const worldY = (levelIdx * floorH) + (floorH / 2);
+                const groundY = Math.floor(worldY);
+                const winW = type === 'factory' ? 4 : 1;
+                const winH = type === 'factory' ? 2 : 1;
+
+                for (const f of facades) {
+                    if (worldY + 1 >= height) break;
+                    for (let x = 1; x <= f.width - winW - 1; x++) {
+                        const sWinX = x;
+                        const sWinY = groundY - Math.floor(winH / 2);
+                        let canPlace = true;
+                        for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                            for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
+                                if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                    canPlace = false; break;
+                                }
+                            }
+                            if (!canPlace) break;
+                        }
+                        if (canPlace) {
+                            for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                                for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) f.occupancy[ix][iy] = true;
+                            }
+                            const firstCol = f.columns[sWinX];
+                            const lastCol = f.columns[sWinX + winW - 1];
+                            const wX = (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
+                            const wZ = (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
+                            const wY = (sWinY + (winH / 2)) - (height / 2);
+                            assignedWindows.push({
+                                pos: [wX - cx, wY, wZ - cz],
+                                rot: f.rotVec as [number, number, number]
+                            });
+                            groundFloorHasWindow = true; break;
+                        }
+                    }
+                    if (groundFloorHasWindow) break;
+                }
+            }
+
+
+
 
             if (type === 'factory') {
                 // UPDATED: Increase count to up to 3 objects
@@ -1014,7 +1102,11 @@ export const generateCityLevel = (
 
                     if (!overlap) {
                         const isChimney = Math.random() > 0.6;
-                        if (isChimney) {
+                        const worldX = cx + checkX;
+                        const worldZ = cz + checkZ;
+                        const isNearMapEdge = Math.abs(worldX) > (halfSize - 6) || Math.abs(worldZ) > (halfSize - 6);
+
+                        if (isChimney && !isNearMapEdge) {
                             // Chimney is always 2x2. Verify that 2x2 footprint also clears cutMask.
                             let chimneyOverlap = false;
                             if (isLShape) {

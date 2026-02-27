@@ -12,6 +12,7 @@ export const ROLL_SPEED_MULT = 1.3;
 export const CLIMB_THRESHOLD = 0.6;
 export const MAX_CLIMB_HEIGHT = 1000.0;
 export const PLAYER_HEIGHT = 4.0;
+export const FLOOR_HEIGHT = PLAYER_HEIGHT * 1.5; // One floor = 6.0 units
 export const GROUND_DEPTH = 4.0; // Terreno e Rio com profundidade 4
 export const FALL_DAMAGE_HEIGHT = 7.0;
 export const PLAYER_RADIUS = 0.8;

@@ -50,7 +50,7 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
     const frameDepth = 0.08;
     const frameThickness = 0.06;
 
-    const w = type === 'residential' ? size : 1.6;
+    const w = type === 'residential' ? size : 2.0;
     const h = type === 'residential' ? size : 1.0;
 
     const Frame = ({ w, h }: { w: number, h: number }) => {

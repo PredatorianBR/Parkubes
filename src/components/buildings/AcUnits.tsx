@@ -1,6 +1,7 @@
 import React from 'react';
 import * as THREE from 'three';
 import { GridMaterial } from '../GridMaterial';
+import { FLOOR_HEIGHT } from '../../utils/physics';
 
 export const WallAC: React.FC<{ position: THREE.Vector3, scale: [number, number, number], color: string, rotation?: number, showGrid?: boolean }> = ({ position, scale, color, rotation = 0, showGrid = false }) => {
     // scale[0] = width, scale[1] = height, scale[2] = depth
@@ -9,7 +10,7 @@ export const WallAC: React.FC<{ position: THREE.Vector3, scale: [number, number,
             <group position={[0, 0, 0]}>
                 <mesh castShadow receiveShadow position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[scale[0], scale[1], scale[2]]} />
-                    <GridMaterial color={color} showGrid={showGrid} />
+                    <GridMaterial color={color} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
                 </mesh>
                 {/* Fan detail - Scaled based on minimum dimension */}
                 <mesh position={[0, 0, scale[2] / 2 + 0.01]} userData={{ type: 'detail-fade' }}>
@@ -54,7 +55,7 @@ export const RoofAC: React.FC<{ position: THREE.Vector3, scale: [number, number,
         <group position={position} rotation={[0, rotation, 0]}>
             <mesh castShadow receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[w, h, d]} />
-                <GridMaterial color={color} showGrid={showGrid} />
+                <GridMaterial color={color} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </mesh>
 
             {useDoubleFan ? (

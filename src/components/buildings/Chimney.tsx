@@ -2,6 +2,7 @@ import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { GridMaterial } from '../GridMaterial';
+import { FLOOR_HEIGHT } from '../../utils/physics';
 
 export const Chimney: React.FC<{ position: THREE.Vector3; scale: [number, number, number]; color: string; smoke?: boolean; rotation?: number; isIndustrial?: boolean; showGrid?: boolean }> = ({ position, scale, color, smoke = true, rotation = 0, isIndustrial = false, showGrid = false }) => {
     const particlesRef = useRef<THREE.InstancedMesh>(null!);
@@ -58,7 +59,7 @@ export const Chimney: React.FC<{ position: THREE.Vector3; scale: [number, number
                 ) : (
                     <boxGeometry args={scale} />
                 )}
-                <GridMaterial color={color} roughness={0.7} metalness={isIndustrial ? 0.3 : 0} showGrid={showGrid} />
+                <GridMaterial color={color} roughness={0.7} metalness={isIndustrial ? 0.3 : 0} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </mesh>
 
             {/* Industrial details: Metal rings and base */}

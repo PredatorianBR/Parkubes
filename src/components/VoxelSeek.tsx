@@ -8,7 +8,7 @@ import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
 import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
-import { worldToIndex, GRID_SCALE } from '../utils/physics';
+import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT } from '../utils/physics';
 import { VoxelGround } from './environment/VoxelGround';
 import { VoxelWater } from './environment/VoxelWater';
 import { WheatField } from './environment/WheatField';
@@ -143,7 +143,7 @@ const VoxelRuins: React.FC<{ ruins: VoxelObject[], showGrid?: boolean }> = React
         <group>
             <instancedMesh ref={meshRef} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
-                <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} />
+                <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </instancedMesh>
             <instancedMesh ref={meshTop1Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
@@ -286,7 +286,9 @@ const Building: React.FC<{
     isCooking?: boolean;
     showWireframe?: boolean;
     showGrid?: boolean;
-}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], lShape, windows = [], doors = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false }) => {
+    status: GameStatus;
+    debugMode?: boolean;
+}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], lShape, windows = [], doors = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
     const groupRef = useRef<THREE.Group>(null!);
     const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
@@ -422,7 +424,33 @@ const Building: React.FC<{
             gridShaderRef.current.uniforms.showGrid.value = showGrid ? 1.0 : 0.0;
         }
 
-        // SKIP occlusion check for buildings that are definitely not blocking the player
+        // --- NEW LOGIC: ENABLE OCCLUSION AS SOON AS GAME STARTS ---
+        // Occlusion should be active in PREP, PLAYING and PAUSED.
+        // It should ONLY be disabled in IDLE (generating/menu).
+        const isGameActive = status !== GameStatus.IDLE;
+
+        if (!isGameActive) {
+            // Reset everything to default (fully visible, no wireframe)
+            groupRef.current.traverse((child) => {
+                if ((child as THREE.Mesh).isMesh && (child.userData.type === 'hull' || child.userData.type === 'detail-fade')) {
+                    const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+                    if (mat) {
+                        mat.opacity = 1.0;
+                        mat.transparent = false;
+                        mat.depthWrite = true;
+                    }
+                }
+                if (child.userData.type === 'detail-hide' || child.userData.type === 'roof') {
+                    child.visible = true;
+                }
+                if (child.userData.type === 'wireframe') {
+                    child.visible = false;
+                }
+            });
+            return;
+        }
+
+        // Skip occlusion check for buildings that are definitely not blocking the player
         // In this isometric view, only buildings within a certain radius or "behind" the player matter
         const distSq = position.distanceToSquared(playerPos.current);
         if (distSq > 2500) { // Approx 50 units
@@ -551,7 +579,7 @@ const Building: React.FC<{
         <group ref={groupRef} position={position}>
             {/* Merged Hull Mesh */}
             <mesh geometry={hullGeometry} castShadow receiveShadow userData={{ type: 'hull' }}>
-                <GridMaterial color={color} showGrid={showGrid} />
+                <GridMaterial color={color} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </mesh>
 
             {/* Wireframe for Transparency Mode */}
@@ -942,11 +970,13 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                         variant={obj.variant}
                         showWireframe={showWireframe}
                         showGrid={showGrid}
+                        status={status}
+                        debugMode={debugMode}
                     />
                 ))}
             </>
         );
-    }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe, settings.riverFlow]);
+    }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe, settings.riverFlow, status]);
 
     if (!mapData) return null;
 
