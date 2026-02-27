@@ -17,6 +17,11 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
     const maxFoam = 600;
     const foamParticles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; speed: number; scale: number; offset: THREE.Vector3; type: 'drift' | 'source' | 'exit' }[]>([]);
 
+    const waterTilesRef = useRef<{ x: number, z: number }[]>([]);
+    const edgeTilesRef = useRef<{ x: number, z: number, side: 'N' | 'S' | 'E' | 'W' }[]>([]);
+    const sourceTilesRef = useRef<{ x: number, z: number, side: string }[]>([]);
+    const exitTilesRef = useRef<{ x: number, z: number, side: string }[]>([]);
+
     useEffect(() => {
         if (!waterGrid) return;
 
@@ -35,11 +40,16 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
             }
         }
 
+        waterTilesRef.current = waterTiles;
+        edgeTilesRef.current = edgeTiles;
+
         const sourceSide = riverOrientation === 0 ? 'N' : riverOrientation === 2 ? 'S' : riverOrientation === 3 ? 'W' : riverOrientation === 1 ? 'E' : null;
         const exitSide = riverOrientation === 0 ? 'S' : riverOrientation === 2 ? 'N' : riverOrientation === 3 ? 'E' : riverOrientation === 1 ? 'W' : null;
 
         const sourceTiles = edgeTiles.filter(t => t.side === sourceSide);
         const exitTiles = edgeTiles.filter(t => t.side === exitSide);
+        sourceTilesRef.current = sourceTiles;
+        exitTilesRef.current = exitTiles;
 
         foamParticles.current = new Array(maxFoam).fill(0).map((_, i) => {
             let type: 'drift' | 'source' | 'exit' = 'drift';
@@ -176,26 +186,15 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         if (!foamRef.current || !waterGrid) return;
         const dummy = new THREE.Object3D();
 
-        const waterTiles: { x: number, z: number }[] = [];
-        const edgeTiles: { x: number, z: number, side: string }[] = [];
-        for (let x = 0; x < gridSize; x++) {
-            for (let z = 0; z < gridSize; z++) {
-                if (waterGrid[x][z] === 1) {
-                    waterTiles.push({ x, z });
-                    if (x === 0) edgeTiles.push({ x, z, side: 'W' });
-                    else if (x === gridSize - 1) edgeTiles.push({ x, z, side: 'E' });
-                    else if (z === 0) edgeTiles.push({ x, z, side: 'N' });
-                    else if (z === gridSize - 1) edgeTiles.push({ x, z, side: 'S' });
-                }
-            }
-        }
+        const waterTiles = waterTilesRef.current;
+        const edgeTiles = edgeTilesRef.current;
 
-        const sourceSide = riverOrientation === 0 ? 'N' : riverOrientation === 2 ? 'S' : riverOrientation === 3 ? 'W' : riverOrientation === 1 ? 'E' : null;
-        const exitSide = riverOrientation === 0 ? 'S' : riverOrientation === 2 ? 'N' : riverOrientation === 3 ? 'E' : riverOrientation === 1 ? 'W' : null;
-        const sourceTiles = edgeTiles.filter(t => t.side === sourceSide);
-        const exitTiles = edgeTiles.filter(t => t.side === exitSide);
+        const sourceTiles = sourceTilesRef.current;
+        const exitTiles = exitTilesRef.current;
 
         const flowStrength = Math.max(1.0, riverFlow);
+        const currentRotation = new THREE.Euler();
+        const currentScale = new THREE.Vector3();
 
         foamParticles.current.forEach((p, i) => {
             p.life += delta * (p.type !== 'drift' ? 1.5 : 0.6);
@@ -232,8 +231,8 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
             }
 
             let scaleMult = 1.0;
-            let currentRotation = new THREE.Euler(0, 0, 0);
-            let currentScale = new THREE.Vector3(1, 1, 1);
+            currentRotation.set(0, 0, 0);
+            currentScale.set(1, 1, 1);
 
             if (p.type === 'source' || p.type === 'exit') {
                 // Impact Smoke Physics: Gravity applies always

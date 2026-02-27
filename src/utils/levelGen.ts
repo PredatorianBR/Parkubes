@@ -1082,102 +1082,78 @@ export const generateCityLevel = (
     // --- MAIN LOOP ---
     const decorators: (() => void)[] = [];
 
-    if (debugMode || mapId === 0) {
-        // Add a central river for testing bridges/water FIRST so isWaterLogic works for debug buildings
-        const rw = settings.riverWidth > 0 ? settings.riverWidth : 6;
-        for (let lz = -halfSize; lz < halfSize; lz++) {
-            for (let lx = -Math.floor(rw / 2); lx < Math.ceil(rw / 2); lx++) {
-                const gx = worldToIndex(lx, halfSize, size);
-                const gz = worldToIndex(lz, halfSize, size);
-                if (gx >= 0 && gx < gridSize && gz >= 0 && gz < gridSize) {
-                    wGrid[gx][gz] = 1;
+    // Pass 1: Buildings (Constructions)
+    placeInPass('building');
+    // Pass 2: Farms (Plantations)
+    placeInPass('farm');
+    // Pass 3: Ruins
+    placeInPass('ruins');
+
+    function placeInPass(cat: 'farm' | 'building' | 'ruins') {
+        let x = -halfSize + 2;
+        let clusterX = 0;
+
+        while (x < halfSize - 2) {
+            let blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+            if (blockW % 2 !== 0) blockW -= 1;
+            blockW = Math.max(4, blockW);
+            if (x + blockW >= halfSize - 1) break;
+
+            // Decide if this strip will attempt to form Z-axis pairs
+            const stripPairZ = Math.random() > 0.5;
+            const maxZ = stripPairZ ? 2 : 1;
+
+            // If this strip has Z-pairs, it must be isolated in X
+            if (stripPairZ && clusterX > 0) {
+                x += baseStreetWidth;
+                clusterX = 0;
+            }
+
+            let z = -halfSize + 2;
+            let clusterZ = 0;
+            let placedInStrip = false;
+
+            while (z < halfSize - 2) {
+                let blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+                if (blockD % 2 !== 0) blockD -= 1;
+                blockD = Math.max(4, blockD);
+                if (z + blockD >= halfSize - 1) break;
+
+                // Limit adjacent constructions in Z direction based on strip mode
+                if (clusterZ >= maxZ) {
+                    z += baseStreetWidth;
+                    clusterZ = 0;
+                    continue;
+                }
+
+                const dec = placeBuilding(x, z, blockW, blockD, undefined, cat);
+                if (dec) {
+                    decorators.push(dec);
+                    z += blockD;
+                    clusterZ++;
+                    placedInStrip = true;
+                } else {
+                    z += baseStreetWidth;
+                    clusterZ = 0;
                 }
             }
-        }
 
-        // DEBUG LEVEL: Fixed layout with all object types
-        [
-            placeBuilding(-18, -18, 12, 12, 'factory'),
-            placeBuilding(6, -18, 10, 10, 'highrise'),
-            placeBuilding(-18, 6, 10, 10, 'house'),
-            placeBuilding(6, 6, 12, 12, 'farm'),
-            placeBuilding(-5, -5, 10, 10, 'ruins')
-        ].forEach(d => d && decorators.push(d));
-
-    } else {
-        // Pass 1: Buildings (Constructions)
-        placeInPass('building');
-        // Pass 2: Farms (Plantations)
-        placeInPass('farm');
-        // Pass 3: Ruins
-        placeInPass('ruins');
-
-        function placeInPass(cat: 'farm' | 'building' | 'ruins') {
-            let x = -halfSize + 2;
-            let clusterX = 0;
-
-            while (x < halfSize - 2) {
-                let blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
-                if (blockW % 2 !== 0) blockW -= 1;
-                blockW = Math.max(4, blockW);
-                if (x + blockW >= halfSize - 1) break;
-
-                // Decide if this strip will attempt to form Z-axis pairs
-                const stripPairZ = Math.random() > 0.5;
-                const maxZ = stripPairZ ? 2 : 1;
-
-                // If this strip has Z-pairs, it must be isolated in X
-                if (stripPairZ && clusterX > 0) {
+            x += blockW;
+            if (placedInStrip) {
+                if (stripPairZ) {
+                    // Isolated strip (already contains Z-pairs or singletons)
                     x += baseStreetWidth;
                     clusterX = 0;
-                }
-
-                let z = -halfSize + 2;
-                let clusterZ = 0;
-                let placedInStrip = false;
-
-                while (z < halfSize - 2) {
-                    let blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
-                    if (blockD % 2 !== 0) blockD -= 1;
-                    blockD = Math.max(4, blockD);
-                    if (z + blockD >= halfSize - 1) break;
-
-                    // Limit adjacent constructions in Z direction based on strip mode
-                    if (clusterZ >= maxZ) {
-                        z += baseStreetWidth;
-                        clusterZ = 0;
-                        continue;
-                    }
-
-                    const dec = placeBuilding(x, z, blockW, blockD, undefined, cat);
-                    if (dec) {
-                        decorators.push(dec);
-                        z += blockD;
-                        clusterZ++;
-                        placedInStrip = true;
-                    } else {
-                        z += baseStreetWidth;
-                        clusterZ = 0;
-                    }
-                }
-
-                x += blockW;
-                if (placedInStrip) {
-                    if (stripPairZ) {
-                        // Isolated strip (already contains Z-pairs or singletons)
+                } else {
+                    clusterX++;
+                    if (clusterX >= 2) {
+                        // End of X-axis pair
                         x += baseStreetWidth;
                         clusterX = 0;
-                    } else {
-                        clusterX++;
-                        if (clusterX >= 2) {
-                            // End of X-axis pair
-                            x += baseStreetWidth;
-                            clusterX = 0;
-                        }
                     }
-                } else {
-                    clusterX = 0;
                 }
+            } else {
+                clusterX = 0;
             }
         }
     }
@@ -1192,7 +1168,7 @@ export const generateCityLevel = (
         for (let z = 0; z < size; z++) {
             const type = tGrid[x][z];
             const key = `${x},${z}`;
-            if ((type === 4 || type === 1) && !visitedForFences.has(key)) {
+            if (type === 4 && !visitedForFences.has(key)) {
                 // Determine cluster for this type
                 let clusterMinX = x, clusterMaxX = x, clusterMinZ = z, clusterMaxZ = z;
                 const clusterTiles: [number, number][] = [];
@@ -1228,46 +1204,24 @@ export const generateCityLevel = (
                 const clusterW = clusterMaxX - clusterMinX + 1;
                 const clusterD = clusterMaxZ - clusterMinZ + 1;
 
-                // Minimum 3x3 cluster to warrant a fence
+                // Minimum 3x3 cluster to warrant a fence for Farms
                 if (clusterW >= 3 && clusterD >= 3) {
-                    const margin = 3; // distance 3 = 2 empty voxels between house and fence
-                    const dilatedSet = new Set<string>();
                     for (const [tx, tz] of clusterTiles) {
-                        for (let dx = -margin; dx <= margin; dx++) {
-                            for (let dz = -margin; dz <= margin; dz++) {
-                                const nx = tx + dx;
-                                const nz = tz + dz;
-                                if (nx >= 0 && nx < size && nz >= 0 && nz < size) {
-                                    dilatedSet.add(`${nx},${nz}`);
+                        let isEdge = false;
+                        let touchesWater = false;
+                        const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                        for (const [dx, dz] of neighbors) {
+                            const nx = tx + dx;
+                            const nz = tz + dz;
+                            if (nx < 0 || nx >= size || nz < 0 || nz >= size || tGrid[nx][nz] !== 4) {
+                                isEdge = true;
+                                if (isWaterLogic(nx - halfSize, nz - halfSize)) {
+                                    touchesWater = true;
                                 }
                             }
                         }
-                    }
-
-                    for (const dKey of dilatedSet) {
-                        const [fx, fz] = dKey.split(',').map(Number);
-
-                        // Fence criteria:
-                        // 1. Must be empty space/ground (tGrid === 0)
-                        // 2. Must NOT be water
-                        // 3. Must be on the border of the dilated set that is NOT inside the cluster
-                        if (tGrid[fx][fz] === 0 && !isWaterLogic(fx - halfSize, fz - halfSize)) {
-                            let isBorder = false;
-                            const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-                            for (const [ndx, ndz] of neighbors) {
-                                const nx = fx + ndx;
-                                const nz = fz + ndz;
-                                if (nx < 0 || nx >= size || nz < 0 || nz >= size || !dilatedSet.has(`${nx},${nz}`)) {
-                                    isBorder = true;
-                                    break;
-                                }
-                            }
-
-                            if (isBorder) {
-                                if (Math.random() > 0.02) {
-                                    fenceLocations.add(dKey);
-                                }
-                            }
+                        if (isEdge && !touchesWater && Math.random() > 0.02) {
+                            fenceLocations.add(`${tx},${tz}`);
                         }
                     }
                 }

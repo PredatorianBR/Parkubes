@@ -287,6 +287,7 @@ export const Character: React.FC<CharacterProps> = ({
     // Animation State Refs
     const idleTimer = useRef(0);
     const walkPhase = useRef(0); // For movement sync
+    const baseYRef = useRef(0); // Track base height to avoid infinite growth
     const idleState = useRef(0); // 0: Breath, 1: Look, 2: Shift
     const idleTargetRotY = useRef(0);
 
@@ -394,6 +395,7 @@ export const Character: React.FC<CharacterProps> = ({
         let targetRotZ = bodyRotZ;
         let targetZOffset = 0;
         let targetPivotY = 0;
+        let rotLerpSpeed = delta * 15; // Initialize early for use in movement block
 
         if (isStumbling) {
             // Logic handled below
@@ -401,31 +403,54 @@ export const Character: React.FC<CharacterProps> = ({
             // Logic handled below
         }
 
-        // --- (This is where the movement animation block from previous edit goes) ---
-        // I will re-apply the movement block logic here to ensure scoping
+        // --- REWRITTEN MOVEMENT SYSTEM (PENGUIN STYLE) ---
         if (isMoving && isGrounded && !stunned && !isRolling) {
-            const freqMult = isRunning ? 0.9 : 1.3;
-            walkPhase.current += (moveSpeed * delta * 15 * freqMult);
+            // Calculate a normalized speed factor (0 to ~1.8)
+            const speedFact = Math.min(moveSpeed / 6, 1.8);
+            const freq = isRunning ? 18 : 12;
+            walkPhase.current += delta * freq * speedFact;
 
-            const bobAmp = isRunning ? 0.65 : 0.45;
-            const swayAmp = isRunning ? 0.08 : 0.04;
-            const wiggleAmp = isRunning ? 0.15 : 0.08;
-            const squashAmp = isRunning ? 0.25 : 0.12;
+            const t = walkPhase.current;
 
-            const cycleSin = Math.sin(walkPhase.current);
-            const doubleCycleCos = Math.cos(walkPhase.current * 2);
+            // 1. Vertical Bobbing (Bounce while walking)
+            // Using abs(sin) for a bounce effect against the ground
+            bobY = Math.abs(Math.sin(t)) * (isRunning ? 0.7 : 0.4);
 
-            bobY = Math.abs(cycleSin) * bobAmp;
-            moveSquash = doubleCycleCos * squashAmp;
-            targetRotZ = cycleSin * swayAmp;
-            targetRotY = -cycleSin * wiggleAmp;
+            // 2. Waddle Sway (Extreme Z-axis tilt)
+            // Changed to sin to start at neutral (0) instead of max (1)
+            targetRotZ = Math.sin(t) * (isRunning ? 0.5 : 0.35);
 
-            const speedFactor = THREE.MathUtils.clamp(moveSpeed / 10, 0, 1.5);
-            targetRotX = speedFactor * (isRunning ? 0.35 : 0.15);
-            headRotY = -Math.sin(walkPhase.current - 0.4) * (wiggleAmp * 0.8);
+            // 3. Side Shift (Physical weight transfer on X)
+            // Changed to sin to sync with sway and start at neutral
+            const sideShift = Math.sin(t) * (isRunning ? 0.4 : 0.25);
+            if (modelGroup.current) {
+                modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, sideShift, delta * 20);
+            }
+
+            // 4. Forward Lean (Rotation X)
+            targetRotX = (isRunning ? 0.5 : 0.2) * speedFact;
+
+            // 5. Horizontal Wiggle (Rotation Y)
+            targetRotY = Math.sin(t) * (isRunning ? 0.35 : 0.2);
+
+            // 6. Squash & Stretch (Synced with impact at t=n*PI)
+            // Changed to positive Cosine so that t=0 (impact) is max squash
+            moveSquash = Math.cos(t * 2) * (isRunning ? 0.25 : 0.15);
+
+            // Head response to the waddle
+            headRotY = -targetRotY * 1.5;
+
+            rotLerpSpeed = delta * 25;
+        } else {
+            // Reset positions and reset phase when stopping
+            if (modelGroup.current) {
+                modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, 0, delta * 15);
+            }
+            walkPhase.current = THREE.MathUtils.lerp(walkPhase.current, 0, delta * 5);
         }
 
-        let totalSquash = Math.max(baseCrouch, landingSquash, moveSquash);
+        // Combine Squash components
+        let totalSquash = baseCrouch + landingSquash + moveSquash;
 
         if (isStumbling) {
             totalSquash = 0.4;
@@ -452,7 +477,6 @@ export const Character: React.FC<CharacterProps> = ({
         const standardHeadY = (BODY_HEIGHT + HEAD_SIZE / 2) - (totalSquash * 1.5);
 
         // --- ROTATION & PIVOT LOGIC ---
-        let rotLerpSpeed = delta * 10;
         let applyRoll = false;
 
         if (stunned) {
@@ -496,23 +520,20 @@ export const Character: React.FC<CharacterProps> = ({
             floatingY = Math.sin(time * 2.0) * 0.06;
         }
 
-        // Apply Container Rotation
+        // Apply Container Rotation and Position
         if (modelGroup.current) {
-            const currentBaseY = modelGroup.current.position.y;
-            let nextBaseY = currentBaseY;
-
             if (applyRoll) {
                 modelGroup.current.rotation.x = targetRotX;
-                nextBaseY = THREE.MathUtils.lerp(currentBaseY, targetPivotY, delta * 20);
+                baseYRef.current = THREE.MathUtils.lerp(baseYRef.current, targetPivotY, delta * 20);
             } else {
                 if (modelGroup.current.rotation.x > Math.PI) modelGroup.current.rotation.x -= Math.PI * 2;
                 modelGroup.current.rotation.x = THREE.MathUtils.lerp(modelGroup.current.rotation.x, targetRotX, rotLerpSpeed);
                 modelGroup.current.rotation.z = THREE.MathUtils.lerp(modelGroup.current.rotation.z, targetRotZ, rotLerpSpeed);
                 modelGroup.current.rotation.y = THREE.MathUtils.lerp(modelGroup.current.rotation.y, targetRotY, rotLerpSpeed);
-                nextBaseY = THREE.MathUtils.lerp(currentBaseY, targetPivotY, rotLerpSpeed);
+                baseYRef.current = THREE.MathUtils.lerp(baseYRef.current, targetPivotY, rotLerpSpeed);
             }
 
-            modelGroup.current.position.y = nextBaseY + bobY + floatingY;
+            modelGroup.current.position.y = baseYRef.current + bobY + floatingY;
             modelGroup.current.position.z = THREE.MathUtils.lerp(modelGroup.current.position.z, targetZOffset, delta * 15);
         }
 
@@ -597,7 +618,7 @@ export const Character: React.FC<CharacterProps> = ({
                     </Html>
                 )}
 
-                <group ref={modelGroup} position={[0, 0, 0]}>
+                <group ref={modelGroup}>
                     {/* Head - Slightly smaller width/depth */}
                     <mesh ref={headMesh} position={[0, 3.2, 0]} castShadow receiveShadow>
                         <boxGeometry args={[1.4, 1.6, 1.4]} />

@@ -51,13 +51,21 @@ const App: React.FC = () => {
       staminaDuration: 2.0,
       cameraZoom: 15,
       cameraFollow: true,
-      ...initialRandom
+      ratios: {
+        farm: 0,
+        house: 0,
+        highrise: 0,
+        factory: 0,
+        ruins: 0
+      },
+      riverWidth: 0,
+      riverFlow: 0
     },
-    mapId: Math.floor(Math.random() * 1000)
+    mapId: 0
   });
 
-  const [debugMode, setDebugMode] = useState(false);
-  const [showGrid, setShowGrid] = useState(false);
+  const [debugMode, setDebugMode] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
   const [showCollision, setShowCollision] = useState(false);
   const [showWireframe, setShowWireframe] = useState(false); // Novo estado
   const [showMission, setShowMission] = useState(false);
@@ -161,7 +169,9 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!debugMode) {
+    if (debugMode) {
+      setShowGrid(true);
+    } else {
       setShowGrid(false);
       setShowCollision(false);
     }

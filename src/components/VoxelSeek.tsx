@@ -102,6 +102,172 @@ const CollisionDebug: React.FC<{ oGrid: number[][]; bGrid: number[][]; size: num
     );
 });
 
+const VoxelRuins: React.FC<{ ruins: VoxelObject[], showGrid?: boolean }> = React.memo(({ ruins, showGrid }) => {
+    const meshRef = useRef<THREE.InstancedMesh>(null!);
+    const meshTop1Ref = useRef<THREE.InstancedMesh>(null!);
+    const meshTop2Ref = useRef<THREE.InstancedMesh>(null!);
+    const materialRef = useRef<THREE.MeshStandardMaterial>(null!);
+
+    useEffect(() => {
+        if (!meshRef.current || ruins.length === 0) return;
+
+        const dummy = new THREE.Object3D();
+        ruins.forEach((obj, i) => {
+            const [sx, sy, sz] = obj.scale;
+            // Base block
+            dummy.position.set(obj.position[0], obj.position[1], obj.position[2]);
+            dummy.scale.set(sx, sy, sz);
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(i, dummy.matrix);
+
+            // Top blocks
+            dummy.scale.set(sx * 0.4, sy * 0.4, sz * 0.4);
+            dummy.position.set(obj.position[0] + sx * 0.25, obj.position[1] + sy * 0.5, obj.position[2] + sz * 0.25);
+            dummy.updateMatrix();
+            meshTop1Ref.current.setMatrixAt(i, dummy.matrix);
+
+            dummy.scale.set(sx * 0.3, sy * 0.3, sz * 0.3);
+            dummy.position.set(obj.position[0] - sx * 0.2, obj.position[1] + sy * 0.5, obj.position[2] - sz * 0.2);
+            dummy.updateMatrix();
+            meshTop2Ref.current.setMatrixAt(i, dummy.matrix);
+        });
+
+        meshRef.current.instanceMatrix.needsUpdate = true;
+        meshTop1Ref.current.instanceMatrix.needsUpdate = true;
+        meshTop2Ref.current.instanceMatrix.needsUpdate = true;
+    }, [ruins]);
+
+    if (ruins.length === 0) return null;
+
+    return (
+        <group>
+            <instancedMesh ref={meshRef} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} />
+            </instancedMesh>
+            <instancedMesh ref={meshTop1Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} />
+            </instancedMesh>
+            <instancedMesh ref={meshTop2Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} />
+            </instancedMesh>
+        </group>
+    );
+});
+
+const VoxelFences: React.FC<{ fences: VoxelObject[] }> = React.memo(({ fences }) => {
+    const postRef = useRef<THREE.InstancedMesh>(null!);
+    const railNRef = useRef<THREE.InstancedMesh>(null!);
+    const railSRef = useRef<THREE.InstancedMesh>(null!);
+    const railERef = useRef<THREE.InstancedMesh>(null!);
+    const railWRef = useRef<THREE.InstancedMesh>(null!);
+
+    useEffect(() => {
+        if (!postRef.current || fences.length === 0) return;
+
+        const dummy = new THREE.Object3D();
+        let postIdx = 0, nIdx = 0, sIdx = 0, eIdx = 0, wIdx = 0;
+
+        fences.forEach((f) => {
+            const isPost = f.isPost;
+            const railLength = isPost ? 0.25 : 0.5;
+            const nPosZ = isPost ? -0.375 : -0.25;
+            const sPosZ = isPost ? 0.375 : 0.25;
+            const ePosX = isPost ? 0.375 : 0.25;
+            const wPosX = isPost ? -0.375 : -0.25;
+
+            if (isPost) {
+                dummy.position.set(f.position[0], f.position[1] + 0.75, f.position[2]);
+                dummy.scale.set(0.5, 1.5, 0.5);
+                dummy.updateMatrix();
+                postRef.current.setMatrixAt(postIdx++, dummy.matrix);
+            }
+
+            const neighbors = f.neighbors;
+            if (neighbors?.n) {
+                dummy.scale.set(0.15, 0.15, railLength);
+                dummy.position.set(f.position[0], f.position[1] + 1.0, f.position[2] + nPosZ);
+                dummy.updateMatrix();
+                railNRef.current.setMatrixAt(nIdx++, dummy.matrix);
+                dummy.position.set(f.position[0], f.position[1] + 0.5, f.position[2] + nPosZ);
+                dummy.updateMatrix();
+                railNRef.current.setMatrixAt(nIdx++, dummy.matrix);
+            }
+            if (neighbors?.s) {
+                dummy.scale.set(0.15, 0.15, railLength);
+                dummy.position.set(f.position[0], f.position[1] + 1.0, f.position[2] + sPosZ);
+                dummy.updateMatrix();
+                railSRef.current.setMatrixAt(sIdx++, dummy.matrix);
+                dummy.position.set(f.position[0], f.position[1] + 0.5, f.position[2] + sPosZ);
+                dummy.updateMatrix();
+                railSRef.current.setMatrixAt(sIdx++, dummy.matrix);
+            }
+            if (neighbors?.e) {
+                dummy.scale.set(railLength, 0.15, 0.15);
+                dummy.position.set(f.position[0] + ePosX, f.position[1] + 1.0, f.position[2]);
+                dummy.updateMatrix();
+                railERef.current.setMatrixAt(eIdx++, dummy.matrix);
+                dummy.position.set(f.position[0] + ePosX, f.position[1] + 0.5, f.position[2]);
+                dummy.updateMatrix();
+                railERef.current.setMatrixAt(eIdx++, dummy.matrix);
+            }
+            if (neighbors?.w) {
+                dummy.scale.set(railLength, 0.15, 0.15);
+                dummy.position.set(f.position[0] + wPosX, f.position[1] + 1.0, f.position[2]);
+                dummy.updateMatrix();
+                railWRef.current.setMatrixAt(wIdx++, dummy.matrix);
+                dummy.position.set(f.position[0] + wPosX, f.position[1] + 0.5, f.position[2]);
+                dummy.updateMatrix();
+                railWRef.current.setMatrixAt(wIdx++, dummy.matrix);
+            }
+        });
+
+        postRef.current.count = postIdx;
+        railNRef.current.count = nIdx;
+        railSRef.current.count = sIdx;
+        railERef.current.count = eIdx;
+        railWRef.current.count = wIdx;
+
+        postRef.current.instanceMatrix.needsUpdate = true;
+        railNRef.current.instanceMatrix.needsUpdate = true;
+        railSRef.current.instanceMatrix.needsUpdate = true;
+        railERef.current.instanceMatrix.needsUpdate = true;
+        railWRef.current.instanceMatrix.needsUpdate = true;
+    }, [fences]);
+
+    if (fences.length === 0) return null;
+
+    const postColor = "#a16207";
+    const railColor = fences[0]?.color || "#d4a373";
+
+    return (
+        <group>
+            <instancedMesh ref={postRef} args={[undefined, undefined, fences.length]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={postColor} />
+            </instancedMesh>
+            <instancedMesh ref={railNRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={railColor} />
+            </instancedMesh>
+            <instancedMesh ref={railSRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={railColor} />
+            </instancedMesh>
+            <instancedMesh ref={railERef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={railColor} />
+            </instancedMesh>
+            <instancedMesh ref={railWRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color={railColor} />
+            </instancedMesh>
+        </group>
+    );
+});
+
 const Building: React.FC<{
     position: THREE.Vector3;
     scale: [number, number, number];
@@ -256,8 +422,27 @@ const Building: React.FC<{
             gridShaderRef.current.uniforms.showGrid.value = showGrid ? 1.0 : 0.0;
         }
 
+        // SKIP occlusion check for buildings that are definitely not blocking the player
+        // In this isometric view, only buildings within a certain radius or "behind" the player matter
+        const distSq = position.distanceToSquared(playerPos.current);
+        if (distSq > 2500) { // Approx 50 units
+            // Ensure we reset opacity if player moved away
+            groupRef.current.traverse((child) => {
+                if ((child as THREE.Mesh).isMesh && (child.userData.type === 'hull' || child.userData.type === 'detail-fade')) {
+                    const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+                    if (mat && mat.opacity < 0.99) {
+                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, 1.0, delta * 5);
+                        mat.transparent = mat.opacity < 0.99;
+                    }
+                }
+            });
+            return;
+        }
+
         // Setup Ray: Player -> Camera
         ray.origin.copy(playerPos.current);
+        // For orthographic camera, the direction to camera is actually constant
+        // but we'll use this for simplicity and compatibility with perspective
         vecToCam.subVectors(camera.position, playerPos.current);
         const distToCam = vecToCam.length();
         ray.direction.copy(vecToCam).normalize();
@@ -500,16 +685,20 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
     // Initialization & Map Regeneration
     useEffect(() => {
-        // Generate Level (Full regeneration on structural settings or mapId change)
-        const spawn = new THREE.Vector2(0, 0);
-        const data = generateCityLevel(spawn, settings, mapId, debugMode);
-        setMapData(data);
+        // Debounce Level Generation to prevent freezing when moving sliders
+        const timeout = setTimeout(() => {
+            const spawn = new THREE.Vector2(0, 0);
+            const data = generateCityLevel(spawn, settings, mapId, debugMode);
+            setMapData(data);
 
-        // Reset Player to Initial Spawn
-        playerPos.current.copy(data.spawnPos);
-        playerVel.current.set(0, 0, 0);
-        stamina.current = 100;
-        stunTimer.current = 0;
+            // Reset Player to Initial Spawn
+            playerPos.current.copy(data.spawnPos);
+            playerVel.current.set(0, 0, 0);
+            stamina.current = 100;
+            stunTimer.current = 0;
+        }, 150); // 150ms debounce
+
+        return () => clearTimeout(timeout);
     }, [settings.worldSize, settings.riverWidth, settings.ratios, mapId]);
 
     // Handle Match Start or Respawn (PREP status)
@@ -718,37 +907,39 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     // Memoize Map Rendering
     const mapElements = useMemo(() => {
         if (!mapData) return null;
+
+        const ruins = mapData.objects.filter(o => o.type === 'ruin');
+        const fences = mapData.objects.filter(o => o.type === 'fence');
+        const wheat = mapData.objects.filter(o => o.type === 'wheat');
+        const buildings = mapData.objects.filter(o => o.type !== 'ruin' && o.type !== 'fence' && o.type !== 'wheat');
+
         return (
             <>
                 <VoxelGround size={settings.worldSize} waterGrid={mapData.wGrid} sGrid={mapData.sGrid} debugMode={debugMode} showGrid={showGrid} />
                 <VoxelWater size={settings.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={settings.riverFlow} />
-                {mapData.objects.map(obj => {
-                    if (obj.type === 'wheat') return null;
-                    if (obj.type === 'ruin') return <RuinBlock key={obj.id} position={new THREE.Vector3(...obj.position)} scale={obj.scale} color={obj.color} showGrid={showGrid} />;
-                    if (obj.type === 'fence') return <FenceBlock key={obj.id} position={new THREE.Vector3(...obj.position)} color={obj.color} neighbors={obj.neighbors} isPost={obj.isPost} />;
-
-                    return (
-                        <Building
-                            key={obj.id}
-                            position={new THREE.Vector3(...obj.position)}
-                            scale={obj.scale}
-                            color={obj.color}
-                            type={obj.type as any}
-                            playerPos={playerPos}
-                            playerVel={playerVel}
-                            chimney={obj.chimney}
-                            attachedChimneys={obj.attachedChimneys}
-                            acs={obj.acs}
-                            lShape={obj.lShape}
-                            windows={obj.windows}
-                            doors={obj.doors}
-                            variant={obj.variant}
-                            showWireframe={showWireframe}
-                            showGrid={showGrid}
-                        />
-                    );
-                })}
-                <WheatField wheatObjects={mapData.objects.filter(o => o.type === 'wheat')} playerPos={playerPos} />
+                <VoxelRuins ruins={ruins} showGrid={showGrid} />
+                <VoxelFences fences={fences} />
+                <WheatField wheatObjects={wheat} playerPos={playerPos} />
+                {buildings.map(obj => (
+                    <Building
+                        key={obj.id}
+                        position={new THREE.Vector3(...obj.position)}
+                        scale={obj.scale}
+                        color={obj.color}
+                        type={obj.type as any}
+                        playerPos={playerPos}
+                        playerVel={playerVel}
+                        chimney={obj.chimney}
+                        attachedChimneys={obj.attachedChimneys}
+                        acs={obj.acs}
+                        lShape={obj.lShape}
+                        windows={obj.windows}
+                        doors={obj.doors}
+                        variant={obj.variant}
+                        showWireframe={showWireframe}
+                        showGrid={showGrid}
+                    />
+                ))}
             </>
         );
     }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe, settings.riverFlow]);
