@@ -430,25 +430,25 @@ export const Character: React.FC<CharacterProps> = ({
 
                 // 1. Vertical hop
                 const rawDip = Math.pow(Math.abs(Math.cos(t)), 3);
-                bobY = (1 - rawDip) * (isRunning ? 0.7 : 0.35);
+                bobY = (1 - rawDip) * (isRunning ? 0.4 : 0.35);
 
                 // 2. Landing squash
-                moveSquash = rawDip * (isRunning ? 0.08 : 0.04);
+                moveSquash = rawDip * (isRunning ? 0.05 : 0.04);
 
                 // 3. Waddle sway (side-to-side tilt)
-                targetRotZ = Math.sin(t) * (isRunning ? 0.2 : 0.12);
+                targetRotZ = Math.sin(t) * (isRunning ? 0.12 : 0.12);
 
                 // 4. Side shift for weight transfer
-                const sideShift = Math.sin(t) * (isRunning ? 0.2 : 0.1);
+                const sideShift = Math.sin(t) * (isRunning ? 0.12 : 0.1);
                 if (modelGroup.current) {
                     modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, sideShift, delta * 18);
                 }
 
                 // 5. Forward lean
-                targetRotX = (isRunning ? 0.22 : 0.12) * speedFact;
+                targetRotX = (isRunning ? 0.14 : 0.05) * speedFact;
 
                 // 6. Horizontal wiggle
-                targetRotY = Math.sin(t) * (isRunning ? 0.15 : 0.07);
+                targetRotY = Math.sin(t) * (isRunning ? 0.08 : 0.07);
 
                 // 7. Head counter-sway
                 headRotY = -targetRotY * 1.2;

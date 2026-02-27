@@ -493,7 +493,10 @@ export const updateEntityPhysics = (
 
     // --- FINAL CURRENT FLOW APPLICATION ---
     if (isInWater && world.riverOrientation !== -1 && !next.isClimbing) {
-        const flowStrength = world.riverFlow * waterRatio * 3.0;
+        // Sync speed with floating particles in VoxelWater.tsx
+        // Particles move at: (p.speed + 1.0) * (Math.max(1.0, riverFlow) / 3.0)
+        // Average p.speed is 2.5, so average speed is 3.5 * (Math.max(1.0, riverFlow) / 3.0)
+        const flowStrength = Math.max(1.0, world.riverFlow) * (3.5 / 3.0) * waterRatio;
         const margin = PLAYER_RADIUS + 0.1;
         const minBound = -halfSize + margin;
         const maxBound = halfSize - margin;

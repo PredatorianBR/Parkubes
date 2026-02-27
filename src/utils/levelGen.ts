@@ -359,8 +359,9 @@ export const generateCityLevel = (
                 const rz = bz + Math.floor(Math.random() * bd);
 
                 let canPlace = true;
-                for (let dx = -2; dx < 2 + 2; dx++) {
-                    for (let dz = -2; dz < 2 + 2; dz++) {
+                const ruinGap = 4; // Minimum distance from buildings/houses/factories
+                for (let dx = -ruinGap; dx < 2 + ruinGap; dx++) {
+                    for (let dz = -ruinGap; dz < 2 + ruinGap; dz++) {
                         const checkX = rx + dx;
                         const checkZ = rz + dz;
                         const tx = checkX + halfSize;
@@ -372,7 +373,7 @@ export const generateCityLevel = (
                             if (nType !== 0 && nType !== 5) {
                                 const nearX = dx < 0 ? -dx : (dx >= 2 ? dx - 2 + 1 : 0);
                                 const nearZ = dz < 0 ? -dz : (dz >= 2 ? dz - 2 + 1 : 0);
-                                if (nearX < 2 && nearZ < 2) canPlace = false;
+                                if (nearX < ruinGap && nearZ < ruinGap) canPlace = false;
                             } else if (nType === 5 && dx >= 0 && dx < 2 && dz >= 0 && dz < 2) {
                                 canPlace = false;
                             }
@@ -631,6 +632,36 @@ export const generateCityLevel = (
                                 if (isSolid(airLocalX, airLocalZ - 1)) solidAirNeighbors++;
                                 if (solidAirNeighbors > 1) continue;
 
+                                // L-Shape Inner Corner Check: for faces pointing into the cut area,
+                                // recalculate wall distances along the inner wall segment only.
+                                // This prevents features from being placed too close to inner corners.
+                                if (isLShape && airLocalX >= 0 && airLocalX < fillW && airLocalZ >= 0 && airLocalZ < fillD && cutMask[airLocalX][airLocalZ]) {
+                                    // Count only cells whose air cell is also in the cut
+                                    let innerDistL = 0;
+                                    let p = 1;
+                                    while (isSolid(i + tX * p, j + tZ * p)) {
+                                        const ax = i + tX * p + n.dx;
+                                        const az = j + tZ * p + n.dz;
+                                        if (ax < 0 || ax >= fillW || az < 0 || az >= fillD || !cutMask[ax][az]) break;
+                                        innerDistL++;
+                                        p++;
+                                    }
+                                    let innerDistR = 0;
+                                    p = 1;
+                                    while (isSolid(i - tX * p, j - tZ * p)) {
+                                        const ax = i - tX * p + n.dx;
+                                        const az = j - tZ * p + n.dz;
+                                        if (ax < 0 || ax >= fillW || az < 0 || az >= fillD || !cutMask[ax][az]) break;
+                                        innerDistR++;
+                                        p++;
+                                    }
+                                    const innerWallLen = innerDistL + innerDistR + 1;
+                                    const innerMinDist = Math.min(innerDistL, innerDistR);
+                                    if (innerWallLen >= 6 && innerMinDist < 2) continue;
+                                    if (innerWallLen >= 3 && innerMinDist < 1) continue;
+                                    if (innerWallLen < 3) continue;
+                                }
+
                                 // Include facade ID for grouping (normal + plane offset)
                                 const facadeId = `${n.dx},${n.dz}:${(n.dx !== 0 ? airX : airZ)}`;
 
@@ -714,7 +745,7 @@ export const generateCityLevel = (
                     continue;
                 }
 
-                let feature: 'door' | 'chimney' | 'window' | 'ac' | 'none' = 'none';
+                let feature: 'door' | 'chimney' | 'window' | 'none' = 'none';
                 const rand = Math.random();
 
                 if (type === 'house' && !hasChimney && (fillW >= 8 || fillD >= 8) && rand < 0.4) {
@@ -732,7 +763,7 @@ export const generateCityLevel = (
                     if (assignedWindows.length === 0) {
                         feature = 'window';
                     } else {
-                        if (type === 'factory' && rand < 0.15) feature = 'ac';
+                        if (type === 'factory' && rand < 0.15) feature = 'window';
                         else if (rand < 0.4) feature = 'window';
 
                         if (height > 4 && feature === 'none') {
@@ -740,6 +771,7 @@ export const generateCityLevel = (
                         }
                     }
                 }
+
 
                 if (feature === 'none') continue;
                 globalColumnOccupied.add(colKey);
@@ -838,14 +870,13 @@ export const generateCityLevel = (
                                 // AC Center should be WallSurface + HalfDepth (0.6) = AirCenter - 0.5 + 0.6 = AirCenter + 0.1.
                                 const tX = -col.dz;
                                 const tZ = col.dx;
-                                const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                                const offset = -0.1; // -0.1 to pull it "out" of the air towards the wall
-                                const lxAC = (col.worldX - (col.dx * offset) + 0.5 + tX * shift) - cx;
-                                const lzAC = (col.worldZ - (col.dz * offset) + 0.5 + tZ * shift) - cz;
+                                // No lateral shift for wall ACs - 3-unit width (odd) must stay centered on grid cell (x.5)
+                                const lxAC = (col.worldX + 0.5) - cx;
+                                const lzAC = (col.worldZ + 0.5) - cz;
 
                                 assignedACs.push({
                                     pos: [lxAC, ly, lzAC],
-                                    scale: [2.5, 1.8, 1.2], // Larger Wall AC size
+                                    scale: [3, 2, 1], // Wall AC size: 3 wide, 2 tall, 1 deep
                                     color: type === 'house' ? colors.acResidential : colors.acIndustrial,
                                     rotation: col.rot,
                                     type: 'wall'
@@ -863,49 +894,7 @@ export const generateCityLevel = (
                         }
                     }
                 }
-                else if (feature === 'ac') {
-                    // Standalone Wall AC Logic
-                    for (let f = 1; f < numFloors; f++) {
-                        const worldY = (f * floorH) + 3.0;
-                        if (worldY + 3.0 < height) { // Needs space for 2 height
-                            const ly = worldY - (height / 2);
-                            let canPlaceAC = true;
-                            if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
-                            if ((type === 'house' || type === 'highrise') && floorsWithWallAC[f]) canPlaceAC = false;
 
-                            if (canPlaceAC) {
-                                const tX = -col.dz;
-                                const tZ = col.dx;
-                                const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                                const offset = -0.1;
-                                const lxAC = (col.worldX - (col.dx * offset) + 0.5 + tX * shift) - cx;
-                                const lzAC = (col.worldZ - (col.dz * offset) + 0.5 + tZ * shift) - cz;
-
-                                assignedACs.push({
-                                    pos: [lxAC, ly, lzAC],
-                                    scale: [2.8, 2.0, 1.2], // Larger Standalone Wall AC size
-                                    color: colors.acIndustrial,
-                                    rotation: col.rot,
-                                    type: 'wall'
-                                });
-                                if (type === 'factory') factoryWallACs++;
-                                if (type === 'house' || type === 'highrise') floorsWithWallAC[f] = true;
-                            } else {
-                                const winLy = worldY - (height / 2);
-                                const tX = -col.dz;
-                                const tZ = col.dx;
-                                const shift = (Math.abs(col.biasDist) % 2 !== 0) ? Math.sign(col.biasDist) * 0.5 : 0;
-                                const winLx = (col.worldX - (col.dx * 0.5) + 0.5 + tX * shift) - cx;
-                                const winLz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
-                                assignedWindows.push({
-                                    pos: [winLx, winLy, winLz],
-                                    rot: col.rotVec as [number, number, number]
-                                });
-                            }
-                            globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
-                        }
-                    }
-                }
                 else if (feature === 'chimney') {
                     hasChimney = true;
                     const faceX = col.worldX;
@@ -930,6 +919,11 @@ export const generateCityLevel = (
                     for (let f = 0; f < numFloors; f++) {
                         const worldY = (f * floorH) + 3.0;
                         if (worldY < height) globalWallOccupied.add(getPosKey(col.worldX, worldY, col.worldZ));
+                    }
+
+                    // Mark cells across the street to prevent opposing chimneys from blocking the street
+                    for (let step = 1; step <= 3; step++) {
+                        globalColumnOccupied.add(`${col.worldX + col.dx * step},${col.worldZ + col.dz * step}`);
                     }
                 }
             }
