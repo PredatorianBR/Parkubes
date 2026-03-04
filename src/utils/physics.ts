@@ -6,8 +6,8 @@ export const GRID_SCALE = 1;
 
 export const GRAVITY = 60.0;
 export const JUMP_FORCE = 18.0;
-export const CLIMB_SPEED = 12.0;
-export const MOVE_SPEED_BASE = 12.0;
+export const CLIMB_SPEED = 10.0;
+export const MOVE_SPEED_BASE = 10.0;
 export const ROLL_SPEED_MULT = 1.3;
 export const CLIMB_THRESHOLD = 0.6;
 export const MAX_CLIMB_HEIGHT = 1000.0;
@@ -18,7 +18,7 @@ export const FALL_DAMAGE_HEIGHT = 7.0;
 export const PLAYER_RADIUS = 0.8;
 
 // Water Physics
-export const WATER_DEPTH_LEVEL = -2.6; // Nível de flutuação padrão (pés do boneco)
+export const WATER_DEPTH_LEVEL = -2.0; // Nível de flutuação padrão (pés do boneco)
 export const WATER_MOVE_SPEED_MULT = 0.4;
 export const WATER_JUMP_DAMPING = 0.6;
 
@@ -37,6 +37,88 @@ export const NOISE_RUN = 14.0;
 export const NOISE_JUMP = 10.0;
 export const NOISE_LAND = 12.0;
 
+// --- 3D COLLISION BOX ---
+export interface CollisionBox {
+    minX: number; minY: number; minZ: number;
+    maxX: number; maxY: number; maxZ: number;
+}
+
+// --- SPATIAL HASH GRID ---
+const CELL_SIZE = 4; // Each spatial cell covers 4x4 world units (XZ)
+
+export class SpatialHashGrid {
+    private cells: Map<number, CollisionBox[]> = new Map();
+    private worldHalf: number;
+    private gridW: number;
+
+    constructor(worldSize: number) {
+        this.worldHalf = Math.floor(worldSize / 2);
+        this.gridW = Math.ceil(worldSize / CELL_SIZE) + 1;
+    }
+
+    private key(cx: number, cz: number): number {
+        return cx * 10000 + cz; // fast key for reasonable world sizes
+    }
+
+    clear() {
+        this.cells.clear();
+    }
+
+    insert(box: CollisionBox) {
+        const x0 = Math.floor((box.minX + this.worldHalf) / CELL_SIZE);
+        const x1 = Math.floor((box.maxX + this.worldHalf) / CELL_SIZE);
+        const z0 = Math.floor((box.minZ + this.worldHalf) / CELL_SIZE);
+        const z1 = Math.floor((box.maxZ + this.worldHalf) / CELL_SIZE);
+        for (let cx = x0; cx <= x1; cx++) {
+            for (let cz = z0; cz <= z1; cz++) {
+                const k = this.key(cx, cz);
+                let list = this.cells.get(k);
+                if (!list) { list = []; this.cells.set(k, list); }
+                list.push(box);
+            }
+        }
+    }
+
+    /** Return all boxes that could overlap with a sphere of given radius around (x,z) */
+    query(x: number, z: number, radius: number): CollisionBox[] {
+        const r = radius + 0.5; // small margin
+        const x0 = Math.floor((x - r + this.worldHalf) / CELL_SIZE);
+        const x1 = Math.floor((x + r + this.worldHalf) / CELL_SIZE);
+        const z0 = Math.floor((z - r + this.worldHalf) / CELL_SIZE);
+        const z1 = Math.floor((z + r + this.worldHalf) / CELL_SIZE);
+        const seen = new Set<CollisionBox>();
+        const result: CollisionBox[] = [];
+        for (let cx = x0; cx <= x1; cx++) {
+            for (let cz = z0; cz <= z1; cz++) {
+                const list = this.cells.get(this.key(cx, cz));
+                if (!list) continue;
+                for (const box of list) {
+                    if (!seen.has(box)) {
+                        seen.add(box);
+                        result.push(box);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Return all boxes stored in the grid (for debug visualization) */
+    getAllBoxes(): CollisionBox[] {
+        const seen = new Set<CollisionBox>();
+        const result: CollisionBox[] = [];
+        this.cells.forEach(list => {
+            for (const box of list) {
+                if (!seen.has(box)) {
+                    seen.add(box);
+                    result.push(box);
+                }
+            }
+        });
+        return result;
+    }
+}
+
 // --- HELPERS ---
 
 export const worldToIndex = (val: number, halfSize: number, worldSize: number) =>
@@ -45,44 +127,74 @@ export const worldToIndex = (val: number, halfSize: number, worldSize: number) =
 export const isOutOfBounds = (x: number, z: number, halfSize: number) =>
     x < -halfSize || x > halfSize || z < -halfSize || z > halfSize;
 
+/**
+ * Get the ground (floor) height at a world position by querying 3D collision boxes.
+ * Ground = top of the highest box whose top is at or below the player's feet + threshold.
+ * Also handles water and bridge grids for legacy behavior.
+ */
 export const getTerrainHeight = (
     x: number,
     z: number,
     currentY: number,
-    occupancyGrid: number[][],
+    collisionGrid: SpatialHashGrid,
     bridgeGrid: number[][],
     waterGrid: number[][],
     worldSize: number
 ) => {
     const halfSize = Math.floor(worldSize / 2);
-    // Boundary check remains on World Units
     if (isOutOfBounds(x, z, halfSize)) return -Infinity;
 
     const ix = worldToIndex(x, halfSize, worldSize);
     const iz = worldToIndex(z, halfSize, worldSize);
-
-    const baseH = occupancyGrid[ix]?.[iz] || 0;
     const bridgeH = bridgeGrid[ix]?.[iz] || 0;
     const isWater = waterGrid[ix]?.[iz] === 1;
 
-    // Bridge Logic
-    if (bridgeH > 0) {
-        if (currentY >= bridgeH - 1.0) return bridgeH;
-        // If under bridge, check if water or ground
-        return isWater ? WATER_DEPTH_LEVEL : baseH;
+    // Query nearby boxes
+    const nearby = collisionGrid.query(x, z, 0.5);
+    let bestGround = 0; // default ground is 0
+
+    for (const box of nearby) {
+        // Check XZ overlap: player point must be inside box XZ footprint
+        if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+
+        // The top of this box could be our ground if we're standing on it or near it
+        const boxTop = box.maxY;
+
+        // Consider boxes whose top is below us (we can stand on them)
+        // Use a generous threshold so falling players don't miss building tops
+        if (boxTop <= currentY + CLIMB_THRESHOLD + 0.1) {
+            if (boxTop > bestGround) {
+                bestGround = boxTop;
+            }
+        }
     }
 
-    if (isWater && baseH === 0) {
+
+
+    // Bridge Logic (legacy bridge grid still used for bridges)
+    if (bridgeH > 0) {
+        if (currentY >= bridgeH - 1.0) return Math.max(bestGround, bridgeH);
+        // Under bridge
+        if (isWater && bestGround <= 0) return WATER_DEPTH_LEVEL;
+        return bestGround;
+    }
+
+    if (isWater && bestGround <= 0) {
         return WATER_DEPTH_LEVEL;
     }
 
-    return baseH;
+    return bestGround;
 };
 
+/**
+ * Get ceiling height above the player by querying 3D collision boxes.
+ * Ceiling = bottom of the lowest box that is above the player's head.
+ */
 export const getCeilingHeight = (
     x: number,
     z: number,
     currentY: number,
+    collisionGrid: SpatialHashGrid,
     bridgeGrid: number[][],
     worldSize: number
 ) => {
@@ -91,82 +203,94 @@ export const getCeilingHeight = (
     const iz = worldToIndex(z, halfSize, worldSize);
     const bridgeH = bridgeGrid[ix]?.[iz] || 0;
 
+    let ceiling = Infinity;
+
+    // Check bridge grid (legacy)
     if (bridgeH > 0 && currentY < bridgeH - 1.0) {
-        return bridgeH - 1.0;
+        ceiling = Math.min(ceiling, bridgeH - 1.0);
     }
-    return Infinity;
+
+    // Query 3D boxes for ceilings
+    const nearby = collisionGrid.query(x, z, 0.5);
+    for (const box of nearby) {
+        // XZ overlap check
+        if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+
+        // Box is above the player (bottom of box is above player head)
+        if (box.minY > currentY + 0.1 && box.minY < ceiling) {
+            ceiling = box.minY;
+        }
+    }
+
+    return ceiling;
 };
 
-const resolveWallCollisions = (pos: THREE.Vector3, world: { oGrid: number[][]; bGrid: number[][]; wGrid: number[][]; size: number }) => {
+/**
+ * 3D AABB collision resolution: push the player's cylinder out of any overlapping boxes.
+ * Uses proper 3D overlap tests – the player is modeled as a vertical cylinder.
+ */
+const resolveWallCollisions = (
+    pos: THREE.Vector3,
+    vel: THREE.Vector3,
+    world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number }
+) => {
     const radius = PLAYER_RADIUS;
+    const feetY = pos.y;
+    const headY = pos.y + PLAYER_HEIGHT;
 
-    // Scan range in WORLD UNITS
-    const minX = pos.x - radius;
-    const maxX = pos.x + radius;
-    const minZ = pos.z - radius;
-    const maxZ = pos.z + radius;
-
-    // Convert to Grid Indices loop
-    // We iterate through every 0.5m cell that the player touches
-    const startX = Math.floor((minX + (world.size / 2)) * GRID_SCALE);
-    const endX = Math.floor((maxX + (world.size / 2)) * GRID_SCALE);
-    const startZ = Math.floor((minZ + (world.size / 2)) * GRID_SCALE);
-    const endZ = Math.floor((maxZ + (world.size / 2)) * GRID_SCALE);
-
+    // Query all boxes near the player
+    const nearby = world.collisionGrid.query(pos.x, pos.z, radius + 1.0);
     let pushed = false;
-    const halfSize = Math.floor(world.size / 2);
 
-    for (let ix = startX; ix <= endX; ix++) {
-        for (let iz = startZ; iz <= endZ; iz++) {
-            // Convert back to World Center of this cell for distance check
-            // Cell index i corresponds to world range: [i/SCALE - half, (i+1)/SCALE - half]
-            // Center = (i + 0.5)/SCALE - half
-            const cellCenterX = (ix + 0.5) / GRID_SCALE - halfSize;
-            const cellCenterZ = (iz + 0.5) / GRID_SCALE - halfSize;
+    for (const box of nearby) {
+        // 1. Vertical overlap check: player cylinder [feetY, headY] vs box [minY, maxY]
+        // Use a small epsilon (0.2) so standing on top doesn't trigger side-ward push
+        if (feetY >= box.maxY - 0.2 || headY <= box.minY) continue;
 
-            // Safe lookup
-            if (ix < 0 || ix >= world.size * GRID_SCALE || iz < 0 || iz >= world.size * GRID_SCALE) continue;
+        // 2. Horizontal: closest point on box XZ to player center, then circle test
+        const closeX = Math.max(box.minX, Math.min(pos.x, box.maxX));
+        const closeZ = Math.max(box.minZ, Math.min(pos.z, box.maxZ));
 
-            const baseH = world.oGrid[ix][iz] || 0;
-            const bridgeH = world.bGrid[ix][iz] || 0;
-            const isWater = world.wGrid[ix][iz] === 1;
+        const dx = pos.x - closeX;
+        const dz = pos.z - closeZ;
+        const distSq = dx * dx + dz * dz;
 
-            // Determine effective floor height at this specific sub-cell
-            let h = baseH;
-            if (bridgeH > 0) {
-                if (pos.y >= bridgeH - 1.0) h = bridgeH;
-                else if (isWater && baseH === 0) h = WATER_DEPTH_LEVEL;
-            } else if (isWater && baseH === 0) {
-                h = WATER_DEPTH_LEVEL;
-            }
+        if (distSq < radius * radius) {
+            if (distSq > 0.00001) {
+                // Push out horizontally
+                const dist = Math.sqrt(distSq);
+                const penetration = radius - dist;
+                const nx = dx / dist;
+                const nz = dz / dist;
+                pos.x += nx * penetration;
+                pos.z += nz * penetration;
 
-            // Treat any terrain higher than feet + threshold as a wall
-            if (h > pos.y + 0.6) {
-                // AABB vs Circle(Sphere) collision
-                // The cell is a box of size 1/GRID_SCALE
-                const cellSize = 1.0 / GRID_SCALE;
-                const vMinX = cellCenterX - cellSize / 2;
-                const vMaxX = cellCenterX + cellSize / 2;
-                const vMinZ = cellCenterZ - cellSize / 2;
-                const vMaxZ = cellCenterZ + cellSize / 2;
-
-                // Find closest point on box to circle center
-                const closeX = Math.max(vMinX, Math.min(pos.x, vMaxX));
-                const closeZ = Math.max(vMinZ, Math.min(pos.z, vMaxZ));
-
-                const dx = pos.x - closeX;
-                const dz = pos.z - closeZ;
-                const distSq = dx * dx + dz * dz;
-
-                if (distSq < radius * radius && distSq > 0.00001) {
-                    const dist = Math.sqrt(distSq);
-                    const penetration = radius - dist;
-                    const nx = dx / dist;
-                    const nz = dz / dist;
-                    pos.x += nx * penetration;
-                    pos.z += nz * penetration;
-                    pushed = true;
+                // Zero out velocity component going INTO the wall
+                const velDot = vel.x * nx + vel.z * nz;
+                if (velDot < 0) {
+                    vel.x -= velDot * nx;
+                    vel.z -= velDot * nz;
                 }
+
+                pushed = true;
+            } else {
+                // Player center is exactly inside the box – pick smallest push axis
+                const pushDistances = [
+                    { axis: 'x', dir: 1, dist: box.maxX - pos.x + radius },
+                    { axis: 'x', dir: -1, dist: pos.x - box.minX + radius },
+                    { axis: 'z', dir: 1, dist: box.maxZ - pos.z + radius },
+                    { axis: 'z', dir: -1, dist: pos.z - box.minZ + radius }
+                ];
+                pushDistances.sort((a, b) => a.dist - b.dist);
+                const best = pushDistances[0];
+                if (best.axis === 'x') {
+                    pos.x += best.dir * best.dist;
+                    if (best.dir * vel.x < 0) vel.x = 0;
+                } else {
+                    pos.z += best.dir * best.dist;
+                    if (best.dir * vel.z < 0) vel.z = 0;
+                }
+                pushed = true;
             }
         }
     }
@@ -179,10 +303,8 @@ interface PhysicsState {
     pos: THREE.Vector3;
     vel: THREE.Vector3;
     isGrounded: boolean;
-    isClimbing: boolean;
     isCharging: boolean;
     isRolling: boolean;
-    didStepUp: boolean;
     stamina: number;
     stunned: boolean;
     stumbleTimer: number;
@@ -190,6 +312,7 @@ interface PhysicsState {
     airTimeHigh: number;
     lastDir: THREE.Vector2;
     noiseLevel: number;
+    isClimbing: boolean;
 }
 
 interface PhysicsInput {
@@ -197,7 +320,7 @@ interface PhysicsInput {
     moveDir: THREE.Vector3;
     actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean };
     stats: { speed: number; climbSpeed: number };
-    world: { oGrid: number[][]; bGrid: number[][]; wGrid: number[][]; size: number; riverOrientation: number; riverFlow: number };
+    world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number; riverOrientation: number; riverFlow: number };
 }
 
 export const updateEntityPhysics = (
@@ -211,7 +334,8 @@ export const updateEntityPhysics = (
         stumbleVel: current.stumbleVel.clone(),
         noiseLevel: NOISE_IDLE,
         isRolling: current.isRolling,
-        didStepUp: false
+        didStepUp: false,
+        isClimbing: false
     };
     const { dt, moveDir, actions, stats, world } = input;
 
@@ -241,6 +365,7 @@ export const updateEntityPhysics = (
 
     const waterRatio = pointsInWater / checkPoints.length;
     const isInWater = waterRatio > 0 && next.pos.y < -0.3;
+    const cGrid = world.collisionGrid;
 
     // --- CURRENT FLOW (MOVED TO END) ---
     // Moved to end of function to ensure it persists
@@ -248,7 +373,7 @@ export const updateEntityPhysics = (
     // 1. Status Effects (Stun / Stumble)
     if (next.stunned) {
         next.stamina = Math.min(100, next.stamina + STAMINA_RECOVERY_IDLE * dt);
-        const groundH = getTerrainHeight(next.pos.x, next.pos.z, next.pos.y, world.oGrid, world.bGrid, world.wGrid, world.size);
+        const groundH = getTerrainHeight(next.pos.x, next.pos.z, next.pos.y, cGrid, world.bGrid, world.wGrid, world.size);
 
         if (next.stumbleTimer > 0) next.stumbleTimer -= dt;
 
@@ -257,7 +382,7 @@ export const updateEntityPhysics = (
             const dz = next.stumbleVel.z * dt;
             const targetX = next.pos.x + dx;
             const targetZ = next.pos.z + dz;
-            const tH = getTerrainHeight(targetX, targetZ, next.pos.y, world.oGrid, world.bGrid, world.wGrid, world.size);
+            const tH = getTerrainHeight(targetX, targetZ, next.pos.y, cGrid, world.bGrid, world.wGrid, world.size);
 
             if (tH > -Infinity && tH <= next.pos.y + 0.5) {
                 next.pos.x = targetX;
@@ -271,7 +396,7 @@ export const updateEntityPhysics = (
             const drag = Math.max(0, 1.0 - (friction * dt));
             next.stumbleVel.multiplyScalar(drag);
 
-            const hitWall = resolveWallCollisions(next.pos, world);
+            const hitWall = resolveWallCollisions(next.pos, next.vel, world);
             if (hitWall) next.stumbleVel.set(0, 0, 0);
         } else {
             next.stumbleVel.set(0, 0, 0);
@@ -280,7 +405,7 @@ export const updateEntityPhysics = (
         if (next.pos.y > groundH) {
             next.vel.y -= GRAVITY * dt;
             next.pos.y += next.vel.y * dt;
-            resolveWallCollisions(next.pos, world);
+            resolveWallCollisions(next.pos, next.vel, world);
         } else {
             next.pos.y = groundH;
             next.vel.y = 0;
@@ -296,22 +421,22 @@ export const updateEntityPhysics = (
     }
 
     // 2. Vertical Physics
-    const ceilingH = getCeilingHeight(next.pos.x, next.pos.z, next.pos.y, world.bGrid, world.size);
+    const ceilingH = getCeilingHeight(next.pos.x, next.pos.z, next.pos.y, cGrid, world.bGrid, world.size);
 
-    if (!next.isGrounded && !next.isClimbing) {
+    if (!next.isGrounded) {
         next.vel.y -= GRAVITY * dt;
         next.airTimeHigh = Math.max(next.airTimeHigh, next.pos.y);
     }
 
     // Charge logic
-    if (actions.charge && next.isGrounded && !next.isClimbing && !next.isRolling) {
+    if (actions.charge && next.isGrounded && !next.isRolling) {
         next.isCharging = true;
     } else {
         next.isCharging = false;
     }
 
     // Jump
-    if (actions.jump && next.isGrounded && !next.isClimbing && !next.isRolling) {
+    if (actions.jump && next.isGrounded && !next.isRolling) {
         if (next.pos.y + PLAYER_HEIGHT + 0.5 < ceilingH) {
             if (next.stamina >= STAMINA_JUMP_COST) {
                 // Dampened jump in water
@@ -332,7 +457,7 @@ export const updateEntityPhysics = (
     }
 
     // 3. Horizontal Movement
-    next.isClimbing = false;
+    // next.isClimbing = false; // Removed with climbing logic
 
     // Apply Water Speed Penalty
     let moveSpeedMult = isInWater ? WATER_MOVE_SPEED_MULT : 1.0;
@@ -378,77 +503,99 @@ export const updateEntityPhysics = (
 
         for (const axis of axes) {
             if (axis.lengthSq() === 0) continue;
-            if (next.isClimbing) break;
 
             const targetX = next.pos.x + axis.x * speed;
             const targetZ = next.pos.z + axis.z * speed;
 
             if (targetX < minBound || targetX > maxBound || targetZ < minBound || targetZ > maxBound) continue;
 
-            // With higher resolution, we check slightly further ahead to clear small gaps
+            // With higher resolution, we check slightly further ahead
             const lookAheadDist = PLAYER_RADIUS + 0.1;
             const checkX = next.pos.x + (axis.x > 0 ? lookAheadDist : (axis.x < 0 ? -lookAheadDist : 0));
             const checkZ = next.pos.z + (axis.z > 0 ? lookAheadDist : (axis.z < 0 ? -lookAheadDist : 0));
 
-            const targetH = getTerrainHeight(checkX, checkZ, next.pos.y, world.oGrid, world.bGrid, world.wGrid, world.size);
+            const targetH = getTerrainHeight(checkX, checkZ, next.pos.y, cGrid, world.bGrid, world.wGrid, world.size);
 
-            const heightDiff = targetH - next.pos.y;
+            let heightDiff = targetH - next.pos.y;
             const isAbyss = targetH === -Infinity;
-            const climbMax = MAX_CLIMB_HEIGHT;
+            // const climbMax = MAX_CLIMB_HEIGHT; // Removed with climbing logic
 
             const isWaterExit = isInWater && heightDiff > 0 && heightDiff <= (Math.abs(WATER_DEPTH_LEVEL) + 0.5);
-            const isWall = (heightDiff > CLIMB_THRESHOLD && !isWaterExit);
 
-            const ceilingAtTarget = getCeilingHeight(targetX, targetZ, Math.max(targetH, next.pos.y), world.bGrid, world.size);
+            // 3D Wall Check: query collision boxes at the target position
+            let isBlockedBy3DWall = false;
+            let wallTopHeight = 0;
+            const nearbyBoxes = cGrid.query(targetX, targetZ, radius);
+            for (const box of nearbyBoxes) {
+                if (next.pos.y >= box.maxY || next.pos.y + PLAYER_HEIGHT <= box.minY) continue;
+                const cX = Math.max(box.minX, Math.min(targetX, box.maxX));
+                const cZ = Math.max(box.minZ, Math.min(targetZ, box.maxZ));
+                const ddx = targetX - cX;
+                const ddz = targetZ - cZ;
+                if (ddx * ddx + ddz * ddz < radius * radius) {
+                    isBlockedBy3DWall = true;
+                    if (box.maxY > wallTopHeight) wallTopHeight = box.maxY;
+                }
+            }
+
+            // If 3D wall detected, use the actual wall top for height difference
+            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD) {
+                heightDiff = wallTopHeight - next.pos.y;
+            }
+
+            let climbingLedge = false;
+            // Se o muro for alto o suficiente para bloquear, mas o topo estiver abaixo da cabeça do jogador (pos.y + PLAYER_HEIGHT)
+            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD && wallTopHeight <= next.pos.y + PLAYER_HEIGHT) {
+                const ceilingAtLedge = getCeilingHeight(targetX, targetZ, wallTopHeight, cGrid, world.bGrid, world.size);
+                if (ceilingAtLedge === Infinity || ceilingAtLedge - wallTopHeight >= PLAYER_HEIGHT) {
+                    climbingLedge = true;
+                }
+            }
+
+            if (climbingLedge && next.stamina > 0) {
+                next.vel.y = Math.max(next.vel.y, CLIMB_SPEED);
+                next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
+                next.isClimbing = true;
+                if (axis.x !== 0) {
+                    next.lastDir.set(Math.sign(axis.x), 0);
+                } else if (axis.z !== 0) {
+                    next.lastDir.set(0, Math.sign(axis.z));
+                }
+            }
+
+            const isWall = (heightDiff > CLIMB_THRESHOLD && !isWaterExit) || isBlockedBy3DWall;
+
+            const ceilingAtTarget = getCeilingHeight(targetX, targetZ, Math.max(targetH, next.pos.y), cGrid, world.bGrid, world.size);
             const hasHeadroom = (ceilingAtTarget === Infinity) || (ceilingAtTarget - Math.max(targetH, next.pos.y) >= PLAYER_HEIGHT);
 
             if (!isWall && !isAbyss && hasHeadroom) {
                 const canStepUp = heightDiff <= CLIMB_THRESHOLD || isWaterExit;
 
                 if (targetH > next.pos.y + 0.05 && canStepUp) {
-                    next.didStepUp = true;
-                    next.pos.y = targetH;
-                    next.vel.y = 0;
+                    if (isWaterExit) {
+                        // Smooth rise out of water instead of instant snap
+                        const lerpSpeed = 15 * dt;
+                        next.pos.y = next.pos.y + (targetH - next.pos.y) * Math.min(lerpSpeed, 1.0);
+                        next.vel.y = Math.max(next.vel.y, 0);
+                    } else {
+                        next.pos.y = targetH;
+                        next.vel.y = 0;
+                    }
                 }
                 next.pos.x = targetX;
                 next.pos.z = targetZ;
-            }
-
-            if (isWall && !next.stunned && heightDiff <= climbMax && hasHeadroom) {
-                const autoClimbThreshold = 2.1;
-                const tryingToClimb = (actions.climb || heightDiff <= autoClimbThreshold) && !next.isRolling;
-
-                const isSmallObstacle = heightDiff <= 1.5;
-                const canStartClimb = isSmallObstacle || next.stamina > 10;
-
-                if (tryingToClimb && canStartClimb) {
-                    next.isClimbing = true;
-                    next.isCharging = false;
-                    next.vel.y = CLIMB_SPEED;
-
-                    if (!isSmallObstacle) {
-                        next.stamina -= STAMINA_CLIMB_COST * dt;
-                    }
-
-                    next.noiseLevel = Math.max(next.noiseLevel, NOISE_CLIMB);
-                    next.pos.x = current.pos.x;
-                    next.pos.z = current.pos.z;
-                    break;
-                }
             }
         }
     }
 
     next.pos.y += next.vel.y * dt;
 
-    if (!next.isClimbing && next.vel.y <= 0) {
-        // Resolve collisions twice to prevent corner sticking
-        resolveWallCollisions(next.pos, world);
-        resolveWallCollisions(next.pos, world);
-    }
+    // Resolve wall collisions
+    resolveWallCollisions(next.pos, next.vel, world);
+    resolveWallCollisions(next.pos, next.vel, world);
 
     // 6. Landing / Grounding
-    let groundH = getTerrainHeight(next.pos.x, next.pos.z, next.pos.y, world.oGrid, world.bGrid, world.wGrid, world.size);
+    let groundH = getTerrainHeight(next.pos.x, next.pos.z, next.pos.y, cGrid, world.bGrid, world.wGrid, world.size);
 
     // Prevent snapping up to walls while moving
     if (groundH > next.pos.y + 1.2) {
@@ -493,7 +640,7 @@ export const updateEntityPhysics = (
     }
 
     // --- FINAL CURRENT FLOW APPLICATION ---
-    if (isInWater && world.riverOrientation !== -1 && !next.isClimbing) {
+    if (isInWater && world.riverOrientation !== -1) {
         // Sync speed with floating particles in VoxelWater.tsx
         // Particles move at: (p.speed + 1.0) * (Math.max(1.0, riverFlow) / 3.0)
         // Average p.speed is 2.5, so average speed is 3.5 * (Math.max(1.0, riverFlow) / 3.0)
@@ -508,18 +655,13 @@ export const updateEntityPhysics = (
         else if (world.riverOrientation === 3) push.x = flowStrength * dt;  // W->E
         else if (world.riverOrientation === 1) push.x = -flowStrength * dt; // E->W
 
-        // Add "Empuxo" (Buoyancy/Lift) - Character bobs and floats slightly higher with stronger flow
-        if (next.isGrounded && flowStrength > 0) {
-            const bobbing = Math.sin(Date.now() * 0.005) * 0.05 * (flowStrength / 5);
-            const lift = (flowStrength * 0.12); // Up to 0.6m lift
-            next.pos.y = THREE.MathUtils.lerp(next.pos.y, WATER_DEPTH_LEVEL + lift + bobbing, dt * 4.0);
-        }
+        // Buoyancy removed to prevent grounding oscillation
 
         next.pos.add(push);
 
         // Resolve multiple times to prevent corner sticking when pushed by current
         for (let i = 0; i < 3; i++) {
-            resolveWallCollisions(next.pos, world);
+            resolveWallCollisions(next.pos, next.vel, world);
         }
 
         // Final map boundary clamping

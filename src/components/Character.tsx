@@ -13,13 +13,11 @@ interface CharacterProps {
     isCharging?: boolean;
     isRolling?: boolean;
     isStumbling?: boolean;
-    isClimbing?: boolean;
     isRunning?: boolean;
     isMoving?: boolean;
     moveSpeed?: number;
     isGrounded?: boolean;
     landingFactor?: number;
-    stepUpFactor?: number;
     stunTimerRef?: React.MutableRefObject<number>;
     rollTimerRef?: React.MutableRefObject<number>;
     isHiding?: boolean;
@@ -27,6 +25,8 @@ interface CharacterProps {
     currentSurface?: number;
     fallDistance?: number;
     justLanded?: boolean;
+    isClimbing?: boolean;
+    waterExitTimerRef?: React.MutableRefObject<number>;
 }
 
 const ParticleEffects: React.FC<{
@@ -170,6 +170,25 @@ const ParticleEffects: React.FC<{
 
         if (wasInWater.current && !isInWater) {
             wetTimer.current = 2.0;
+
+            // Water exit splash burst
+            for (let i = 0; i < 20; i++) {
+                const offset = new THREE.Vector3((Math.random() - 0.5) * 1.0, 0, (Math.random() - 0.5) * 1.0);
+                const spawnPos = playerGroup.current.position.clone().add(offset);
+                spawnPos.y = 0.1;
+
+                spawnParticle(
+                    spawnPos,
+                    new THREE.Vector3(
+                        (Math.random() - 0.5) * 4,
+                        Math.random() * 5 + 2,
+                        (Math.random() - 0.5) * 4
+                    ),
+                    '#93c5fd',
+                    0.15 + Math.random() * 0.15,
+                    0.7
+                );
+            }
         }
         wasInWater.current = isInWater;
 
@@ -259,20 +278,20 @@ export const Character: React.FC<CharacterProps> = ({
     isCharging = false,
     isRolling = false,
     isStumbling = false,
-    isClimbing = false,
     isRunning = false,
     isMoving = false,
     moveSpeed = 0,
     isGrounded = true,
     landingFactor = 0,
-    stepUpFactor = 0,
     stunTimerRef,
     rollTimerRef,
     isHiding = false,
     staminaRef,
     currentSurface = 0,
     fallDistance = 0,
-    justLanded = false
+    justLanded = false,
+    isClimbing = false,
+    waterExitTimerRef
 }) => {
     const headColor = stunned ? '#9ca3af' : '#3b82f6';
     const bodyColor = stunned ? '#4b5563' : '#1d4ed8';
@@ -298,6 +317,10 @@ export const Character: React.FC<CharacterProps> = ({
     const isTiredBreathing = useRef(false);
     const lastBreathCycle = useRef(0);
 
+    // Water Exit Animation State
+    const wasInWaterAnim = useRef(false);
+    const waterExitTimer = useRef(0);
+
     useFrame((state, delta) => {
         const stunTimeLeft = stunTimerRef?.current || 0;
         const time = state.clock.getElapsedTime();
@@ -313,7 +336,7 @@ export const Character: React.FC<CharacterProps> = ({
         let breathingScale = 1.0;
         let heavyBreathingRotX = 0;
 
-        if (isGrounded && !isMoving && !isRunning && !isClimbing && !stunned && !isRolling && !isStumbling && !isCharging && !isHiding) {
+        if (isGrounded && !isMoving && !isRunning && !stunned && !isRolling && !isStumbling && !isCharging && !isHiding && !isClimbing) {
             idleTimer.current += delta;
 
             const currentStamina = staminaRef?.current ?? 100;
@@ -379,6 +402,19 @@ export const Character: React.FC<CharacterProps> = ({
             idleState.current = 0;
         }
 
+        // --- WATER EXIT ANIMATION ---
+        const inWaterNow = currentSurface === 1 && isGrounded;
+        if (wasInWaterAnim.current && !inWaterNow) {
+            waterExitTimer.current = 0.6; // Duration of shake-off animation
+            if (waterExitTimerRef) waterExitTimerRef.current = 0.6;
+        }
+        wasInWaterAnim.current = inWaterNow;
+
+        if (waterExitTimer.current > 0) {
+            waterExitTimer.current -= delta;
+            if (waterExitTimerRef) waterExitTimerRef.current = waterExitTimer.current;
+        }
+
         // --- SQUASH / CROUCH LOGIC ---
         const baseCrouch = isCharging ? 0.4 : 0;
         let moveSquash = 0;
@@ -416,8 +452,7 @@ export const Character: React.FC<CharacterProps> = ({
                 // Kicking motion: subtle side-to-side body roll
                 targetRotZ = Math.sin(t) * 0.05;
 
-                // Vertical bob from kicking (main motion)
-                bobY = Math.sin(t * 2) * 0.12;
+                // No vertical bob in water to avoid tremor
 
                 // Slight yaw wiggle
                 targetRotY = Math.sin(t) * 0.03;
@@ -455,11 +490,46 @@ export const Character: React.FC<CharacterProps> = ({
             }
 
             rotLerpSpeed = delta * 22;
+        } else if (isClimbing) {
+            // --- CLIMBING ANIMATION ---
+            const freq = 15;
+            walkPhase.current += delta * freq;
+            const t = walkPhase.current;
+
+            // Wiggle left and right as they pull themselves up
+            targetRotZ = Math.sin(t) * 0.15;
+
+            // Lean forward slightly into the wall
+            targetRotX = 0.2;
+
+            // Small vertical bob to simulate pulling
+            bobY = Math.sin(t * 2) * 0.1;
+
+            rotLerpSpeed = delta * 20;
         } else {
             if (modelGroup.current) {
                 modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, 0, delta * 12);
             }
             walkPhase.current = THREE.MathUtils.lerp(walkPhase.current, 0, delta * 6);
+        }
+
+        // --- WATER EXIT SHAKE-OFF OVERLAY ---
+        if (waterExitTimer.current > 0 && !stunned && !isRolling) {
+            const WATER_EXIT_DURATION = 0.6;
+            const progress = 1.0 - (waterExitTimer.current / WATER_EXIT_DURATION);
+            // Smooth easeOut decay: fast start, gentle end
+            const shakeDecay = Math.pow(1.0 - progress, 2);
+            const shakeFreq = 14;
+            const shakeAmp = 0.12 * shakeDecay;
+
+            // Gentle side-to-side wobble
+            targetRotZ += Math.sin(progress * shakeFreq) * shakeAmp;
+            // Subtle rotation wobble
+            targetRotY += Math.sin(progress * shakeFreq * 1.2) * shakeAmp * 0.3;
+            // Smooth vertical stretch at the start (emerging from water)
+            if (progress < 0.35) {
+                bobY += Math.sin((progress / 0.35) * Math.PI) * 0.25;
+            }
         }
 
         // Combine Squash components
@@ -474,10 +544,10 @@ export const Character: React.FC<CharacterProps> = ({
             totalSquash = Math.sin(progress * Math.PI) * 0.5;
         } else if (isRolling) {
             totalSquash = 0.3;
-        } else if (isClimbing) {
-            totalSquash = -0.1;
         } else if (isHiding) {
             totalSquash = 0.6;
+        } else if (isClimbing) {
+            totalSquash = 0.3;
         }
 
         const BODY_HEIGHT = 2.4;
@@ -513,30 +583,18 @@ export const Character: React.FC<CharacterProps> = ({
             const progress = THREE.MathUtils.clamp(1 - (timer / duration), 0, 1);
             targetRotX = progress * Math.PI * 2;
             targetPivotY = 0.8;
-        } else if (isClimbing) {
-            targetRotX = -0.2;
-            targetRotZ = Math.sin(time * 15) * 0.1;
-            bobY = Math.sin(time * 20) * 0.05;
-            targetZOffset = -0.1;
-        } else if (stepUpFactor > 0) {
-            targetRotX = Math.sin(stepUpFactor * Math.PI) * 0.35;
-            targetZOffset = Math.sin(stepUpFactor * Math.PI) * 0.2;
-            rotLerpSpeed = delta * 20;
         }
 
         // Apply Lerps
         const squashLerpSpeed = delta * 20;
 
-        // Floating Animation (Water)
+        // Floating Animation (Water) - only when idle (carried by current)
         let floatingY = 0;
         let floatingRotX = 0;
         let floatingRotZ = 0;
-        if (currentSurface === 1 && isGrounded && !isClimbing && !isRolling && !stunned) {
-            // Vertical bob - gentle up/down (main motion)
-            floatingY = Math.sin(time * 1.8) * 0.1;
-            // Side-to-side tilt (very subtle)
-            floatingRotZ = Math.sin(time * 1.2) * 0.01;
-            // Forward/back rock (very subtle)
+        if (currentSurface === 1 && isGrounded && !isMoving && !isRolling && !stunned) {
+            floatingY = Math.sin(time * 1.8) * 0.08;
+            floatingRotZ = Math.sin(time * 1.2) * 0.015;
             floatingRotX = Math.sin(time * 1.5 + 1.0) * 0.01;
         }
 

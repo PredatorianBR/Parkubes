@@ -2,30 +2,30 @@
 import { useEffect, useRef } from 'react';
 
 export const useControls = () => {
-  const keys = useRef<{ [key: string]: boolean; analog?: { x: number, y: number } }>({});
+  const keys = useRef<{ [key: string]: boolean | { x: number; y: number } | undefined; analog?: { x: number; y: number } }>({});
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-        keys.current[e.key.toLowerCase()] = true;
+      keys.current[e.key.toLowerCase()] = true;
     };
     const up = (e: KeyboardEvent) => {
-        keys.current[e.key.toLowerCase()] = false;
+      keys.current[e.key.toLowerCase()] = false;
     };
 
     // Custom events for touch/click controls
     const virtualDown = (e: any) => {
-        if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = true;
+      if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = true;
     };
     const virtualUp = (e: any) => {
-        if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = false;
+      if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = false;
     };
-    
+
     // Analog Joystick Events
     const joystickMove = (e: any) => {
-        if (e.detail) keys.current.analog = { x: e.detail.x, y: e.detail.y };
+      if (e.detail) keys.current.analog = { x: e.detail.x, y: e.detail.y };
     };
     const joystickEnd = () => {
-        keys.current.analog = { x: 0, y: 0 };
+      keys.current.analog = { x: 0, y: 0 };
     };
 
     window.addEventListener('keydown', down);

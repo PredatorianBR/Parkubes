@@ -1,18 +1,17 @@
 
 import * as THREE from 'three';
 import { VoxelObject, GameSettings, Position } from '../types';
-import { worldToIndex, GRID_SCALE, PLAYER_HEIGHT } from './physics';
+import { worldToIndex, GRID_SCALE, PLAYER_HEIGHT, SpatialHashGrid, CollisionBox } from './physics';
 
 export const findSpawnPos = (
     size: number,
     halfSize: number,
     tGrid: number[][],
-    oGrid: number[][],
+    collisionGrid: SpatialHashGrid,
     wGrid: number[][],
     isWaterLogic: (lx: number, lz: number) => boolean
 ) => {
     let spawnPos = new THREE.Vector3(0, 0, 0);
-    const gridSize = size * GRID_SCALE;
 
     for (let k = 0; k < 1000; k++) {
         // Try random positions within a safer inner bound (avoiding map edges completely)
@@ -24,25 +23,40 @@ export const findSpawnPos = (
         const logicX = rx - halfSize;
         const logicZ = rz - halfSize;
 
-        const gx = worldToIndex(logicX, halfSize, size);
-        const gz = worldToIndex(logicZ, halfSize, size);
-
-        // Check if tGrid is street/empty AND oGrid is not too high (avoid spawning inside objects)
-        if (tGrid[rx][rz] === 0 && !isWaterLogic(logicX, logicZ) && oGrid[gx][gz] < 2.0) {
-            const groundH = oGrid[gx][gz];
-            spawnPos.set(logicX, groundH + 1.0, logicZ);
-            return spawnPos;
+        if (tGrid[rx][rz] === 0 && !isWaterLogic(logicX, logicZ)) {
+            // Query collision boxes at this position to get ground height
+            const nearby = collisionGrid.query(logicX, logicZ, 0.5);
+            let maxH = 0;
+            for (const box of nearby) {
+                if (logicX >= box.minX && logicX <= box.maxX && logicZ >= box.minZ && logicZ <= box.maxZ) {
+                    if (box.maxY > maxH) maxH = box.maxY;
+                }
+            }
+            if (maxH < 2.0) {
+                spawnPos.set(logicX, maxH + 1.0, logicZ);
+                return spawnPos;
+            }
         }
     }
 
-    // If no safe spot found on street, try ANY spot that isn't too high
+    // If no safe spot found on street, try any spot without water or tall objects
+    const gridSize = size * GRID_SCALE;
     for (let x = 0; x < gridSize; x++) {
         for (let z = 0; z < gridSize; z++) {
-            if (oGrid[x][z] < 2.0 && wGrid[x][z] === 0) {
+            if (wGrid[x][z] === 0) {
                 const logicX = (x + 0.5) / GRID_SCALE - halfSize;
                 const logicZ = (z + 0.5) / GRID_SCALE - halfSize;
-                spawnPos.set(logicX, oGrid[x][z] + 1.0, logicZ);
-                return spawnPos;
+                const nearby = collisionGrid.query(logicX, logicZ, 0.5);
+                let maxH = 0;
+                for (const box of nearby) {
+                    if (logicX >= box.minX && logicX <= box.maxX && logicZ >= box.minZ && logicZ <= box.maxZ) {
+                        if (box.maxY > maxH) maxH = box.maxY;
+                    }
+                }
+                if (maxH < 2.0) {
+                    spawnPos.set(logicX, maxH + 1.0, logicZ);
+                    return spawnPos;
+                }
             }
         }
     }
@@ -76,7 +90,7 @@ export const generateCityLevel = (
 
     // Grids (Scaled Up for Physics Precision)
     const gridSize = size * GRID_SCALE;
-    const oGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Height Grid
+    const collisionGrid = new SpatialHashGrid(size); // 3D Collision Boxes
     const bGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Bridge Grid
     const wGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Water Grid
     const sGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Surface Grid (0: Grass, 1: Water, 2: Street, 3: Hard)
@@ -729,6 +743,8 @@ export const generateCityLevel = (
             let maxDoors = 1;
             if (type === 'factory') {
                 maxDoors = (fillW >= 12 && fillD >= 12) ? 3 : 2;
+            } else if (type === 'house') {
+                maxDoors = (fillW >= 10 && fillD >= 10) ? 2 : 1;
             } else if (fillW >= 10 && fillD >= 10) {
                 maxDoors = 2;
             }
@@ -736,6 +752,9 @@ export const generateCityLevel = (
 
             // Sort facades by width to prioritize large faces for doors/chimneys
             facades.sort((a, b) => b.width - a.width);
+
+            // Slots for vertical propagation (doors + ground-floor windows define columns)
+            const groundSlots: { f: typeof facades[0], x: number, worldPosX?: number, worldPosZ?: number }[] = [];
 
             // PASS 1: Doors and Chimneys (High Priority)
             for (const f of facades) {
@@ -799,37 +818,12 @@ export const generateCityLevel = (
                             doorsPlacedCount++;
                             if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
 
-                            // Windows above doors (with padding check)
-                            for (let fL = 1; fL < numFloors; fL++) {
-                                const worldY = (fL * floorH) + (floorH / 2);
-                                if (worldY + 1.5 < height) { // Ensure floor height permits window + padding
-                                    const yIdx = Math.floor(worldY);
-                                    const winW = dType === 'industrial' ? 2 : 1;
-                                    const winH = 2;
-                                    const sWX = startX + Math.floor((dW - winW) / 2);
-                                    const sWY = yIdx - Math.floor(winH / 2);
+                            // Register door center as a slot for vertical propagation
+                            const doorCenterX = startX + Math.floor(dW / 2);
+                            const doorWX = (worldX - f.normal.dx * 0.5) + 0.5;
+                            const doorWZ = (worldZ - f.normal.dz * 0.5) + 0.5;
+                            groundSlots.push({ f, x: doorCenterX, worldPosX: doorWX, worldPosZ: doorWZ });
 
-                                    let canPlaceAbove = true;
-                                    for (let ix = sWX - 1; ix <= sWX + winW; ix++) {
-                                        for (let iy = sWY - 1; iy <= sWY + winH; iy++) {
-                                            if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
-                                                canPlaceAbove = false; break;
-                                            }
-                                        }
-                                        if (!canPlaceAbove) break;
-                                    }
-
-                                    if (canPlaceAbove) {
-                                        for (let ix = sWX - 1; ix <= sWX + winW; ix++) {
-                                            for (let iy = sWY - 1; iy <= sWY + winH; iy++) f.occupancy[ix][iy] = true;
-                                        }
-                                        assignedWindows.push({
-                                            pos: [(worldX - f.normal.dx * 0.5) - cx + 0.5, worldY - (height / 2), (worldZ - f.normal.dz * 0.5) - cz + 0.5],
-                                            rot: f.rotVec as [number, number, number]
-                                        });
-                                    }
-                                }
-                            }
                             break; // Door successfully placed for this facade
                         }
                     }
@@ -875,115 +869,126 @@ export const generateCityLevel = (
                 }
             }
 
-            // PASS 2: Windows and Wall ACs (Deterministic Grid)
+            // Guarantee: every house must have at least 1 door
+            if (type === 'house' && doorsPlacedCount === 0 && facades.length > 0) {
+                const dW = 2;
+                const dH = 4;
+                // Try widest facade first (already sorted)
+                for (const f of facades) {
+                    const possibleStarts: number[] = [];
+                    for (let x = 1; x <= f.width - dW - 1; x++) possibleStarts.push(x);
+                    // Shuffle
+                    for (let i = possibleStarts.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [possibleStarts[i], possibleStarts[j]] = [possibleStarts[j], possibleStarts[i]];
+                    }
+                    for (const startX of possibleStarts) {
+                        let canPlace = true;
+                        for (let x = startX - 1; x <= startX + dW; x++) {
+                            for (let y = 0; y <= dH; y++) {
+                                if (x < 0 || x >= f.width || y >= f.height || f.occupancy[x][y]) { canPlace = false; break; }
+                            }
+                            if (!canPlace) break;
+                        }
+                        if (canPlace) {
+                            for (let x = startX - 1; x <= startX + dW; x++) {
+                                for (let y = 0; y <= dH; y++) {
+                                    if (x >= 0 && x < f.width && y < f.height) f.occupancy[x][y] = true;
+                                }
+                            }
+                            for (let x = startX; x < startX + dW; x++) {
+                                globalColumnOccupied.add(`${f.columns[x].worldX},${f.columns[x].worldZ}`);
+                            }
+                            const doorWorldH = 4.4;
+                            const ly = (doorWorldH / 2) - (height / 2);
+                            const firstCol = f.columns[startX];
+                            const lastCol = f.columns[startX + dW - 1];
+                            const worldX = (firstCol.worldX + lastCol.worldX) / 2;
+                            const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2;
+                            assignedDoors.push({
+                                pos: [(worldX - f.normal.dx * 0.5) - cx + 0.5, ly, (worldZ - f.normal.dz * 0.5) - cz + 0.5],
+                                rot: f.rotVec as [number, number, number],
+                                type: 'standard'
+                            });
+                            doorsPlacedCount++;
+                            const doorCenterX = startX + Math.floor(dW / 2);
+                            const doorWX = (worldX - f.normal.dx * 0.5) + 0.5;
+                            const doorWZ = (worldZ - f.normal.dz * 0.5) + 0.5;
+                            groundSlots.push({ f, x: doorCenterX, worldPosX: doorWX, worldPosZ: doorWZ });
+                            break;
+                        }
+                    }
+                    if (doorsPlacedCount > 0) break;
+                }
+            }
+
+            // PASS 2: Windows and Wall ACs (Column-based from ground floor)
             const winInterval = type === 'factory' ? 6 : (type === 'highrise' ? 3 : 4);
             const floorsWithWallAC = new Array(numFloors).fill(false);
             let factoryWallACs = 0;
             let groundFloorHasWindow = false;
 
+            // Phase A: Place ground-floor windows and record slots
             for (const f of facades) {
-                for (let level = 0; level < numFloors; level++) {
-                    const worldY = (level * floorH) + (floorH / 2);
-                    if (worldY + 1 >= height) continue;
+                const floorBase = 0 * floorH;
+                const startOffset = Math.floor((f.width % winInterval) / 2) || 2;
 
-                    const groundY = Math.floor(worldY);
-                    const startOffset = Math.floor((f.width % winInterval) / 2) || 2;
+                for (let x = startOffset; x < f.width - 2; x += winInterval) {
+                    const winW = type === 'factory' ? 4 : 1;
+                    const winH = type === 'factory' ? 2 : 1;
+                    // Top of window aligns with player height
+                    const winBase = floorBase + PLAYER_HEIGHT - winH;
+                    if (winBase + winH >= height) continue;
+                    const groundY = Math.floor(winBase);
+                    if (f.occupancy[x][groundY]) continue;
 
-                    for (let x = startOffset; x < f.width - 2; x += winInterval) {
-                        if (f.occupancy[x][groundY]) continue;
+                    const sWinX = x - Math.floor(winW / 2);
+                    const sWinY = groundY;
 
-                        let placeAC = false;
-                        if (Math.random() < 0.2 && level > 0) {
-                            if (type === 'factory' && factoryWallACs < 1) placeAC = true;
-                            if ((type === 'house' || type === 'highrise') && !floorsWithWallAC[level]) placeAC = true;
-                        }
-
-                        if (placeAC) {
-                            const acW = 3;
-                            const acH = 2;
-                            const sAX = x - Math.floor(acW / 2);
-                            const sAY = groundY - Math.floor(acH / 2);
-
-                            let canPlace = true;
-                            // Check area for AC + 1 voxel pad
-                            for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
-                                for (let iy = sAY - 1; iy <= sAY + acH; iy++) {
-                                    if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
-                                        canPlace = false; break;
-                                    }
-                                }
-                                if (!canPlace) break;
-                            }
-
-                            if (canPlace) {
-                                for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
-                                    for (let iy = sAY - 1; iy <= sAY + acH; iy++) f.occupancy[ix][iy] = true;
-                                }
-
-                                const col = f.columns[x];
-                                assignedACs.push({
-                                    pos: [col.worldX + 0.5 - cx, worldY - (height / 2), col.worldZ + 0.5 - cz],
-                                    scale: [3, 2, 1],
-                                    color: type === 'house' ? colors.acResidential : colors.acIndustrial,
-                                    rotation: f.rot,
-                                    type: 'wall'
-                                });
-                                if (type === 'factory') factoryWallACs++;
-                                floorsWithWallAC[level] = true;
-                            }
-                        } else {
-                            // Place Window
-                            const winW = type === 'factory' ? 4 : 1;
-                            const winH = type === 'factory' ? 2 : 1;
-
-                            const sWinX = x - Math.floor(winW / 2);
-                            const sWinY = groundY - Math.floor(winH / 2);
-
-                            let canPlaceWin = true;
-                            for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
-                                for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
-                                    if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
-                                        canPlaceWin = false; break;
-                                    }
-                                }
-                                if (!canPlaceWin) break;
-                            }
-
-                            if (canPlaceWin) {
-                                for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
-                                    for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) f.occupancy[ix][iy] = true;
-                                }
-
-                                const firstCol = f.columns[Math.max(0, sWinX)];
-                                const lastCol = f.columns[Math.min(f.width - 1, sWinX + winW - 1)];
-                                const worldX = (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
-                                const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
-                                const worldYWin = (sWinY + (winH / 2)) - (height / 2);
-
-                                assignedWindows.push({
-                                    pos: [worldX - cx, worldYWin, worldZ - cz],
-                                    rot: f.rotVec as [number, number, number]
-                                });
-                                if (level === 0) groundFloorHasWindow = true;
+                    let canPlace = true;
+                    for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                        for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
+                            if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                canPlace = false; break;
                             }
                         }
+                        if (!canPlace) break;
+                    }
+
+                    if (canPlace) {
+                        for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                            for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) f.occupancy[ix][iy] = true;
+                        }
+
+                        const firstCol = f.columns[Math.max(0, sWinX)];
+                        const lastCol = f.columns[Math.min(f.width - 1, sWinX + winW - 1)];
+                        const worldX = (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
+                        const worldZ = (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
+                        const worldYWin = (winBase + (winH / 2)) - (height / 2);
+
+                        assignedWindows.push({
+                            pos: [worldX - cx, worldYWin, worldZ - cz],
+                            rot: f.rotVec as [number, number, number]
+                        });
+                        groundFloorHasWindow = true;
+                        groundSlots.push({ f, x });
                     }
                 }
             }
 
-            // Final Ground Floor Check: Force at least one window if building results empty on level 0
+            // Force at least one ground-floor window if none were placed
             if (!groundFloorHasWindow && facades.length > 0) {
-                const levelIdx = 0;
-                const worldY = (levelIdx * floorH) + (floorH / 2);
-                const groundY = Math.floor(worldY);
+                const floorBase = 0 * floorH;
                 const winW = type === 'factory' ? 4 : 1;
                 const winH = type === 'factory' ? 2 : 1;
+                const winBase = floorBase + PLAYER_HEIGHT - winH;
+                const groundY = Math.floor(winBase);
 
                 for (const f of facades) {
-                    if (worldY + 1 >= height) break;
+                    if (winBase + winH >= height) break;
                     for (let x = 1; x <= f.width - winW - 1; x++) {
                         const sWinX = x;
-                        const sWinY = groundY - Math.floor(winH / 2);
+                        const sWinY = groundY;
                         let canPlace = true;
                         for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
                             for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
@@ -1001,17 +1006,116 @@ export const generateCityLevel = (
                             const lastCol = f.columns[sWinX + winW - 1];
                             const wX = (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
                             const wZ = (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
-                            const wY = (sWinY + (winH / 2)) - (height / 2);
+                            const wY = (winBase + (winH / 2)) - (height / 2);
                             assignedWindows.push({
                                 pos: [wX - cx, wY, wZ - cz],
                                 rot: f.rotVec as [number, number, number]
                             });
-                            groundFloorHasWindow = true; break;
+                            groundFloorHasWindow = true;
+                            groundSlots.push({ f, x });
+                            break;
                         }
                     }
                     if (groundFloorHasWindow) break;
                 }
             }
+
+            // Phase B: Propagate slots upward through all upper floors
+            for (let level = 1; level < numFloors; level++) {
+                const floorBase = level * floorH;
+
+                for (const slot of groundSlots) {
+                    const f = slot.f;
+                    const x = slot.x;
+
+                    // Decide: window or wall AC?
+                    let placeAC = false;
+                    if (Math.random() < 0.2) {
+                        if (type === 'factory' && factoryWallACs < 1) placeAC = true;
+                        if ((type === 'house' || type === 'highrise') && !floorsWithWallAC[level]) placeAC = true;
+                    }
+
+                    if (placeAC) {
+                        const acW = 3;
+                        const acH = 2;
+                        const acBase = floorBase + 2;
+                        if (acBase + acH >= height) { /* skip AC */ } else {
+                            const acGroundY = Math.floor(acBase);
+                            const sAX = x - Math.floor(acW / 2);
+                            const sAY = acGroundY - Math.floor(acH / 2);
+
+                            let canPlace = true;
+                            for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
+                                for (let iy = sAY - 1; iy <= sAY + acH; iy++) {
+                                    if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                        canPlace = false; break;
+                                    }
+                                }
+                                if (!canPlace) break;
+                            }
+
+                            if (canPlace) {
+                                for (let ix = sAX - 1; ix <= sAX + acW; ix++) {
+                                    for (let iy = sAY - 1; iy <= sAY + acH; iy++) f.occupancy[ix][iy] = true;
+                                }
+
+                                const col = f.columns[x];
+                                assignedACs.push({
+                                    pos: [col.worldX + 0.5 - cx, (acBase + acH / 2) - (height / 2), col.worldZ + 0.5 - cz],
+                                    scale: [3, 2, 1],
+                                    color: type === 'house' ? colors.acResidential : colors.acIndustrial,
+                                    rotation: f.rot,
+                                    type: 'wall'
+                                });
+                                if (type === 'factory') factoryWallACs++;
+                                floorsWithWallAC[level] = true;
+                                continue;
+                            }
+                        } // end acBase height check
+                    }
+
+                    // Fallback: place window at this slot
+                    const winW = type === 'factory' ? 4 : 1;
+                    const winH = type === 'factory' ? 2 : 1;
+                    const winBaseSlot = floorBase + PLAYER_HEIGHT - winH;
+                    if (winBaseSlot + winH >= height) continue;
+                    const groundYWin = Math.floor(winBaseSlot);
+                    const sWinX = x - Math.floor(winW / 2);
+                    const sWinY = groundYWin;
+                    let canPlaceWin = true;
+                    for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                        for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) {
+                            if (ix < 1 || ix >= f.width - 1 || iy < 1 || iy >= f.height - 1 || f.occupancy[ix][iy]) {
+                                canPlaceWin = false; break;
+                            }
+                        }
+                        if (!canPlaceWin) break;
+                    }
+
+                    if (canPlaceWin) {
+                        for (let ix = sWinX - 1; ix <= sWinX + winW; ix++) {
+                            for (let iy = sWinY - 1; iy <= sWinY + winH; iy++) f.occupancy[ix][iy] = true;
+                        }
+
+                        const firstCol = f.columns[Math.max(0, sWinX)];
+                        const lastCol = f.columns[Math.min(f.width - 1, sWinX + winW - 1)];
+                        // Use slot's world position if available (door-originated), else compute from columns
+                        const worldX = slot.worldPosX !== undefined
+                            ? slot.worldPosX
+                            : (firstCol.worldX + lastCol.worldX) / 2 - f.normal.dx * 0.5 + 0.5;
+                        const worldZ = slot.worldPosZ !== undefined
+                            ? slot.worldPosZ
+                            : (firstCol.worldZ + lastCol.worldZ) / 2 - f.normal.dz * 0.5 + 0.5;
+                        const worldYWin = (winBaseSlot + (winH / 2)) - (height / 2);
+
+                        assignedWindows.push({
+                            pos: [worldX - cx, worldYWin, worldZ - cz],
+                            rot: f.rotVec as [number, number, number]
+                        });
+                    }
+                }
+            }
+
 
 
 
@@ -1374,37 +1478,44 @@ export const generateCityLevel = (
         }
     }
 
-    // --- AUTOMATIC COLLISION ADJUSTMENT STEP (HIGH RES) ---
+    // --- BUILD 3D COLLISION BOXES ---
     objects.forEach(obj => {
-        // --- CUSTOM FENCE COLLISION (1 Voxel Precision) ---
+        // --- CUSTOM FENCE COLLISION (Thin 3D Boxes) ---
         if (obj.type === 'fence') {
-            // Fences are on logic grid vertices (0.5 bounds)
-            // Visual X = worldX. We map it directly to the exact sub-cell representing that vertex
             const logicWX = obj.position[0];
             const logicWZ = obj.position[2];
+            const cellSize = 1.0 / GRID_SCALE;
 
-            const startX = worldToIndex(logicWX, halfSize, size);
-            const startZ = worldToIndex(logicWZ, halfSize, size);
+            // Pillar box (1.2 tall)
+            collisionGrid.insert({
+                minX: logicWX - cellSize / 2,
+                minY: 0,
+                minZ: logicWZ - cellSize / 2,
+                maxX: logicWX + cellSize / 2,
+                maxY: 1.2,
+                maxZ: logicWZ + cellSize / 2
+            });
 
-            // Pillar: the exact Vertex maps to the bottom-right of the cell (startX-1, startZ-1)
-            // But visually, the sub-voxel aligns better with the tile it "starts"
-            const ix = startX;
-            const iz = startZ;
-
-            if (ix >= 0 && ix < gridSize && iz >= 0 && iz < gridSize) {
-                oGrid[ix][iz] = 1.2; // Pillar Height
-            }
-
-            // Neighbor Logic to create "thin" walls (1 voxel thick)
+            // Neighbor rails as thin boxes
             if (obj.neighbors?.s) {
-                if (ix >= 0 && ix < gridSize && iz + 1 < gridSize) {
-                    oGrid[ix][iz + 1] = 1.0;
-                }
+                collisionGrid.insert({
+                    minX: logicWX - cellSize / 2,
+                    minY: 0,
+                    minZ: logicWZ + cellSize / 2,
+                    maxX: logicWX + cellSize / 2,
+                    maxY: 1.0,
+                    maxZ: logicWZ + cellSize * 1.5
+                });
             }
             if (obj.neighbors?.e) {
-                if (ix + 1 < gridSize && iz >= 0 && iz < gridSize) {
-                    oGrid[ix + 1][iz] = 1.0;
-                }
+                collisionGrid.insert({
+                    minX: logicWX + cellSize / 2,
+                    minY: 0,
+                    minZ: logicWZ - cellSize / 2,
+                    maxX: logicWX + cellSize * 1.5,
+                    maxY: 1.0,
+                    maxZ: logicWZ + cellSize / 2
+                });
             }
             return;
         }
@@ -1418,67 +1529,75 @@ export const generateCityLevel = (
         const h = obj.scale[1];
         const d = obj.scale[2];
 
-        const startXLogic = obj.position[0] - w / 2;
-        const startZLogic = obj.position[2] - d / 2;
+        const posX = obj.position[0];
+        const posY = obj.position[1];
+        const posZ = obj.position[2];
 
-        const startXHigh = Math.round((startXLogic + halfSize) * GRID_SCALE);
-        const startZHigh = Math.round((startZLogic + halfSize) * GRID_SCALE);
+        const topY = posY + h / 2;
+        const botY = posY - h / 2;
+        const collisionTop = topY + (obj.type !== 'ruin' ? 0.3 : 0);
 
-        const wHigh = Math.round(w * GRID_SCALE);
-        const dHigh = Math.round(d * GRID_SCALE);
+        // For L-shaped buildings, create two boxes instead of one
+        if (obj.lShape && obj.lShape.active) {
+            const [cutW, cutD] = obj.lShape.cutSize;
+            const corner = obj.lShape.cutCorner;
 
-        // Determine surface type
-        let surfaceType = 3; // Default Hard/Stone
-        if (obj.type === 'ruin') surfaceType = 3;
-        else if (obj.type === 'box' || obj.type === 'factory' || obj.type === 'highrise') surfaceType = 3;
+            // Main box and remaining box depend on cut corner
+            // Building footprint spans: [posX - w/2, posX + w/2] x [posZ - d/2, posZ + d/2]
+            const bMinX = posX - w / 2;
+            const bMaxX = posX + w / 2;
+            const bMinZ = posZ - d / 2;
+            const bMaxZ = posZ + d / 2;
 
-        for (let ix = 0; ix < wHigh; ix++) {
-            for (let iz = 0; iz < dHigh; iz++) {
-                // Determine if this high-res voxel is inside the cut area
-                if (obj.lShape && obj.lShape.active) {
-                    const [cutW, cutD] = obj.lShape.cutSize;
-                    const corner = obj.lShape.cutCorner;
-
-                    const cutWHigh = Math.round(cutW * GRID_SCALE);
-                    const cutDHigh = Math.round(cutD * GRID_SCALE);
-
-                    let isCut = false;
-
-                    if (corner === 0) { // Max X, Max Z
-                        if (ix >= wHigh - cutWHigh && iz >= dHigh - cutDHigh) isCut = true;
-                    } else if (corner === 1) { // Max X, Min Z
-                        if (ix >= wHigh - cutWHigh && iz < cutDHigh) isCut = true;
-                    } else if (corner === 2) { // Min X, Min Z
-                        if (ix < cutWHigh && iz < cutDHigh) isCut = true;
-                    } else if (corner === 3) { // Min X, Max Z
-                        if (ix < cutWHigh && iz >= dHigh - cutDHigh) isCut = true;
-                    }
-
-                    if (isCut) continue;
-                }
-
-                const gridX = startXHigh + ix;
-                const gridZ = startZHigh + iz;
-
-                if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
-                    // Update Surface Grid
-                    // sGrid[gridX][gridZ] = surfaceType; // REMOVED: Always grass on ground
-
-
-
-                    const topY = obj.position[1] + h / 2;
-                    const collisionH = topY + (obj.type !== 'ruin' ? 0.3 : 0);
-                    if (obj.position[1] - h / 2 > 1.0) {
-                        bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], collisionH);
-                    } else {
-                        oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], collisionH);
+            if (corner === 0) { // NE cut (max X, max Z)
+                // Box 1: Full width, reduced depth (bottom part)
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMinZ, maxX: bMaxX, maxY: collisionTop, maxZ: bMaxZ - cutD });
+                // Box 2: Reduced width, full depth for uncovered part
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMaxZ - cutD, maxX: bMaxX - cutW, maxY: collisionTop, maxZ: bMaxZ });
+            } else if (corner === 1) { // SE cut (max X, min Z)
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMinZ + cutD, maxX: bMaxX, maxY: collisionTop, maxZ: bMaxZ });
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMinZ, maxX: bMaxX - cutW, maxY: collisionTop, maxZ: bMinZ + cutD });
+            } else if (corner === 2) { // SW cut (min X, min Z)
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMinZ + cutD, maxX: bMaxX, maxY: collisionTop, maxZ: bMaxZ });
+                collisionGrid.insert({ minX: bMinX + cutW, minY: botY, minZ: bMinZ, maxX: bMaxX, maxY: collisionTop, maxZ: bMinZ + cutD });
+            } else if (corner === 3) { // NW cut (min X, max Z)
+                collisionGrid.insert({ minX: bMinX, minY: botY, minZ: bMinZ, maxX: bMaxX, maxY: collisionTop, maxZ: bMaxZ - cutD });
+                collisionGrid.insert({ minX: bMinX + cutW, minY: botY, minZ: bMaxZ - cutD, maxX: bMaxX, maxY: collisionTop, maxZ: bMaxZ });
+            }
+        } else {
+            // Standard rectangular building: one box
+            if (botY > 1.0) {
+                // Elevated object → bridge grid (keep legacy behavior)
+                const startXLogic = posX - w / 2;
+                const startZLogic = posZ - d / 2;
+                const startXHigh = Math.round((startXLogic + halfSize) * GRID_SCALE);
+                const startZHigh = Math.round((startZLogic + halfSize) * GRID_SCALE);
+                const wHigh = Math.round(w * GRID_SCALE);
+                const dHigh = Math.round(d * GRID_SCALE);
+                for (let ix = 0; ix < wHigh; ix++) {
+                    for (let iz = 0; iz < dHigh; iz++) {
+                        const gridX = startXHigh + ix;
+                        const gridZ = startZHigh + iz;
+                        if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
+                            bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], collisionTop);
+                        }
                     }
                 }
+            } else {
+                // Ground-level object → 3D collision box
+                collisionGrid.insert({
+                    minX: posX - w / 2,
+                    minY: botY,
+                    minZ: posZ - d / 2,
+                    maxX: posX + w / 2,
+                    maxY: collisionTop,
+                    maxZ: posZ + d / 2
+                });
             }
         }
     });
 
-    // --- SECOND PASS: collision logic for ALL DETAILS (so they sit correctly on populated grids) ---
+    // --- SECOND PASS: collision boxes for ALL DETAILS (chimneys, ACs) ---
     objects.forEach(obj => {
         const details = [
             ...(obj.attachedChimneys || []).map(c => ({ ...c, isChimney: true, detailType: 'chimney' })),
@@ -1496,34 +1615,22 @@ export const generateCityLevel = (
                 dD = temp;
             }
 
-            let absX = obj.position[0] + det.pos[0];
+            const absX = obj.position[0] + det.pos[0];
             const absY = obj.position[1] + det.pos[1];
-            let absZ = obj.position[2] + det.pos[2];
+            const absZ = obj.position[2] + det.pos[2];
 
-            const dStartX = Math.round((absX - dW / 2 + halfSize) * GRID_SCALE);
-            const dStartZ = Math.round((absZ - dD / 2 + halfSize) * GRID_SCALE);
-            const dWHigh = Math.round(dW * GRID_SCALE);
-            const dDHigh = Math.round(dD * GRID_SCALE);
+            const topH = absY + dH / 2;
+            const botH = absY - dH / 2;
 
-            for (let dx = 0; dx < dWHigh; dx++) {
-                for (let dz = 0; dz < dDHigh; dz++) {
-                    const gridX = dStartX + dx;
-                    const gridZ = dStartZ + dz;
-
-                    if (gridX >= 0 && gridX < gridSize && gridZ >= 0 && gridZ < gridSize) {
-                        const topH = absY + dH / 2;
-                        if (absY - dH / 2 > 2.0) {
-                            if (oGrid[gridX][gridZ] > 0) {
-                                oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
-                            } else {
-                                bGrid[gridX][gridZ] = Math.max(bGrid[gridX][gridZ], topH);
-                            }
-                        } else {
-                            oGrid[gridX][gridZ] = Math.max(oGrid[gridX][gridZ], topH);
-                        }
-                    }
-                }
-            }
+            // Insert 3D collision box for the detail
+            collisionGrid.insert({
+                minX: absX - dW / 2,
+                minY: botH,
+                minZ: absZ - dD / 2,
+                maxX: absX + dW / 2,
+                maxY: topH,
+                maxZ: absZ + dD / 2
+            });
         });
     });
 
@@ -1543,5 +1650,5 @@ export const generateCityLevel = (
     const baseRandom = settings.riverFlow * (0.5 + Math.random() * 1.0);
     const randomFlow = Math.round(THREE.MathUtils.clamp(baseRandom, 0, 5));
 
-    return { objects, oGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0 };
+    return { objects, collisionGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0 };
 };

@@ -1,7 +1,7 @@
 
 import React from 'react';
 import * as THREE from 'three';
-import { updateEntityPhysics } from './physics';
+import { updateEntityPhysics, SpatialHashGrid } from './physics';
 
 // Wrapper to bridge Game Inputs -> Physics Engine
 export const updatePlayerPhysics = (
@@ -16,11 +16,11 @@ export const updatePlayerPhysics = (
     stamina: React.MutableRefObject<number>,
     stunTimer: React.MutableRefObject<number>,
     stunned: boolean,
-    keys: React.MutableRefObject<{ [key: string]: boolean }>,
+    keys: React.MutableRefObject<{ [key: string]: boolean | { x: number; y: number } | undefined }>,
     playerLastDir: React.MutableRefObject<THREE.Vector2>,
     jumpPressedPrev: React.MutableRefObject<boolean>,
     speedSettings: number,
-    occupancyGrid: number[][],
+    collisionGrid: SpatialHashGrid,
     bridgeGrid: number[][],
     waterGrid: number[][],
     worldSize: number,
@@ -28,7 +28,6 @@ export const updatePlayerPhysics = (
     rollTimer: React.MutableRefObject<number>,
     jumpBufferTimer: React.MutableRefObject<number>,
     isRollingRef: React.MutableRefObject<boolean>,
-    stepUpTimer: React.MutableRefObject<number>,
     stumbleTimer: React.MutableRefObject<number>,
     stumbleVelocityRef: React.MutableRefObject<THREE.Vector3>,
     camera: THREE.Camera, // ADDED: Camera for relative movement
@@ -93,7 +92,7 @@ export const updatePlayerPhysics = (
     }
 
     // Input Detection
-    const isJumpDown = keys.current[' '] || false;
+    const isJumpDown = !!keys.current[' '];
     const justPressedJump = isJumpDown && !jumpPressedPrev.current;
 
     // --- JUMP BUFFER (For Roll) ---
@@ -130,17 +129,12 @@ export const updatePlayerPhysics = (
         rollTimer.current -= dt;
         if (rollTimer.current < 0) rollTimer.current = 0;
     }
-    if (stepUpTimer.current > 0) {
-        stepUpTimer.current -= dt;
-        if (stepUpTimer.current < 0) stepUpTimer.current = 0;
-    }
 
     // 3. Prepare Physics State
     const currentState = {
         pos: pos,
         vel: velocity,
         isGrounded: isGrounded.current,
-        isClimbing: false,
         isCharging: isChargingRef.current,
         isRolling: rollTimer.current > 0,
         didStepUp: false,
@@ -150,7 +144,8 @@ export const updatePlayerPhysics = (
         stumbleVel: stumbleVelocityRef.current,
         airTimeHigh: airTimeHighPoint.current,
         lastDir: playerLastDir.current,
-        noiseLevel: 0
+        noiseLevel: 0,
+        isClimbing: false
     };
 
     const inputs = {
@@ -159,12 +154,12 @@ export const updatePlayerPhysics = (
         actions: {
             jump: performJump,
             charge: isVisualPreJumping,
-            climb: isJumpDown,
-            run: keys.current['shift'] || isAnalogRunning,
+            climb: !!isJumpDown,
+            run: !!(keys.current['shift'] || isAnalogRunning),
             attemptRoll: jumpBufferTimer.current > 0
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
-        world: { oGrid: occupancyGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, riverOrientation, riverFlow }
+        world: { collisionGrid: collisionGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, riverOrientation, riverFlow }
     };
 
     // 4. Run Physics Engine
@@ -172,11 +167,6 @@ export const updatePlayerPhysics = (
 
     // Update Input History
     jumpPressedPrev.current = isJumpDown;
-
-    // TRIGGER STEP UP ANIMATION
-    if (nextState.didStepUp && stepUpTimer.current <= 0) {
-        stepUpTimer.current = 0.25;
-    }
 
     // CHECK IF WE ENTERED ROLL STATE
     if (nextState.isRolling && rollTimer.current <= 0) {
@@ -218,11 +208,9 @@ export const updatePlayerPhysics = (
         effectiveStunned = true;
     }
 
-    const stepUpFactor = stepUpTimer.current / 0.25;
 
     return {
-        isRunning: (keys.current['shift'] || isAnalogRunning) && inputDir.lengthSq() > 0,
-        isClimbing: nextState.isClimbing,
+        isRunning: !!(keys.current['shift'] || isAnalogRunning) && inputDir.lengthSq() > 0,
         isCharging: nextState.isCharging || isVisualPreJumping,
         isRolling: nextState.isRolling,
         pMoving: inputDir.lengthSq() > 0,
@@ -230,9 +218,9 @@ export const updatePlayerPhysics = (
         effectiveStunned,
         isStumbling: stumbleTimer.current > 0,
         isGrounded: nextState.isGrounded,
+        isClimbing: nextState.isClimbing,
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
-        stepUpFactor: THREE.MathUtils.clamp(stepUpFactor, 0, 1),
         fallDistance: lastFallDistRef.current,
         justLanded
     };

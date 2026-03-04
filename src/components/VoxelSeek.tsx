@@ -8,7 +8,7 @@ import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
 import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
-import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT } from '../utils/physics';
+import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT, SpatialHashGrid, CollisionBox } from '../utils/physics';
 import { VoxelGround } from './environment/VoxelGround';
 import { VoxelWater } from './environment/VoxelWater';
 import { WheatField } from './environment/WheatField';
@@ -37,41 +37,50 @@ interface VoxelSeekProps {
 }
 
 // --- DEBUG COMPONENT ---
-const CollisionDebug: React.FC<{ oGrid: number[][]; bGrid: number[][]; size: number; visible: boolean }> = React.memo(({ oGrid, bGrid, size, visible }) => {
-    const oRef = useRef<THREE.InstancedMesh>(null!);
+const CollisionDebug: React.FC<{ collisionGrid: SpatialHashGrid; bGrid: number[][]; size: number; visible: boolean }> = React.memo(({ collisionGrid, bGrid, size, visible }) => {
+    const boxRef = useRef<THREE.InstancedMesh>(null!);
     const bRef = useRef<THREE.InstancedMesh>(null!);
     const halfSize = Math.floor(size / 2);
+    const gridSize = size * GRID_SCALE;
 
-    // GridSize is oGrid.length
-    const gridSize = oGrid.length;
+    // Get all collision boxes for visualization
+    const allBoxes = useMemo(() => collisionGrid.getAllBoxes(), [collisionGrid]);
 
     useEffect(() => {
-        if (!oRef.current || !bRef.current) return;
+        if (!boxRef.current || !bRef.current) return;
 
         const dummy = new THREE.Object3D();
-        let idxO = 0;
+        let idxBox = 0;
+
+        // Render collision boxes as wireframe cubes
+        for (const box of allBoxes) {
+            const w = box.maxX - box.minX;
+            const h = box.maxY - box.minY;
+            const d = box.maxZ - box.minZ;
+            if (w <= 0 || h <= 0 || d <= 0) continue;
+
+            dummy.position.set(
+                (box.minX + box.maxX) / 2,
+                (box.minY + box.maxY) / 2,
+                (box.minZ + box.maxZ) / 2
+            );
+            dummy.scale.set(w, h, d);
+            dummy.rotation.set(0, 0, 0);
+            dummy.updateMatrix();
+            boxRef.current.setMatrixAt(idxBox++, dummy.matrix);
+        }
+        boxRef.current.count = idxBox;
+        boxRef.current.instanceMatrix.needsUpdate = true;
+
+        // Bridge grid (legacy 2D)
         let idxB = 0;
         const cellSize = 1.0 / GRID_SCALE;
-
         for (let x = 0; x < gridSize; x++) {
             for (let z = 0; z < gridSize; z++) {
-                // Convert high res index to world center
-                const worldX = (x + 0.5) / GRID_SCALE - halfSize;
-                const worldZ = (z + 0.5) / GRID_SCALE - halfSize;
-
-                const h = oGrid[x][z];
-                if (h > -10) { // Render ground collision (even water level)
-                    // Place plane slightly above the collision height to prevent z-fighting
-                    dummy.position.set(worldX, h + 0.05, worldZ);
-                    dummy.rotation.set(-Math.PI / 2, 0, 0); // Rotate flat
-                    // Scale slightly smaller than cell to show grid separation
-                    dummy.scale.set(cellSize * 0.85, cellSize * 0.85, 1);
-                    dummy.updateMatrix();
-                    oRef.current.setMatrixAt(idxO++, dummy.matrix);
-                }
-
-                const bh = bGrid[x][z];
-                if (bh > 0 && bh > h) {
+                const bh = bGrid[x]?.[z] || 0;
+                if (bh > 0) {
+                    const worldX = (x + 0.5) / GRID_SCALE - halfSize;
+                    const worldZ = (z + 0.5) / GRID_SCALE - halfSize;
                     dummy.position.set(worldX, bh + 0.05, worldZ);
                     dummy.rotation.set(-Math.PI / 2, 0, 0);
                     dummy.scale.set(cellSize * 0.85, cellSize * 0.85, 1);
@@ -80,18 +89,16 @@ const CollisionDebug: React.FC<{ oGrid: number[][]; bGrid: number[][]; size: num
                 }
             }
         }
-        oRef.current.count = idxO;
         bRef.current.count = idxB;
-        oRef.current.instanceMatrix.needsUpdate = true;
         bRef.current.instanceMatrix.needsUpdate = true;
-    }, [oGrid, bGrid, size, halfSize, gridSize]);
+    }, [allBoxes, bGrid, size, halfSize, gridSize]);
 
     return (
         <group visible={visible}>
-            {/* Ground Collision (Red) */}
-            <instancedMesh ref={oRef} args={[undefined, undefined, gridSize * gridSize]} frustumCulled={false}>
-                <planeGeometry args={[1, 1]} />
-                <meshBasicMaterial color="#ff0000" transparent opacity={0.4} side={THREE.DoubleSide} />
+            {/* 3D Collision Boxes (Red wireframe) */}
+            <instancedMesh ref={boxRef} args={[undefined, undefined, Math.max(1, allBoxes.length)]} frustumCulled={false}>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshBasicMaterial color="#ff0000" transparent opacity={0.15} side={THREE.DoubleSide} depthWrite={false} />
             </instancedMesh>
             {/* Bridge/Roof Collision (Cyan) */}
             <instancedMesh ref={bRef} args={[undefined, undefined, gridSize * gridSize]} frustumCulled={false}>
@@ -677,7 +684,6 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const jumpPressedPrev = useRef(false);
     const rollTimer = useRef(0);
     const jumpBufferTimer = useRef(0);
-    const stepUpTimer = useRef(0);
     const stumbleTimer = useRef(0);
     const stumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
     const landingAnimTimer = useRef(0);
@@ -691,25 +697,24 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const staminaFill = useRef<HTMLDivElement>(null!);
 
     // Map Data
-    const [mapData, setMapData] = useState<{ objects: VoxelObject[], oGrid: number[][], bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, riverOrientation: number, riverFlow: number } | null>(null);
+    const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, riverOrientation: number, riverFlow: number } | null>(null);
 
     // Character Visual State (for animation props)
     const [visualState, setVisualState] = useState({
         isCharging: false,
         isRolling: false,
         isGrounded: true,
-        isClimbing: false,
         isRunning: false,
         isMoving: false,
         moveSpeed: 0,
         isStumbling: false,
         stunned: false,
-        stepUpFactor: 0,
         landingFactor: 0,
         currentSurface: 0,
         fallDistance: 0,
         justLanded: false,
-        isHiding: false
+        isHiding: false,
+        isClimbing: false
     });
 
     // Initialization & Map Regeneration
@@ -750,7 +755,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 settings.worldSize,
                 halfSize,
                 mapData.tGrid,
-                mapData.oGrid,
+                mapData.collisionGrid,
                 mapData.wGrid,
                 isWaterLogic
             );
@@ -795,7 +800,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             playerLastDir,
             jumpPressedPrev,
             settings.playerSpeed,
-            mapData.oGrid,
+            mapData.collisionGrid,
             mapData.bGrid,
             mapData.wGrid,
             settings.worldSize,
@@ -803,7 +808,6 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             rollTimer,
             jumpBufferTimer,
             isRolling,
-            stepUpTimer,
             stumbleTimer,
             stumbleVelocity,
             camera, // Pass Camera
@@ -817,7 +821,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             characterGroup.current.position.copy(playerPos.current);
 
             // ROTATE CHARACTER: Face movement direction
-            if (physicsOutput.pMoving && !physicsOutput.isClimbing && !physicsOutput.effectiveStunned) {
+            if (physicsOutput.pMoving && !physicsOutput.effectiveStunned) {
                 // pDir now reflects world direction relative to camera
                 const targetAngle = Math.atan2(physicsOutput.pDir.x, physicsOutput.pDir.z);
                 let currentAngle = characterGroup.current.rotation.y;
@@ -871,18 +875,17 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             isCharging: physicsOutput.isCharging,
             isRolling: physicsOutput.isRolling,
             isGrounded: physicsOutput.isGrounded,
-            isClimbing: physicsOutput.isClimbing,
             isRunning: physicsOutput.isRunning,
             isStumbling: physicsOutput.isStumbling,
             stunned: physicsOutput.effectiveStunned,
             isMoving: physicsOutput.pMoving,
             moveSpeed: currentMoveSpeed,
-            stepUpFactor: physicsOutput.stepUpFactor,
             landingFactor: physicsOutput.landingFactor,
             currentSurface: currentSurface,
             fallDistance: physicsOutput.fallDistance,
             justLanded: physicsOutput.justLanded,
-            isHiding: isHiding
+            isHiding: isHiding,
+            isClimbing: physicsOutput.isClimbing
         };
 
         // Simple shallow compare
@@ -890,18 +893,17 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         if (newVisualState.isCharging !== visualState.isCharging) changed = true;
         else if (newVisualState.isRolling !== visualState.isRolling) changed = true;
         else if (newVisualState.isGrounded !== visualState.isGrounded) changed = true;
-        else if (newVisualState.isClimbing !== visualState.isClimbing) changed = true;
         else if (newVisualState.isRunning !== visualState.isRunning) changed = true;
         else if (newVisualState.isStumbling !== visualState.isStumbling) changed = true;
         else if (newVisualState.stunned !== visualState.stunned) changed = true;
         else if (newVisualState.isMoving !== visualState.isMoving) changed = true;
         else if (Math.abs(newVisualState.moveSpeed - visualState.moveSpeed) > 0.1) changed = true;
-        else if (Math.abs(newVisualState.stepUpFactor - visualState.stepUpFactor) > 0.05) changed = true;
         else if (Math.abs(newVisualState.landingFactor - visualState.landingFactor) > 0.05) changed = true;
         else if (newVisualState.currentSurface !== visualState.currentSurface) changed = true;
         else if (Math.abs(newVisualState.fallDistance - visualState.fallDistance) > 0.1) changed = true;
         else if (newVisualState.justLanded !== visualState.justLanded) changed = true;
         else if (newVisualState.isHiding !== visualState.isHiding) changed = true;
+        else if (newVisualState.isClimbing !== visualState.isClimbing) changed = true;
 
         if (changed) {
             setVisualState(newVisualState);
@@ -984,7 +986,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         <group>
             {mapElements}
             {debugMode && mapData && (
-                <CollisionDebug oGrid={mapData.oGrid} bGrid={mapData.bGrid} size={settings.worldSize} visible={!!showCollision} />
+                <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={settings.worldSize} visible={!!showCollision} />
             )}
             {status !== GameStatus.IDLE && (
                 <Character
@@ -995,12 +997,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     isCharging={visualState.isCharging}
                     isRolling={visualState.isRolling}
                     isStumbling={visualState.isStumbling}
-                    isClimbing={visualState.isClimbing}
                     isRunning={visualState.isRunning}
                     isMoving={visualState.isMoving}
                     moveSpeed={visualState.moveSpeed}
                     isGrounded={visualState.isGrounded}
-                    stepUpFactor={visualState.stepUpFactor}
                     landingFactor={visualState.landingFactor}
                     stunTimerRef={stunTimer}
                     rollTimerRef={rollTimer}
@@ -1009,6 +1009,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     fallDistance={visualState.fallDistance}
                     justLanded={visualState.justLanded}
                     isHiding={visualState.isHiding}
+                    isClimbing={visualState.isClimbing}
                     overlayContent={null}
                 />
             )}
