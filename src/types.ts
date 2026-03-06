@@ -91,6 +91,11 @@ export interface VoxelObject {
     rot: [number, number, number];
     type?: 'standard' | 'industrial';
   }[];
+  ladders?: {
+    pos: Position;
+    rot: [number, number, number];
+    height: number; // Total height of the ladder in world units
+  }[];
 }
 
 export interface MatchState {

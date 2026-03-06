@@ -11,7 +11,30 @@ export const findSpawnPos = (
     wGrid: number[][],
     isWaterLogic: (lx: number, lz: number) => boolean
 ) => {
-    let spawnPos = new THREE.Vector3(0, 0, 0);
+    let bestPos = new THREE.Vector3(0, 10, 0);
+    let bestScore = -1;
+    let foundAny = false;
+
+    // Helper to evaluate distance to nearest object (non-0 in tGrid, water, or map edge)
+    const getClearanceScore = (rx: number, rz: number): number => {
+        let radius = 1;
+        while (radius < 25) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dz = -radius; dz <= radius; dz++) {
+                    if (Math.abs(dx) === radius || Math.abs(dz) === radius) {
+                        const cx = rx + dx;
+                        const cz = rz + dz;
+                        // Map edges
+                        if (cx < 0 || cx >= size || cz < 0 || cz >= size) return radius;
+                        // Obstacles (Buildings, Ruins, etc.)
+                        if (tGrid[cx][cz] !== 0) return radius;
+                    }
+                }
+            }
+            radius++;
+        }
+        return radius;
+    };
 
     for (let k = 0; k < 1000; k++) {
         // Try random positions within a safer inner bound (avoiding map edges completely)
@@ -33,11 +56,18 @@ export const findSpawnPos = (
                 }
             }
             if (maxH < 2.0) {
-                spawnPos.set(logicX, maxH + 1.0, logicZ);
-                return spawnPos;
+                const score = getClearanceScore(rx, rz);
+                if (score > bestScore) {
+                    bestScore = score;
+                    // Ao nível do chão
+                    bestPos.set(logicX, maxH, logicZ);
+                    foundAny = true;
+                }
             }
         }
     }
+
+    if (foundAny) return bestPos;
 
     // If no safe spot found on street, try any spot without water or tall objects
     const gridSize = size * GRID_SCALE;
@@ -54,16 +84,16 @@ export const findSpawnPos = (
                     }
                 }
                 if (maxH < 2.0) {
-                    spawnPos.set(logicX, maxH + 1.0, logicZ);
-                    return spawnPos;
+                    bestPos.set(logicX, maxH, logicZ);
+                    return bestPos;
                 }
             }
         }
     }
 
     // Ultimate fallback if map is completely filled (unlikely)
-    spawnPos.set(0, 10, 0);
-    return spawnPos;
+    bestPos.set(0, 10, 0);
+    return bestPos;
 };
 
 export const generateCityLevel = (
@@ -556,6 +586,7 @@ export const generateCityLevel = (
         const attachedChimneys: { pos: Position, scale: Position, color: string, smoke?: boolean, rotation?: number }[] = [];
         const assignedDoors: { pos: Position, rot: [number, number, number], type: 'standard' | 'industrial' }[] = [];
         const assignedACs: { pos: Position, scale: Position, color: string, rotation: number, type: 'wall' | 'roof' }[] = [];
+        const assignedLadders: { pos: Position, rot: [number, number, number], height: number }[] = [];
 
         const buildingWallDoorTypes = new Set<string>();
 
@@ -706,6 +737,7 @@ export const generateCityLevel = (
                 width: number;
                 height: number;
                 occupancy: boolean[][];
+                hasDoor: boolean;
             };
 
             const facades: Facade[] = [];
@@ -733,7 +765,8 @@ export const generateCityLevel = (
                     columns: cols,
                     width: cols.length,
                     height: vH,
-                    occupancy: Array(cols.length).fill(null).map(() => Array(vH).fill(false))
+                    occupancy: Array(cols.length).fill(null).map(() => Array(vH).fill(false)),
+                    hasDoor: false
                 });
             });
 
@@ -814,6 +847,7 @@ export const generateCityLevel = (
                                 rot: f.rotVec as [number, number, number],
                                 type: dType
                             });
+                            f.hasDoor = true;
 
                             doorsPlacedCount++;
                             if (dType === 'industrial') indDoorsCount++; else stdDoorsCount++;
@@ -1116,9 +1150,74 @@ export const generateCityLevel = (
                 }
             }
 
+            // PASS 3: Ladders on multi-story buildings
+            if (numFloors >= 2 && Math.random() < 0.6) {
+                // Shuffle facades so ladder placement is random, but prioritize non-door walls
+                const shuffledFacades = [...facades].sort((a, b) => {
+                    if (a.hasDoor !== b.hasDoor) return a.hasDoor ? 1 : -1;
+                    return Math.random() - 0.5;
+                });
+                let ladderPlaced = false;
 
+                for (const f of shuffledFacades) {
+                    if (ladderPlaced) break;
+                    if (f.width < 3) continue; // Need at least 3 columns for padding
 
+                    // Ladder is 1 column wide, full height of building
+                    const ladderW = 1;
+                    const ladderH = Math.round(height);
 
+                    // Try positions with at least 1-voxel padding from each side
+                    const possiblePositions: number[] = [];
+                    for (let x = 1; x <= f.width - ladderW - 1; x++) {
+                        possiblePositions.push(x);
+                    }
+                    // Shuffle positions for randomness
+                    for (let i = possiblePositions.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [possiblePositions[i], possiblePositions[j]] = [possiblePositions[j], possiblePositions[i]];
+                    }
+
+                    for (const startX of possiblePositions) {
+                        // Check full-height occupancy for ladder + 1 voxel pad sides
+                        let canPlace = true;
+                        for (let x = startX - 1; x <= startX + ladderW; x++) {
+                            for (let y = 0; y < ladderH; y++) {
+                                if (x < 0 || x >= f.width || y >= f.height || f.occupancy[x][y]) {
+                                    canPlace = false;
+                                    break;
+                                }
+                            }
+                            if (!canPlace) break;
+                        }
+
+                        if (canPlace) {
+                            // Mark occupancy
+                            for (let x = startX - 1; x <= startX + ladderW; x++) {
+                                for (let y = 0; y < ladderH; y++) {
+                                    if (x >= 0 && x < f.width && y < f.height) {
+                                        f.occupancy[x][y] = true;
+                                    }
+                                }
+                            }
+
+                            const col = f.columns[startX];
+                            const worldX = col.worldX - f.normal.dx * 0.5 + 0.5;
+                            const worldZ = col.worldZ - f.normal.dz * 0.5 + 0.5;
+                            const worldY = 0; // Center-relative Y = 0 means vertically centered
+
+                            assignedLadders.push({
+                                pos: [worldX - cx, worldY, worldZ - cz],
+                                rot: f.rotVec as [number, number, number],
+                                height: height
+                            });
+
+                            ladderPlaced = true;
+                            break;
+                        }
+                    }
+                }
+            }
 
             if (type === 'factory') {
                 // UPDATED: Increase count to up to 3 objects
@@ -1263,7 +1362,8 @@ export const generateCityLevel = (
                 windows: assignedWindows,
                 attachedChimneys: attachedChimneys,
                 doors: assignedDoors,
-                acs: assignedACs
+                acs: assignedACs,
+                ladders: assignedLadders
             };
             objects.push(buildingObj);
         };
@@ -1634,6 +1734,40 @@ export const generateCityLevel = (
         });
     });
 
+    // --- THIRD PASS: Collect ladder zones for physics ---
+    const ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[] = [];
+    objects.forEach(obj => {
+        if (!obj.ladders || obj.ladders.length === 0) return;
+        obj.ladders.forEach(ladder => {
+            // Ladder pos is relative to building center (obj.position)
+            const absX = obj.position[0] + ladder.pos[0];
+            const absZ = obj.position[2] + ladder.pos[2];
+            const buildingBottom = obj.position[1] - obj.scale[1] / 2;
+            const buildingTop = obj.position[1] + obj.scale[1] / 2;
+
+            // Ladder rotation rotY is the facade outward normal angle.
+            // Player should face INTO the wall = opposite of outward normal = rotY + PI
+            const rotY = ladder.rot[1];
+            let faceAngle = rotY + Math.PI;
+            // Normalize to [-PI, PI]
+            if (faceAngle > Math.PI) faceAngle -= Math.PI * 2;
+
+            // The climbable zone extends slightly outward from the wall
+            const zoneRadius = 1.2;
+            ladderZones.push({
+                minX: absX - zoneRadius,
+                minY: buildingBottom,
+                minZ: absZ - zoneRadius,
+                maxX: absX + zoneRadius,
+                maxY: buildingTop + 1.0, // Allow climbing slightly past the top
+                maxZ: absZ + zoneRadius,
+                faceAngle,
+                railX: absX,
+                railZ: absZ
+            });
+        });
+    });
+
     // --- DEFAULT SPAWN POINT (Menu/Preview) ---
     const spawnPos = new THREE.Vector3(0, 10, 0);
 
@@ -1650,5 +1784,5 @@ export const generateCityLevel = (
     const baseRandom = settings.riverFlow * (0.5 + Math.random() * 1.0);
     const randomFlow = Math.round(THREE.MathUtils.clamp(baseRandom, 0, 5));
 
-    return { objects, collisionGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0 };
+    return { objects, collisionGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, ladderZones, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0 };
 };

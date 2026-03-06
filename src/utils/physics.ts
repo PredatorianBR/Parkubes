@@ -11,6 +11,7 @@ export const MOVE_SPEED_BASE = 10.0;
 export const ROLL_SPEED_MULT = 1.3;
 export const CLIMB_THRESHOLD = 0.6;
 export const MAX_CLIMB_HEIGHT = 1000.0;
+export const LADDER_CLIMB_SPEED = 8.0;
 export const PLAYER_HEIGHT = 4.0;
 export const FLOOR_HEIGHT = PLAYER_HEIGHT * 1.5; // One floor = 6.0 units
 export const GROUND_DEPTH = 4.0; // Terreno e Rio com profundidade 4
@@ -313,14 +314,18 @@ interface PhysicsState {
     lastDir: THREE.Vector2;
     noiseLevel: number;
     isClimbing: boolean;
+    ladderFaceAngle: number;
+    isLadderSliding: boolean;
+    isNearLadder: boolean;
+    isLadderHanging: boolean;
 }
 
 interface PhysicsInput {
     dt: number;
     moveDir: THREE.Vector3;
-    actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean };
+    actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean, ladderUp: boolean, ladderDown: boolean };
     stats: { speed: number; climbSpeed: number };
-    world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number; riverOrientation: number; riverFlow: number };
+    world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number; ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[]; riverOrientation: number; riverFlow: number };
 }
 
 export const updateEntityPhysics = (
@@ -335,7 +340,11 @@ export const updateEntityPhysics = (
         noiseLevel: NOISE_IDLE,
         isRolling: current.isRolling,
         didStepUp: false,
-        isClimbing: false
+        isClimbing: false,
+        ladderFaceAngle: 0,
+        isLadderSliding: false,
+        isNearLadder: false,
+        isLadderHanging: false
     };
     const { dt, moveDir, actions, stats, world } = input;
 
@@ -456,6 +465,93 @@ export const updateEntityPhysics = (
         next.vel.y = 0;
     }
 
+    // --- LADDER CLIMBING ---
+    let onLadder = false;
+    let matchedLadderAngle = 0;
+    let railX = 0, railZ = 0, ladderMinY = 0;
+    if (world.ladderZones && world.ladderZones.length > 0) {
+        const px = next.pos.x;
+        const py = next.pos.y;
+        const pz = next.pos.z;
+
+        for (const zone of world.ladderZones) {
+            if (px >= zone.minX && px <= zone.maxX &&
+                pz >= zone.minZ && pz <= zone.maxZ &&
+                py >= zone.minY - 0.5 && py + PLAYER_HEIGHT <= zone.maxY + PLAYER_HEIGHT) {
+                onLadder = true;
+                matchedLadderAngle = zone.faceAngle;
+                railX = zone.railX;
+                railZ = zone.railZ;
+                ladderMinY = zone.minY;
+                break;
+            }
+        }
+    }
+
+    if (onLadder && !isInWater) {
+        // Look up behavior when grounded near ladder base
+        if (next.isGrounded && !actions.ladderUp) {
+            next.isNearLadder = true;
+            next.ladderFaceAngle = matchedLadderAngle;
+        }
+
+        // On ladder: override vertical physics and lock horizontal rails
+        // Jump lets go of ladder
+        if (!actions.jump) {
+            next.ladderFaceAngle = matchedLadderAngle;
+            let ladderVelY = 0;
+
+            const isMovingUp = actions.ladderUp && next.stamina > 0;
+            // Only allow descending if we are above the ladder's bottom floor
+            const canMoveDown = actions.ladderDown && next.pos.y > ladderMinY + 0.1;
+            const isMovingDown = canMoveDown && !isMovingUp;
+
+            if (isMovingUp) {
+                // Climb up
+                ladderVelY = LADDER_CLIMB_SPEED;
+                next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt * 0.5);
+                next.isClimbing = true;
+                next.isLadderSliding = false;
+                next.isLadderHanging = false;
+                next.noiseLevel = Math.max(next.noiseLevel, NOISE_CLIMB);
+            } else if (isMovingDown) {
+                // Controlled slide down - faster speed
+                ladderVelY = -12.0;
+                next.isClimbing = false;
+                next.isLadderSliding = true;
+                next.isLadderHanging = false;
+            } else if (!next.isGrounded) {
+                // Clinging/Hanging (gravity disabled)
+                ladderVelY = 0;
+                next.isClimbing = true;
+                next.isLadderSliding = false;
+                next.isLadderHanging = true;
+                next.stamina = Math.min(100, next.stamina + STAMINA_RECOVERY_WALK * dt);
+            }
+
+            // Engage ladder rails if mid-air, OR trying to enter ladder from bottom (up), OR entering from top (down)
+            if (!next.isGrounded || isMovingUp || isMovingDown) {
+                // RAIL BEHAVIOR: lock X/Z to the ladder rails
+                next.pos.x = railX;
+                next.pos.z = railZ;
+                next.vel.x = 0;
+                next.vel.z = 0;
+
+                next.vel.y = ladderVelY;
+                next.isGrounded = false;
+            }
+
+            next.isCharging = false;
+            next.isRolling = false;
+        }
+
+        // Ceiling check while on ladder
+        if (next.pos.y + PLAYER_HEIGHT > ceilingH && next.vel.y > 0) {
+            next.pos.y = ceilingH - PLAYER_HEIGHT - 0.01;
+            next.vel.y = 0;
+        }
+    }
+
     // 3. Horizontal Movement
     // next.isClimbing = false; // Removed with climbing logic
 
@@ -518,9 +614,10 @@ export const updateEntityPhysics = (
 
             let heightDiff = targetH - next.pos.y;
             const isAbyss = targetH === -Infinity;
-            // const climbMax = MAX_CLIMB_HEIGHT; // Removed with climbing logic
 
-            const isWaterExit = isInWater && heightDiff > 0 && heightDiff <= (Math.abs(WATER_DEPTH_LEVEL) + 0.5);
+            // Water exit: detect when player is in water and moving toward dry land
+            // Use generous threshold covering full water depth + margin
+            const isWaterExit = isInWater && heightDiff > 0 && heightDiff <= (Math.abs(WATER_DEPTH_LEVEL) + 1.0);
 
             // 3D Wall Check: query collision boxes at the target position
             let isBlockedBy3DWall = false;
@@ -539,13 +636,14 @@ export const updateEntityPhysics = (
             }
 
             // If 3D wall detected, use the actual wall top for height difference
-            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD) {
+            // But skip this override during water exit — the shore is not a "wall"
+            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD && !isWaterExit) {
                 heightDiff = wallTopHeight - next.pos.y;
             }
 
             let climbingLedge = false;
             // Se o muro for alto o suficiente para bloquear, mas o topo estiver abaixo da cabeça do jogador (pos.y + PLAYER_HEIGHT)
-            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD && wallTopHeight <= next.pos.y + PLAYER_HEIGHT) {
+            if (isBlockedBy3DWall && wallTopHeight > next.pos.y + CLIMB_THRESHOLD && wallTopHeight <= next.pos.y + PLAYER_HEIGHT && !isWaterExit) {
                 const ceilingAtLedge = getCeilingHeight(targetX, targetZ, wallTopHeight, cGrid, world.bGrid, world.size);
                 if (ceilingAtLedge === Infinity || ceilingAtLedge - wallTopHeight >= PLAYER_HEIGHT) {
                     climbingLedge = true;
@@ -563,7 +661,8 @@ export const updateEntityPhysics = (
                 }
             }
 
-            const isWall = (heightDiff > CLIMB_THRESHOLD && !isWaterExit) || isBlockedBy3DWall;
+            // Water exit bypasses wall detection for the shore edge
+            const isWall = (heightDiff > CLIMB_THRESHOLD && !isWaterExit) || (isBlockedBy3DWall && !isWaterExit);
 
             const ceilingAtTarget = getCeilingHeight(targetX, targetZ, Math.max(targetH, next.pos.y), cGrid, world.bGrid, world.size);
             const hasHeadroom = (ceilingAtTarget === Infinity) || (ceilingAtTarget - Math.max(targetH, next.pos.y) >= PLAYER_HEIGHT);
@@ -573,10 +672,10 @@ export const updateEntityPhysics = (
 
                 if (targetH > next.pos.y + 0.05 && canStepUp) {
                     if (isWaterExit) {
-                        // Smooth rise out of water instead of instant snap
-                        const lerpSpeed = 15 * dt;
+                        // Smooth but fast rise out of water
+                        const lerpSpeed = 6.0 * dt;
                         next.pos.y = next.pos.y + (targetH - next.pos.y) * Math.min(lerpSpeed, 1.0);
-                        next.vel.y = Math.max(next.vel.y, 0);
+                        next.vel.y = Math.max(next.vel.y, 3.0); // upward boost to help climb out
                     } else {
                         next.pos.y = targetH;
                         next.vel.y = 0;
@@ -584,6 +683,23 @@ export const updateEntityPhysics = (
                 }
                 next.pos.x = targetX;
                 next.pos.z = targetZ;
+            }
+        }
+
+        // --- WATER EDGE AUTO-CLIMB ---
+        // When player is in water, grounded, and moving toward shore,
+        // give an upward velocity boost to help them climb out automatically
+        if (isInWater && next.isGrounded && next.pos.y <= WATER_DEPTH_LEVEL + 0.1) {
+            const aheadX = next.pos.x + next.lastDir.x * (PLAYER_RADIUS + 0.5);
+            const aheadZ = next.pos.z + next.lastDir.y * (PLAYER_RADIUS + 0.5);
+            const aheadIx = worldToIndex(aheadX, halfSize, world.size);
+            const aheadIz = worldToIndex(aheadZ, halfSize, world.size);
+            const aheadIsWater = world.wGrid[aheadIx]?.[aheadIz] === 1;
+
+            // If dry land is ahead, push player upward
+            if (!aheadIsWater) {
+                next.vel.y = Math.max(next.vel.y, 8.0);
+                next.isGrounded = false;
             }
         }
     }
@@ -634,6 +750,42 @@ export const updateEntityPhysics = (
         next.airTimeHigh = safeGround;
         next.pos.y = safeGround;
         next.vel.y = 0;
+
+        // --- WATER EDGE ANTI-CLIPPING ---
+        // When idling in water near shore, push player away from dry land
+        // to prevent the body from clipping through the ground edge.
+        // Only apply when NOT moving — if moving, the player is likely trying to exit.
+        if (safeGround <= WATER_DEPTH_LEVEL + 0.1 && moveDir.lengthSq() === 0) {
+            const edgeCheckDist = radius + 0.2;
+            const edgeAngles = [0, Math.PI / 4, Math.PI / 2, 3 * Math.PI / 4, Math.PI, 5 * Math.PI / 4, 3 * Math.PI / 2, 7 * Math.PI / 4];
+            let pushX = 0;
+            let pushZ = 0;
+            let landCount = 0;
+
+            for (const angle of edgeAngles) {
+                const checkX = next.pos.x + Math.cos(angle) * edgeCheckDist;
+                const checkZ = next.pos.z + Math.sin(angle) * edgeCheckDist;
+                const edgeIx = worldToIndex(checkX, halfSize, world.size);
+                const edgeIz = worldToIndex(checkZ, halfSize, world.size);
+                const edgeIsWater = world.wGrid[edgeIx]?.[edgeIz] === 1;
+
+                if (!edgeIsWater) {
+                    // This direction has dry land — accumulate push away from it
+                    pushX -= Math.cos(angle);
+                    pushZ -= Math.sin(angle);
+                    landCount++;
+                }
+            }
+
+            if (landCount > 0) {
+                const pushLen = Math.sqrt(pushX * pushX + pushZ * pushZ);
+                if (pushLen > 0.01) {
+                    const pushStrength = radius * 0.8;
+                    next.pos.x += (pushX / pushLen) * pushStrength * dt * 8;
+                    next.pos.z += (pushZ / pushLen) * pushStrength * dt * 8;
+                }
+            }
+        }
     } else {
         next.isGrounded = false;
         next.isCharging = false;

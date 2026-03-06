@@ -18,6 +18,7 @@ import { FenceBlock } from './environment/FenceBlock';
 import { WallAC, RoofAC } from './buildings/AcUnits';
 import { Chimney } from './buildings/Chimney';
 import { DoorBlock, IndustrialDoorBlock } from './buildings/Doors';
+import { Ladder } from './buildings/Ladder';
 import { GridMaterial } from './GridMaterial';
 import { BlinkingWindow } from './buildings/BlinkingWindow';
 import { Roof } from './buildings/Roof';
@@ -288,6 +289,7 @@ const Building: React.FC<{
     lShape?: { active: boolean, cutCorner: number, cutSize: [number, number], secondCut?: { corner: number, size: [number, number] } };
     windows?: { pos: Position, rot: [number, number, number] }[];
     doors?: { pos: Position, rot: [number, number, number], type?: 'standard' | 'industrial' }[];
+    ladders?: { pos: Position, rot: [number, number, number], height: number }[];
     variant?: number;
     isLit?: boolean;
     isCooking?: boolean;
@@ -295,7 +297,7 @@ const Building: React.FC<{
     showGrid?: boolean;
     status: GameStatus;
     debugMode?: boolean;
-}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], lShape, windows = [], doors = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
+}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], lShape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
     const groupRef = useRef<THREE.Group>(null!);
     const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
@@ -643,6 +645,17 @@ const Building: React.FC<{
                 })}
             </group>
 
+            <group userData={{ type: 'detail' }}>
+                {ladders.map((item, i) => (
+                    <Ladder
+                        key={`ladder-${i}`}
+                        position={item.pos}
+                        rotation={item.rot}
+                        height={item.height}
+                    />
+                ))}
+            </group>
+
             {
                 chimney && (
                     <group position={[chimney.position[0] - position.x, 0, chimney.position[2] - position.z]} userData={{ type: 'detail' }}>
@@ -697,7 +710,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const staminaFill = useRef<HTMLDivElement>(null!);
 
     // Map Data
-    const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, riverOrientation: number, riverFlow: number } | null>(null);
+    const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[], riverOrientation: number, riverFlow: number } | null>(null);
 
     // Character Visual State (for animation props)
     const [visualState, setVisualState] = useState({
@@ -714,7 +727,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         fallDistance: 0,
         justLanded: false,
         isHiding: false,
-        isClimbing: false
+        isClimbing: false,
+        isLadderSliding: false,
+        isNearLadder: false,
+        isLadderHanging: false
     });
 
     // Initialization & Map Regeneration
@@ -813,15 +829,27 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             camera, // Pass Camera
             lastFallDist,
             mapData?.riverOrientation ?? -1,
-            settings.riverFlow
+            settings.riverFlow,
+            mapData?.ladderZones ?? []
         );
 
         // Update Character Transform
         if (characterGroup.current) {
             characterGroup.current.position.copy(playerPos.current);
 
-            // ROTATE CHARACTER: Face movement direction
-            if (physicsOutput.pMoving && !physicsOutput.effectiveStunned) {
+            // ROTATE CHARACTER: Face movement direction or face ladder
+            const isOnLadder = physicsOutput.isClimbing || physicsOutput.isLadderSliding || physicsOutput.isNearLadder;
+            if (isOnLadder) {
+                // Face the ladder wall
+                const targetAngle = physicsOutput.ladderFaceAngle;
+                let currentAngle = characterGroup.current.rotation.y;
+                let diff = targetAngle - currentAngle;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+
+                const rotSpeed = 12;
+                characterGroup.current.rotation.y += diff * dt * rotSpeed;
+            } else if (physicsOutput.pMoving && !physicsOutput.effectiveStunned) {
                 // pDir now reflects world direction relative to camera
                 const targetAngle = Math.atan2(physicsOutput.pDir.x, physicsOutput.pDir.z);
                 let currentAngle = characterGroup.current.rotation.y;
@@ -885,7 +913,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             fallDistance: physicsOutput.fallDistance,
             justLanded: physicsOutput.justLanded,
             isHiding: isHiding,
-            isClimbing: physicsOutput.isClimbing
+            isClimbing: physicsOutput.isClimbing,
+            isLadderSliding: physicsOutput.isLadderSliding,
+            isNearLadder: physicsOutput.isNearLadder,
+            isLadderHanging: physicsOutput.isLadderHanging
         };
 
         // Simple shallow compare
@@ -904,6 +935,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         else if (newVisualState.justLanded !== visualState.justLanded) changed = true;
         else if (newVisualState.isHiding !== visualState.isHiding) changed = true;
         else if (newVisualState.isClimbing !== visualState.isClimbing) changed = true;
+        else if (newVisualState.isLadderSliding !== visualState.isLadderSliding) changed = true;
+        else if (newVisualState.isNearLadder !== visualState.isNearLadder) changed = true;
+        else if (newVisualState.isLadderHanging !== visualState.isLadderHanging) changed = true;
 
         if (changed) {
             setVisualState(newVisualState);
@@ -969,6 +1003,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                         lShape={obj.lShape}
                         windows={obj.windows}
                         doors={obj.doors}
+                        ladders={obj.ladders}
                         variant={obj.variant}
                         showWireframe={showWireframe}
                         showGrid={showGrid}
@@ -1010,6 +1045,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     justLanded={visualState.justLanded}
                     isHiding={visualState.isHiding}
                     isClimbing={visualState.isClimbing}
+                    isLadderSliding={visualState.isLadderSliding}
+                    isNearLadder={visualState.isNearLadder}
+                    isLadderHanging={visualState.isLadderHanging}
                     overlayContent={null}
                 />
             )}

@@ -33,7 +33,8 @@ export const updatePlayerPhysics = (
     camera: THREE.Camera, // ADDED: Camera for relative movement
     lastFallDistRef: React.MutableRefObject<number>,
     riverOrientation: number,
-    riverFlow: number
+    riverFlow: number,
+    ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[]
 ) => {
 
     // 1. Calculate Input Direction Relative to Camera
@@ -145,8 +146,16 @@ export const updatePlayerPhysics = (
         airTimeHigh: airTimeHighPoint.current,
         lastDir: playerLastDir.current,
         noiseLevel: 0,
-        isClimbing: false
+        isClimbing: false,
+        ladderFaceAngle: 0,
+        isLadderSliding: false,
+        isNearLadder: false,
+        isLadderHanging: false
     };
+
+    const analogIn: any = keys.current.analog;
+    const isJoyUp = analogIn && analogIn.y < -0.3; // y < 0 is UP on thumbstick
+    const isJoyDown = analogIn && analogIn.y > 0.3;
 
     const inputs = {
         dt: dt,
@@ -156,10 +165,12 @@ export const updatePlayerPhysics = (
             charge: isVisualPreJumping,
             climb: !!isJumpDown,
             run: !!(keys.current['shift'] || isAnalogRunning),
-            attemptRoll: jumpBufferTimer.current > 0
+            attemptRoll: jumpBufferTimer.current > 0,
+            ladderUp: !!(keys.current['w'] || keys.current['arrowup'] || isJoyUp),
+            ladderDown: !!(keys.current['s'] || keys.current['arrowdown'] || isJoyDown)
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
-        world: { collisionGrid: collisionGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, riverOrientation, riverFlow }
+        world: { collisionGrid: collisionGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, ladderZones, riverOrientation, riverFlow }
     };
 
     // 4. Run Physics Engine
@@ -219,6 +230,10 @@ export const updatePlayerPhysics = (
         isStumbling: stumbleTimer.current > 0,
         isGrounded: nextState.isGrounded,
         isClimbing: nextState.isClimbing,
+        ladderFaceAngle: nextState.ladderFaceAngle,
+        isLadderSliding: nextState.isLadderSliding,
+        isNearLadder: nextState.isNearLadder,
+        isLadderHanging: nextState.isLadderHanging,
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
         fallDistance: lastFallDistRef.current,
