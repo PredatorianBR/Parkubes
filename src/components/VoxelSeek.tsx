@@ -785,6 +785,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     mapId
 }) => {
     const { camera, controls } = useThree(); // Access Controls
+
     const keys = useControls();
 
     // Physics Refs
@@ -814,7 +815,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const staminaFill = useRef<HTMLDivElement>(null!);
 
     // Map Data
-    const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[], riverOrientation: number, riverFlow: number } | null>(null);
+    const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[], riverOrientation: number, riverFlow: number, worldSize: number } | null>(null);
 
     // Character Visual State (for animation props)
     const [visualState, setVisualState] = useState({
@@ -1091,8 +1092,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
         return (
             <>
-                <VoxelGround size={settings.worldSize} waterGrid={mapData.wGrid} sGrid={mapData.sGrid} debugMode={debugMode} showGrid={showGrid} />
-                <VoxelWater size={settings.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={settings.riverFlow} />
+                <VoxelGround size={mapData.worldSize} waterGrid={mapData.wGrid} sGrid={mapData.sGrid} debugMode={debugMode} showGrid={showGrid} />
+                <VoxelWater size={mapData.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={mapData.riverFlow} />
                 <VoxelRuins ruins={ruins} showGrid={showGrid} />
                 <VoxelFences fences={fences} />
                 <VoxelFoliage objects={foliage} />
@@ -1122,7 +1123,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 ))}
             </>
         );
-    }, [mapData, debugMode, settings.worldSize, showGrid, showWireframe, settings.riverFlow, status]);
+    }, [mapData, debugMode, showGrid, showWireframe, status]);
 
     if (!mapData) return null;
 
@@ -1130,7 +1131,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         <group>
             {mapElements}
             {debugMode && mapData && (
-                <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={settings.worldSize} visible={!!showCollision} />
+                <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={mapData.worldSize} visible={!!showCollision} />
             )}
             {status !== GameStatus.IDLE && (
                 <Character

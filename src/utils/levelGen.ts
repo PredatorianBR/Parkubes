@@ -1842,5 +1842,5 @@ export const generateCityLevel = (
     const baseRandom = settings.riverFlow * (0.5 + Math.random() * 1.0);
     const randomFlow = Math.round(THREE.MathUtils.clamp(baseRandom, 0, 5));
 
-    return { objects, collisionGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, ladderZones, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0 };
+    return { objects, collisionGrid, bGrid, wGrid, sGrid, tGrid, spawnPos, ladderZones, riverOrientation: hasRiver ? riverOrientation : -1, riverFlow: hasRiver ? randomFlow : 0, worldSize: size };
 };
