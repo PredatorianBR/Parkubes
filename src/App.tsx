@@ -9,7 +9,7 @@ import { GameStatus, GameState, GameSettings } from './types';
 import * as THREE from 'three';
 const getRandomSettings = () => {
   // Randomize Ratios (Sum to 100)
-  const keys = ['farm', 'house', 'highrise', 'factory', 'ruins'] as const;
+  const keys = ['farm', 'house', 'highrise', 'factory', 'ruins', 'foliage'] as const;
   let rawValues = keys.map(() => Math.random());
   const sum = rawValues.reduce((a, b) => a + b, 0);
   const normalized = rawValues.map(v => Math.round((v / sum) * 100));
@@ -26,7 +26,8 @@ const getRandomSettings = () => {
       house: normalized[1],
       highrise: normalized[2],
       factory: normalized[3],
-      ruins: normalized[4]
+      ruins: normalized[4],
+      foliage: Math.floor(Math.random() * 40) // Foliage is density 0-40% independently or part of it
     },
     riverWidth: Math.floor(Math.random() * 6), // 0 to 5
     riverFlow: Math.floor(Math.random() * 6)    // 0 to 5
@@ -46,7 +47,7 @@ const App: React.FC = () => {
     taunt: "Pratique seu parkour!",
     hint: "Use obstáculos para ganhar altura.",
     settings: {
-      worldSize: 40,
+      worldSize: 50,
       playerSpeed: 0.85,
       staminaDuration: 2.0,
       cameraZoom: 15,
@@ -56,7 +57,8 @@ const App: React.FC = () => {
         house: 0,
         highrise: 0,
         factory: 0,
-        ruins: 0
+        ruins: 0,
+        foliage: 20
       },
       riverWidth: 0,
       riverFlow: 0
@@ -201,7 +203,16 @@ const App: React.FC = () => {
 
   return (
     <div className="relative w-full h-screen bg-gray-950 select-none overflow-hidden">
-      <Canvas shadows gl={{ antialias: true }}>
+      <Canvas shadows gl={{ antialias: true }} onCreated={({ gl }) => {
+        const canvas = gl.domElement;
+        canvas.addEventListener('webglcontextlost', (e) => {
+          e.preventDefault();
+          console.warn('WebGL context lost. Attempting recovery...');
+        });
+        canvas.addEventListener('webglcontextrestored', () => {
+          console.log('WebGL context restored.');
+        });
+      }}>
         <OrthographicCamera
           makeDefault
           position={[100, 100, 100]}

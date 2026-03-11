@@ -4,7 +4,7 @@ import * as THREE from 'three';
 export const RuinBlock: React.FC<{ position: THREE.Vector3; scale: [number, number, number]; color: string; showGrid?: boolean }> = ({ position, scale, color, showGrid }) => {
     const materialRef = React.useRef<THREE.MeshStandardMaterial>(null!);
     if (!materialRef.current) {
-        materialRef.current = new THREE.MeshStandardMaterial({ color });
+        materialRef.current = new THREE.MeshStandardMaterial({ color, transparent: false, opacity: 1.0 });
         materialRef.current.userData = { showGrid: { value: showGrid ? 1.0 : 0.0 } };
         materialRef.current.onBeforeCompile = (shader) => {
             shader.uniforms.showGrid = materialRef.current.userData.showGrid;

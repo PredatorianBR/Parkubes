@@ -22,6 +22,7 @@ export interface GameSettings {
     house: number;
     highrise: number;
     factory: number;
+    foliage: number;
   };
 
   riverWidth: number;
@@ -33,7 +34,7 @@ export interface GameSettings {
 export interface VoxelObject {
   id: string;
   position: Position;
-  type: 'box' | 'wheat' | 'fence' | 'chimney' | 'chimney-house' | 'ruin' | 'factory' | 'highrise' | 'roof-ac' | 'wall-ac' | 'industrial-ac' | 'residential-ac';
+  type: 'box' | 'wheat' | 'fence' | 'chimney' | 'chimney-house' | 'ruin' | 'factory' | 'highrise' | 'roof-ac' | 'wall-ac' | 'industrial-ac' | 'residential-ac' | 'foliage';
   color: string;
   scale: [number, number, number];
   rotation?: number;

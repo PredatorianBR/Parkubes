@@ -47,6 +47,17 @@ const CollisionDebug: React.FC<{ collisionGrid: SpatialHashGrid; bGrid: number[]
     // Get all collision boxes for visualization
     const allBoxes = useMemo(() => collisionGrid.getAllBoxes(), [collisionGrid]);
 
+    // Count actual bridge cells to avoid over-allocating GPU memory
+    const bridgeCellCount = useMemo(() => {
+        let count = 0;
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                if ((bGrid[x]?.[z] || 0) > 0) count++;
+            }
+        }
+        return Math.max(1, count);
+    }, [bGrid, gridSize]);
+
     useEffect(() => {
         if (!boxRef.current || !bRef.current) return;
 
@@ -102,7 +113,7 @@ const CollisionDebug: React.FC<{ collisionGrid: SpatialHashGrid; bGrid: number[]
                 <meshBasicMaterial color="#ff0000" transparent opacity={0.15} side={THREE.DoubleSide} depthWrite={false} />
             </instancedMesh>
             {/* Bridge/Roof Collision (Cyan) */}
-            <instancedMesh ref={bRef} args={[undefined, undefined, gridSize * gridSize]} frustumCulled={false}>
+            <instancedMesh ref={bRef} args={[undefined, undefined, bridgeCellCount]} frustumCulled={false}>
                 <planeGeometry args={[1, 1]} />
                 <meshBasicMaterial color="#00ffff" transparent opacity={0.4} side={THREE.DoubleSide} />
             </instancedMesh>
@@ -151,15 +162,15 @@ const VoxelRuins: React.FC<{ ruins: VoxelObject[], showGrid?: boolean }> = React
         <group>
             <instancedMesh ref={meshRef} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
-                <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
+                <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} transparent={false} opacity={1.0} />
             </instancedMesh>
             <instancedMesh ref={meshTop1Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
-                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} />
+                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} transparent={false} opacity={1.0} />
             </instancedMesh>
             <instancedMesh ref={meshTop2Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
-                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} />
+                <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} transparent={false} opacity={1.0} />
             </instancedMesh>
         </group>
     );
@@ -271,6 +282,99 @@ const VoxelFences: React.FC<{ fences: VoxelObject[] }> = React.memo(({ fences })
             <instancedMesh ref={railWRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={railColor} />
+                <meshStandardMaterial />
+            </instancedMesh>
+        </group>
+    );
+});
+
+const VoxelFoliage: React.FC<{ objects: VoxelObject[] }> = React.memo(({ objects }) => {
+    const grassRef = useRef<THREE.InstancedMesh>(null!);
+    const flowersRef = useRef<THREE.InstancedMesh>(null!);
+
+    useEffect(() => {
+        if (!grassRef.current || !flowersRef.current || objects.length === 0) return;
+
+        const dummy = new THREE.Object3D();
+        const color = new THREE.Color();
+        let flowerIdx = 0;
+        let grassIdx = 0;
+
+        objects.forEach((obj) => {
+            const [x, y, z] = obj.position;
+            const [sW, sH, sD] = obj.scale;
+            const seed = obj.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+            const pseudoRandom = (offset: number) => {
+                const s = Math.sin(seed + offset) * 10000;
+                return s - Math.floor(s);
+            };
+
+            // Each instance is a "clump" scaled based on the actual object scale
+            // Density scale: more area = more blades
+            const area = sW * sD;
+            const blades = Math.floor(8 * area + pseudoRandom(1) * 4);
+
+            for (let b = 0; b < blades; b++) {
+                // Spread blades across the scale [sW, sD]
+                const offX = (pseudoRandom(b * 3) - 0.5) * sW;
+                const offZ = (pseudoRandom(b * 3 + 1) - 0.5) * sD;
+                const bladeH = (0.3 + pseudoRandom(b + 5) * 0.7) * sH;
+
+                dummy.position.set(x + offX, y + bladeH / 2, z + offZ);
+                dummy.scale.set(0.12, bladeH, 0.12);
+                dummy.rotation.set(0, pseudoRandom(b + 10) * Math.PI, 0);
+                dummy.updateMatrix();
+                grassRef.current.setMatrixAt(grassIdx++, dummy.matrix);
+            }
+
+            // Flowers - also scaled with area
+            const numFlowers = Math.floor(1 + area * 0.5 + pseudoRandom(20) * 2);
+            for (let f = 0; f < numFlowers; f++) {
+                const offX = (pseudoRandom(f * 4 + 40) - 0.5) * sW * 0.8;
+                const offZ = (pseudoRandom(f * 4 + 41) - 0.5) * sD * 0.8;
+                const fH = (0.5 + pseudoRandom(f + 42) * 0.5) * sH;
+
+                // Stem - Base should be at ground (y=0 logic coord)
+                // In world space, obj position is (x, y, z) where y is already the base (0 in levelGen)
+                dummy.position.set(x + offX, y + fH / 2, z + offZ);
+                dummy.scale.set(0.12, fH, 0.12); // Matched with grass blade thickness
+                dummy.rotation.set(0, 0, 0);
+                dummy.updateMatrix();
+                grassRef.current.setMatrixAt(grassIdx++, dummy.matrix);
+
+                // Head - Placed at the very top of the stem
+                // If stem height is fH, stem top is at y + fH.
+                // Flower head is a cube of size 0.25. Its pivot center is at 0.125 from its bottom.
+                // We use +0.115 to create a tiny 0.01 overlap, ensuring no visual gap.
+                dummy.position.set(x + offX, y + fH + 0.115, z + offZ);
+                dummy.scale.set(0.25, 0.25, 0.25);
+                dummy.updateMatrix();
+                flowersRef.current.setMatrixAt(flowerIdx, dummy.matrix);
+                flowersRef.current.setColorAt(flowerIdx, color.set(obj.color));
+                flowerIdx++;
+            }
+        });
+
+        grassRef.current.count = grassIdx;
+        flowersRef.current.count = flowerIdx;
+        grassRef.current.instanceMatrix.needsUpdate = true;
+        flowersRef.current.instanceMatrix.needsUpdate = true;
+        if (flowersRef.current.instanceColor) flowersRef.current.instanceColor.needsUpdate = true;
+    }, [objects]);
+
+    if (objects.length === 0) return null;
+
+    return (
+        <group>
+            {/* Grass and stems */}
+            <instancedMesh ref={grassRef} args={[undefined, undefined, objects.length * 60]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial color="#3f6212" transparent={false} opacity={1.0} />
+            </instancedMesh>
+            {/* Flower heads */}
+            <instancedMesh ref={flowersRef} args={[undefined, undefined, objects.length * 10]} castShadow receiveShadow>
+                <boxGeometry args={[1, 1, 1]} />
+                <meshStandardMaterial transparent={false} opacity={1.0} />
             </instancedMesh>
         </group>
     );
@@ -730,7 +834,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         isClimbing: false,
         isLadderSliding: false,
         isNearLadder: false,
-        isLadderHanging: false
+        isLadderHanging: false,
+        isLadderMounting: false
     });
 
     // Initialization & Map Regeneration
@@ -916,7 +1021,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             isClimbing: physicsOutput.isClimbing,
             isLadderSliding: physicsOutput.isLadderSliding,
             isNearLadder: physicsOutput.isNearLadder,
-            isLadderHanging: physicsOutput.isLadderHanging
+            isLadderHanging: physicsOutput.isLadderHanging,
+            isLadderMounting: physicsOutput.isLadderMounting
         };
 
         // Simple shallow compare
@@ -938,6 +1044,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         else if (newVisualState.isLadderSliding !== visualState.isLadderSliding) changed = true;
         else if (newVisualState.isNearLadder !== visualState.isNearLadder) changed = true;
         else if (newVisualState.isLadderHanging !== visualState.isLadderHanging) changed = true;
+        else if (newVisualState.isLadderMounting !== visualState.isLadderMounting) changed = true;
 
         if (changed) {
             setVisualState(newVisualState);
@@ -979,7 +1086,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         const ruins = mapData.objects.filter(o => o.type === 'ruin');
         const fences = mapData.objects.filter(o => o.type === 'fence');
         const wheat = mapData.objects.filter(o => o.type === 'wheat');
-        const buildings = mapData.objects.filter(o => o.type !== 'ruin' && o.type !== 'fence' && o.type !== 'wheat');
+        const foliage = mapData.objects.filter(o => o.type === 'foliage');
+        const buildings = mapData.objects.filter(o => o.type !== 'ruin' && o.type !== 'fence' && o.type !== 'wheat' && o.type !== 'foliage');
 
         return (
             <>
@@ -987,6 +1095,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 <VoxelWater size={settings.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={settings.riverFlow} />
                 <VoxelRuins ruins={ruins} showGrid={showGrid} />
                 <VoxelFences fences={fences} />
+                <VoxelFoliage objects={foliage} />
                 <WheatField wheatObjects={wheat} playerPos={playerPos} />
                 {buildings.map(obj => (
                     <Building
@@ -1048,6 +1157,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     isLadderSliding={visualState.isLadderSliding}
                     isNearLadder={visualState.isNearLadder}
                     isLadderHanging={visualState.isLadderHanging}
+                    isLadderMounting={visualState.isLadderMounting}
                     overlayContent={null}
                 />
             )}

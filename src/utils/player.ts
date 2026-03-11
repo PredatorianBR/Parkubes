@@ -4,6 +4,13 @@ import * as THREE from 'three';
 import { updateEntityPhysics, SpatialHashGrid } from './physics';
 
 // Wrapper to bridge Game Inputs -> Physics Engine
+let persistentLadderState = {
+    isClimbing: false,
+    isLadderSliding: false,
+    isLadderHanging: false,
+    isLadderMounting: false
+};
+
 export const updatePlayerPhysics = (
     dt: number,
     pos: THREE.Vector3,
@@ -146,11 +153,12 @@ export const updatePlayerPhysics = (
         airTimeHigh: airTimeHighPoint.current,
         lastDir: playerLastDir.current,
         noiseLevel: 0,
-        isClimbing: false,
+        isClimbing: persistentLadderState.isClimbing,
         ladderFaceAngle: 0,
-        isLadderSliding: false,
+        isLadderSliding: persistentLadderState.isLadderSliding,
         isNearLadder: false,
-        isLadderHanging: false
+        isLadderHanging: persistentLadderState.isLadderHanging,
+        isLadderMounting: persistentLadderState.isLadderMounting
     };
 
     const analogIn: any = keys.current.analog;
@@ -161,7 +169,7 @@ export const updatePlayerPhysics = (
         dt: dt,
         moveDir: inputDir,
         actions: {
-            jump: performJump,
+            jump: performJump || (justPressedJump && (currentState.isClimbing || currentState.isLadderSliding || currentState.isLadderHanging)),
             charge: isVisualPreJumping,
             climb: !!isJumpDown,
             run: !!(keys.current['shift'] || isAnalogRunning),
@@ -197,6 +205,11 @@ export const updatePlayerPhysics = (
     playerLastDir.current.copy(nextState.lastDir);
     stumbleTimer.current = nextState.stumbleTimer;
     stumbleVelocityRef.current.copy(nextState.stumbleVel);
+
+    persistentLadderState.isClimbing = nextState.isClimbing;
+    persistentLadderState.isLadderSliding = nextState.isLadderSliding;
+    persistentLadderState.isLadderHanging = nextState.isLadderHanging;
+    persistentLadderState.isLadderMounting = nextState.isLadderMounting;
 
     // Handle Landing Event
     let justLanded = false;
@@ -234,6 +247,7 @@ export const updatePlayerPhysics = (
         isLadderSliding: nextState.isLadderSliding,
         isNearLadder: nextState.isNearLadder,
         isLadderHanging: nextState.isLadderHanging,
+        isLadderMounting: nextState.isLadderMounting,
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
         fallDistance: lastFallDistRef.current,

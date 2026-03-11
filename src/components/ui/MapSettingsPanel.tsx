@@ -92,6 +92,7 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
             {renderRatioSlider('highrise', 'PRÉDIOS', 'accent-purple-400')}
             {renderRatioSlider('factory', 'FÁBRICAS', 'accent-slate-400')}
             {renderRatioSlider('ruins', 'RUÍNAS', 'accent-gray-600')}
+            {renderRatioSlider('foliage', 'TOUCEIRAS (FLORES)', 'accent-pink-600')}
 
             <h3 className="pixel-font text-xs text-blue-300 border-b border-white/10 pb-2 mb-2 mt-4">OPÇÕES</h3>
             <div className="grid grid-cols-2 gap-4">

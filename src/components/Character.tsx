@@ -29,6 +29,7 @@ interface CharacterProps {
     isLadderSliding?: boolean;
     isNearLadder?: boolean;
     isLadderHanging?: boolean;
+    isLadderMounting?: boolean;
     waterExitTimerRef?: React.MutableRefObject<number>;
 }
 
@@ -323,6 +324,7 @@ export const Character: React.FC<CharacterProps> = ({
     isLadderSliding = false,
     isNearLadder = false,
     isLadderHanging = false,
+    isLadderMounting = false,
     waterExitTimerRef
 }) => {
     const headColor = stunned ? '#9ca3af' : '#3b82f6';
@@ -708,7 +710,16 @@ export const Character: React.FC<CharacterProps> = ({
             const pullBob = pullCycle > 0 ? pullCycle * 0.15 : pullCycle * 0.05;
             bobY = pullBob;
 
-            if (isLadderHanging) {
+            if (isLadderMounting) {
+                // MOUNTING TRANSITION
+                // Reach down over the ledge while rotating into position
+                targetRotX = -0.5; // Lean forward/down heavily
+                targetHeadRotX = 0.5; // Look down at the ladder
+                moveSquash = 0.2; // Squash down as weight shifts
+                targetRotZ = 0.0;
+                targetZOffset = 0.2; // Move slightly over the edge
+                bobY = -0.2; // Dip down
+            } else if (isLadderHanging) {
                 idleTimer.current += delta;
                 const time = state.clock.getElapsedTime();
 
@@ -804,9 +815,9 @@ export const Character: React.FC<CharacterProps> = ({
             if (stunLandBounce.current > 0) {
                 stunLandBounce.current = Math.max(0, stunLandBounce.current - delta * 3);
                 const bounceP = stunLandBounce.current;
-                totalSquash = Math.abs(Math.sin(bounceP * Math.PI * 2.5)) * 0.15 * bounceP;
+                totalSquash = 0.4 + Math.abs(Math.sin(bounceP * Math.PI * 2.5)) * 0.15 * bounceP;
             } else {
-                totalSquash = 0.0;
+                totalSquash = 0.4;
             }
         } else if (isGettingUp) {
             // Effortful get-up with overshoot
@@ -872,6 +883,7 @@ export const Character: React.FC<CharacterProps> = ({
             } else if (isLyingDownAnim) {
                 targetRotX = Math.PI / 2;
                 targetPivotY = 0.1;
+                targetZOffset = -0.6; // Pull back to avoid clipping into walls
                 // Subtle breathing while lying down
                 targetRotZ += Math.sin(time * 2) * 0.02;
                 rotLerpSpeed = delta * 10;

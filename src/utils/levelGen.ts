@@ -201,7 +201,10 @@ export const generateCityLevel = (
         // Walk from Start to Finish
         const maxSteps = size * 3;
         for (let i = 0; i < maxSteps; i++) {
-            const width = minWidth + Math.floor(Math.random() * (maxWidth - minWidth + 1));
+            // A nascente do rio sempre deve ser o mais grosso que aquele rio puder (USER REQUEST)
+            const width = i < 8
+                ? maxWidth
+                : minWidth + Math.floor(Math.random() * (maxWidth - minWidth + 1));
             const rWidth = Math.round(width / 2);
 
             for (let wx = -rWidth; wx < rWidth; wx++) {
@@ -345,6 +348,9 @@ export const generateCityLevel = (
                 for (let j = -2; j < bd + 2; j++) {
                     const tx = bx + i + halfSize;
                     const tz = bz + j + halfSize;
+                    
+                    if (isWaterLogic(bx + i, bz + j)) return null; // USER REQUEST: 2 voxels de distancia do rio
+
                     if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
                         const nType = tGrid[tx][tz];
                         if (nType !== 0 && nType !== 4) { // 4 is farm
@@ -408,6 +414,13 @@ export const generateCityLevel = (
                     for (let dz = -ruinGap; dz < 2 + ruinGap; dz++) {
                         const checkX = rx + dx;
                         const checkZ = rz + dz;
+                        
+                        // Check water gap (min 2 voxels)
+                        const isWaterGap = dx >= -2 && dx < 4 && dz >= -2 && dz < 4;
+                        if (isWaterGap && isWaterLogic(checkX, checkZ)) {
+                            canPlace = false;
+                        }
+
                         const tx = checkX + halfSize;
                         const tz = checkZ + halfSize;
                         if (tx < 0 || tx >= size || tz < 0 || tz >= size) {
@@ -501,6 +514,9 @@ export const generateCityLevel = (
             for (let jz = -2; jz < fillD + 2; jz++) {
                 const tx = startX + ix + halfSize;
                 const tz = startZ + jz + halfSize;
+                
+                if (isWaterLogic(startX + ix, startZ + jz)) return null;
+
                 if (tx >= 0 && tx < size && tz >= 0 && tz < size) {
                     const nType = tGrid[tx][tz];
                     if (nType !== 0 && nType !== typeId) {
@@ -1152,15 +1168,13 @@ export const generateCityLevel = (
 
             // PASS 3: Ladders on multi-story buildings
             if (numFloors >= 2 && Math.random() < 0.6) {
-                // Shuffle facades so ladder placement is random, but prioritize non-door walls
-                const shuffledFacades = [...facades].sort((a, b) => {
-                    if (a.hasDoor !== b.hasDoor) return a.hasDoor ? 1 : -1;
-                    return Math.random() - 0.5;
-                });
+                // Shuffle facades so ladder placement is random
+                const shuffledFacades = [...facades].sort(() => Math.random() - 0.5);
                 let ladderPlaced = false;
 
                 for (const f of shuffledFacades) {
                     if (ladderPlaced) break;
+                    if (f.hasDoor) continue; // User rule: no ladders on faces with doors
                     if (f.width < 3) continue; // Need at least 3 columns for padding
 
                     // Ladder is 1 column wide, full height of building
@@ -1204,12 +1218,12 @@ export const generateCityLevel = (
                             const col = f.columns[startX];
                             const worldX = col.worldX - f.normal.dx * 0.5 + 0.5;
                             const worldZ = col.worldZ - f.normal.dz * 0.5 + 0.5;
-                            const worldY = 0; // Center-relative Y = 0 means vertically centered
+                            const worldY = 0.5; // Offset by 0.5 to keep bottom at ground while extending 1.0 above roof
 
                             assignedLadders.push({
                                 pos: [worldX - cx, worldY, worldZ - cz],
                                 rot: f.rotVec as [number, number, number],
-                                height: height
+                                height: height + 1.0
                             });
 
                             ladderPlaced = true;
@@ -1578,6 +1592,49 @@ export const generateCityLevel = (
         }
     }
 
+    // Foliage (Flowers and Grass clumps) - Updated to be larger clusters
+    const foliageClusterCount = Math.floor(size * (settings.ratios.foliage / 20) * 1.5);
+    const flowerColors = ['#f43f5e', '#ec4899', '#d946ef', '#a855f7', '#8b5cf6', '#3b82f6', '#0ea5e9', '#ef4444', '#f97316', '#14b8a6', '#facc15'];
+    for (let i = 0; i < foliageClusterCount; i++) {
+        let attempts = 20;
+        while (attempts > 0) {
+            const x = Math.floor(Math.random() * (size - 6)) + 3;
+            const z = Math.floor(Math.random() * (size - 6)) + 3;
+
+            // Check for a small clear area (2x2)
+            let clusterClear = true;
+            for (let dx = 0; dx < 2; dx++) {
+                for (let dz = 0; dz < 2; dz++) {
+                    if (x + dx >= size || z + dz >= size || tGrid[x + dx][z + dz] !== 0 || isWaterLogic(x + dx - halfSize, z + dz - halfSize)) {
+                        clusterClear = false;
+                        break;
+                    }
+                }
+                if (!clusterClear) break;
+            }
+
+            if (clusterClear) {
+                // Determine cluster dimensions (between 1x2 and 2x2 voxels visually)
+                const cW = 1 + (Math.random() > 0.5 ? 1 : 0);
+                const cD = 1 + (Math.random() > 0.5 ? 1 : 0);
+
+                const logicX = x - halfSize + (cW / 2);
+                const logicZ = z - halfSize + (cD / 2);
+
+                objects.push({
+                    id: uid(`foliage-${x}-${z}-${i}`),
+                    position: [logicX, 0, logicZ],
+                    scale: [cW, 1.2, cD], // Taller and wider
+                    rotation: Math.random() * Math.PI,
+                    color: flowerColors[Math.floor(Math.random() * flowerColors.length)],
+                    type: 'foliage'
+                });
+                break;
+            }
+            attempts--;
+        }
+    }
+
     // --- BUILD 3D COLLISION BOXES ---
     objects.forEach(obj => {
         // --- CUSTOM FENCE COLLISION (Thin 3D Boxes) ---
@@ -1620,8 +1677,8 @@ export const generateCityLevel = (
             return;
         }
 
-        if (obj.type === 'wheat') {
-            // Wheat should be non-collidable for gameplay (hiding)
+        if (obj.type === 'wheat' || obj.type === 'foliage') {
+            // Wheat and foliage should be non-collidable for gameplay
             return;
         }
 
@@ -1751,6 +1808,7 @@ export const generateCityLevel = (
             let faceAngle = rotY + Math.PI;
             // Normalize to [-PI, PI]
             if (faceAngle > Math.PI) faceAngle -= Math.PI * 2;
+            if (faceAngle < -Math.PI) faceAngle += Math.PI * 2;
 
             // The climbable zone extends slightly outward from the wall
             const zoneRadius = 1.2;

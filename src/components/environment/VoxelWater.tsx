@@ -1,13 +1,11 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useFrame } from '@react-three/fiber';
 import { GRID_SCALE, GROUND_DEPTH, worldToIndex } from '../../utils/physics';
 
 export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverOrientation?: number; riverFlow?: number }> = React.memo(({ size, waterGrid, riverOrientation = -1, riverFlow = 3.0 }) => {
-    const meshRef = useRef<THREE.InstancedMesh>(null!);
-    const bedRef = useRef<THREE.InstancedMesh>(null!);
     const foamRef = useRef<THREE.InstancedMesh>(null!);
-    const wallRef = useRef<THREE.InstancedMesh>(null!);
     const halfSize = Math.floor(size / 2);
 
     const gridSize = size * GRID_SCALE;
@@ -22,6 +20,79 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
     const sourceTilesRef = useRef<{ x: number, z: number, side: string }[]>([]);
     const exitTilesRef = useRef<{ x: number, z: number, side: string }[]>([]);
 
+    // Build merged geometries for water surface, bed, and walls
+    const { surfaceGeom, bedGeom, wallGeom } = useMemo(() => {
+        if (!waterGrid) return { surfaceGeom: null, bedGeom: null, wallGeom: null };
+
+        const surfaceGeoms: THREE.BufferGeometry[] = [];
+        const bedGeoms: THREE.BufferGeometry[] = [];
+        const wallGeoms: THREE.BufferGeometry[] = [];
+
+        const basePlane = new THREE.PlaneGeometry(cellSize, cellSize);
+        const baseBed = new THREE.BoxGeometry(cellSize, 0.5, cellSize);
+        const waterDepth = GROUND_DEPTH - 0.2;
+
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isWater = waterGrid[x][z] === 1;
+                if (!isWater) continue;
+
+                const worldX = (x + 0.5) / GRID_SCALE - halfSize;
+                const worldZ = (z + 0.5) / GRID_SCALE - halfSize;
+
+                // Water surface plane
+                const sp = basePlane.clone();
+                sp.rotateX(-Math.PI / 2);
+                sp.translate(worldX, -0.2, worldZ);
+                surfaceGeoms.push(sp);
+
+                // River bed
+                const bp = baseBed.clone();
+                bp.translate(worldX, -GROUND_DEPTH + 0.25, worldZ);
+                bedGeoms.push(bp);
+
+                // Edge walls
+                if (x === 0) {
+                    const wp = new THREE.PlaneGeometry(cellSize, waterDepth);
+                    wp.rotateY(-Math.PI / 2);
+                    wp.translate(worldX - 0.5, -0.2 - waterDepth / 2, worldZ);
+                    wallGeoms.push(wp);
+                } else if (x === gridSize - 1) {
+                    const wp = new THREE.PlaneGeometry(cellSize, waterDepth);
+                    wp.rotateY(Math.PI / 2);
+                    wp.translate(worldX + 0.5, -0.2 - waterDepth / 2, worldZ);
+                    wallGeoms.push(wp);
+                }
+
+                if (z === 0) {
+                    const wp = new THREE.PlaneGeometry(cellSize, waterDepth);
+                    wp.rotateY(Math.PI);
+                    wp.translate(worldX, -0.2 - waterDepth / 2, worldZ - 0.5);
+                    wallGeoms.push(wp);
+                } else if (z === gridSize - 1) {
+                    const wp = new THREE.PlaneGeometry(cellSize, waterDepth);
+                    // no rotation needed for south-facing
+                    wp.translate(worldX, -0.2 - waterDepth / 2, worldZ + 0.5);
+                    wallGeoms.push(wp);
+                }
+            }
+        }
+
+        const surfaceGeom = surfaceGeoms.length > 0 ? BufferGeometryUtils.mergeGeometries(surfaceGeoms) : null;
+        const bedGeom = bedGeoms.length > 0 ? BufferGeometryUtils.mergeGeometries(bedGeoms) : null;
+        const wallGeom = wallGeoms.length > 0 ? BufferGeometryUtils.mergeGeometries(wallGeoms) : null;
+
+        // Dispose temporary geometries
+        surfaceGeoms.forEach(g => g.dispose());
+        bedGeoms.forEach(g => g.dispose());
+        wallGeoms.forEach(g => g.dispose());
+        basePlane.dispose();
+        baseBed.dispose();
+
+        return { surfaceGeom, bedGeom, wallGeom };
+    }, [size, halfSize, waterGrid, gridSize, cellSize]);
+
+    // Initialize foam particles and tile refs
     useEffect(() => {
         if (!waterGrid) return;
 
@@ -67,7 +138,6 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 let spawnX = logicX;
                 let spawnZ = logicZ;
 
-                // Shift spawning back to be closer to the edge
                 if (riverOrientation === 0) { vz = 2.5 + Math.random() * 2; spawnZ -= 0.2; }
                 else if (riverOrientation === 2) { vz = -2.5 - Math.random() * 2; spawnZ += 0.2; }
                 else if (riverOrientation === 3) { vx = 2.5 + Math.random() * 2; spawnX -= 0.2; }
@@ -80,7 +150,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                     speed: 2.0 + Math.random() * 3.0,
                     scale: 0.3 + Math.random() * 0.3,
                     offset: new THREE.Vector3((Math.random() - 0.5) * cellSize, 0, (Math.random() - 0.5) * cellSize),
-                    type: 'source'
+                    type: 'source' as const
                 };
             }
 
@@ -95,7 +165,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                     speed: 2.0 + Math.random() * 2.0,
                     scale: 0.3 + Math.random() * 0.3,
                     offset: new THREE.Vector3((Math.random() - 0.5) * cellSize, 0, (Math.random() - 0.5) * cellSize),
-                    type: 'exit'
+                    type: 'exit' as const
                 };
             }
 
@@ -107,79 +177,9 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 speed: 1.5 + Math.random() * 2.0,
                 scale: 0.2 + Math.random() * 0.4,
                 offset: new THREE.Vector3((Math.random() - 0.5) * cellSize, 0, (Math.random() - 0.5) * cellSize),
-                type: 'drift'
+                type: 'drift' as const
             };
         });
-
-        const dummy = new THREE.Object3D();
-        let idx = 0;
-        let wallIdx = 0;
-
-        const waterDepth = GROUND_DEPTH - 0.2;
-
-        for (let x = 0; x < gridSize; x++) {
-            for (let z = 0; z < gridSize; z++) {
-                const isWater = waterGrid[x][z] === 1;
-                const worldX = (x + 0.5) / GRID_SCALE - halfSize;
-                const worldZ = (z + 0.5) / GRID_SCALE - halfSize;
-
-                if (isWater) {
-                    dummy.rotation.set(-Math.PI / 2, 0, 0);
-                    dummy.scale.set(cellSize, cellSize, 1);
-                    dummy.position.set(worldX, -0.2, worldZ);
-                    dummy.updateMatrix();
-                    meshRef.current.setMatrixAt(idx, dummy.matrix);
-
-                    dummy.rotation.set(0, 0, 0);
-                    const bedHeight = 0.5;
-                    dummy.scale.set(cellSize, bedHeight, cellSize);
-                    dummy.position.set(worldX, -GROUND_DEPTH + bedHeight / 2, worldZ);
-                    dummy.updateMatrix();
-                    bedRef.current.setMatrixAt(idx, dummy.matrix);
-
-                    const wallOffset = 0.5;
-
-                    if (x === 0) {
-                        dummy.position.set(worldX - wallOffset, -0.2 - waterDepth / 2, worldZ);
-                        dummy.rotation.set(0, -Math.PI / 2, 0);
-                        dummy.scale.set(cellSize, waterDepth, 1);
-                        dummy.updateMatrix();
-                        wallRef.current.setMatrixAt(wallIdx++, dummy.matrix);
-                    } else if (x === gridSize - 1) {
-                        dummy.position.set(worldX + wallOffset, -0.2 - waterDepth / 2, worldZ);
-                        dummy.rotation.set(0, Math.PI / 2, 0);
-                        dummy.scale.set(cellSize, waterDepth, 1);
-                        dummy.updateMatrix();
-                        wallRef.current.setMatrixAt(wallIdx++, dummy.matrix);
-                    }
-
-                    if (z === 0) {
-                        dummy.position.set(worldX, -0.2 - waterDepth / 2, worldZ - wallOffset);
-                        dummy.rotation.set(0, Math.PI, 0);
-                        dummy.scale.set(cellSize, waterDepth, 1);
-                        dummy.updateMatrix();
-                        wallRef.current.setMatrixAt(wallIdx++, dummy.matrix);
-                    } else if (z === gridSize - 1) {
-                        dummy.position.set(worldX, -0.2 - waterDepth / 2, worldZ + wallOffset);
-                        dummy.rotation.set(0, 0, 0);
-                        dummy.scale.set(cellSize, waterDepth, 1);
-                        dummy.updateMatrix();
-                        wallRef.current.setMatrixAt(wallIdx++, dummy.matrix);
-                    }
-                } else {
-                    dummy.scale.set(0, 0, 0);
-                    dummy.updateMatrix();
-                    meshRef.current.setMatrixAt(idx, dummy.matrix);
-                    bedRef.current.setMatrixAt(idx, dummy.matrix);
-                }
-                idx++;
-            }
-        }
-        meshRef.current.instanceMatrix.needsUpdate = true;
-        bedRef.current.instanceMatrix.needsUpdate = true;
-
-        wallRef.current.count = wallIdx;
-        wallRef.current.instanceMatrix.needsUpdate = true;
     }, [size, halfSize, waterGrid, gridSize, cellSize, riverOrientation]);
 
     useFrame((state, delta) => {
@@ -187,8 +187,6 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         const dummy = new THREE.Object3D();
 
         const waterTiles = waterTilesRef.current;
-        const edgeTiles = edgeTilesRef.current;
-
         const sourceTiles = sourceTilesRef.current;
         const exitTiles = exitTilesRef.current;
 
@@ -235,19 +233,16 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
             currentScale.set(1, 1, 1);
 
             if (p.type === 'source' || p.type === 'exit') {
-                // Impact Smoke Physics: Gravity applies always
-                p.vel.y -= p.type === 'source' ? 12.0 * delta : 20.0 * delta; // Faster fall for exit
+                p.vel.y -= p.type === 'source' ? 12.0 * delta : 20.0 * delta;
                 p.pos.addScaledVector(p.vel, delta);
 
-                // Expansion + Fade scale
-                scaleMult = 1.1 * (1.1 - p.life * 0.7); // Reduced volume further
+                scaleMult = 1.1 * (1.1 - p.life * 0.7);
                 p.pos.x += Math.sin(state.clock.elapsedTime * 4 + i) * 0.01;
                 p.pos.z += Math.cos(state.clock.elapsedTime * 4 + i) * 0.01;
 
                 currentRotation.set(0, state.clock.elapsedTime * i * 0.1, 0);
-                currentScale.set(1, 1, 1); // Full box
+                currentScale.set(1, 1, 1);
             } else {
-                // Normal flow drift
                 const movement = (p.speed + 1.0) * (flowStrength / 3.0) * delta;
                 if (riverOrientation === 0) p.pos.z += movement;
                 else if (riverOrientation === 2) p.pos.z -= movement;
@@ -255,7 +250,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 else if (riverOrientation === 1) p.pos.x -= movement;
 
                 currentRotation.set(-Math.PI / 2, 0, i);
-                currentScale.set(1, 1, 0.001); // Flatten into a plane
+                currentScale.set(1, 1, 0.001);
             }
 
             const margin = (p.type === 'source' || p.type === 'exit') ? 2.0 : 0.0;
@@ -286,31 +281,38 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         />
     );
 
+    const hasWater = surfaceGeom !== null;
+
     return (
         <group>
             {/* River Bed */}
-            <instancedMesh ref={bedRef} args={[undefined, undefined, gridSize * gridSize]} receiveShadow frustumCulled={false}>
-                <boxGeometry args={[1, 1, 1]} />
-                <meshStandardMaterial color="#5d4037" roughness={0.8} />
-            </instancedMesh>
+            {bedGeom && (
+                <mesh geometry={bedGeom} receiveShadow frustumCulled={false}>
+                    <meshStandardMaterial color="#5d4037" roughness={0.8} />
+                </mesh>
+            )}
 
             {/* Water surface */}
-            <instancedMesh ref={meshRef} args={[undefined, undefined, gridSize * gridSize]} receiveShadow={false} frustumCulled={false}>
-                <planeGeometry args={[1, 1]} />
-                {waterMaterial}
-            </instancedMesh>
+            {surfaceGeom && (
+                <mesh geometry={surfaceGeom} receiveShadow={false} frustumCulled={false}>
+                    {waterMaterial}
+                </mesh>
+            )}
 
             {/* Water edge walls */}
-            <instancedMesh ref={wallRef} args={[undefined, undefined, gridSize * 4]} receiveShadow={false} frustumCulled={false}>
-                <planeGeometry args={[1, 1]} />
-                {waterMaterial}
-            </instancedMesh>
+            {wallGeom && (
+                <mesh geometry={wallGeom} receiveShadow={false} frustumCulled={false}>
+                    {waterMaterial}
+                </mesh>
+            )}
 
             {/* Dynamic River Foam & Waterfall Mist */}
-            <instancedMesh ref={foamRef} args={[undefined, undefined, maxFoam]} frustumCulled={false} renderOrder={1}>
-                <boxGeometry args={[1, 1, 1]} />
-                <meshBasicMaterial color="#ffffff" transparent={true} opacity={0.6} depthWrite={false} />
-            </instancedMesh>
+            {hasWater && (
+                <instancedMesh ref={foamRef} args={[undefined, undefined, maxFoam]} frustumCulled={false} renderOrder={1}>
+                    <boxGeometry args={[1, 1, 1]} />
+                    <meshBasicMaterial color="#ffffff" transparent={true} opacity={0.6} depthWrite={false} />
+                </instancedMesh>
+            )}
         </group>
     );
 });

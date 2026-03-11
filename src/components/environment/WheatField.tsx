@@ -102,6 +102,8 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
                 ref={materialRef}
                 color="#eab308"
                 onBeforeCompile={onBeforeCompile}
+                transparent={false}
+                opacity={1.0}
             />
         </instancedMesh>
     );
