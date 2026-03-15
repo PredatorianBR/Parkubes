@@ -320,6 +320,7 @@ interface PhysicsState {
     isNearLadder: boolean;
     isLadderHanging: boolean;
     isLadderMounting: boolean;
+    ladderMountTimer: number;
 }
 
 interface PhysicsInput {
@@ -517,12 +518,17 @@ export const updateEntityPhysics = (
 
             let autoGrab = false;
             if (next.isGrounded && next.pos.y > ladderMinY + 1.0 && actions.grabLadder) {
-                // Auto-grab if moving towards the ladder edge from the roof AND pressing SPACE
+                // Manual grab or auto-grab if moving towards the ladder edge from the roof AND pressing SPACE
                 const outX = -Math.sin(matchedLadderAngle);
                 const outZ = -Math.cos(matchedLadderAngle);
                 const walkDot = moveDir.x * outX + moveDir.z * outZ;
-                if (walkDot > 0.1) {
+                
+                // If pressing SPACE near edge, trigger grab even without movement
+                if (walkDot > 0.1 || actions.grabLadder) {
                     autoGrab = true;
+                    if (!current.isClimbing && !current.isLadderMounting) {
+                        next.ladderMountTimer = 0.5; // Start mounting transition
+                    }
                 }
             }
 
@@ -592,12 +598,19 @@ export const updateEntityPhysics = (
             // Engage ladder rails if mid-air, OR trying to enter ladder from bottom (up), OR entering from top (down) or auto-grabbing or grabLadder
             if (!dismounting && (!next.isGrounded || isMovingUp || isMovingDown || autoGrab || actions.grabLadder) && (actions.grabLadder || current.isClimbing || current.isLadderHanging || current.isLadderSliding || isMovingUp)) {
                 // RAIL BEHAVIOR: lock X/Z to the ladder rails
-                if (autoGrab && next.pos.y > ladderMaxY - 1.0) {
+                if ((autoGrab || next.ladderMountTimer > 0) && next.pos.y > ladderMaxY - 1.0) {
                     next.isLadderMounting = true;
                     // Smoothly transition from roof onto the ladder rail
-                    const lerpSpeed = 10.0 * dt;
+                    const lerpSpeed = 8.0 * dt;
                     next.pos.x += (railX - next.pos.x) * lerpSpeed;
                     next.pos.z += (railZ - next.pos.z) * lerpSpeed;
+                    
+                    // Pull down slightly during mount
+                    if (next.ladderMountTimer > 0) {
+                        next.pos.y -= 2.0 * dt;
+                        next.ladderMountTimer -= dt;
+                        if (next.ladderMountTimer < 0) next.ladderMountTimer = 0;
+                    }
                 } else {
                     // Smooth suck in to the ladder from the ground or jump
                     const lerpSpeed = 15.0 * dt;

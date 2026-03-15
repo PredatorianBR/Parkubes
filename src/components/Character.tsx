@@ -769,15 +769,26 @@ export const Character: React.FC<CharacterProps> = ({
             // Breathing while looking up
             idleBobY = Math.sin(time * 2) * 0.05;
             
-            // Look up at the ladder
-            targetHeadRotX = -0.4;
+            // Look at the ladder (conditional: look down if on roof, slightly up if on ground)
+            const isOnRoof = groupRef.current && groupRef.current.position.y > 3.0;
+            if (isOnRoof) {
+                targetHeadRotX = 0.45; // Looking down
+            } else {
+                targetHeadRotX = -0.18; // Slightly upward towards top
+            }
 
             // Calculate relative angle to look at the ladder
             if (groupRef.current) {
                 let currentBodyRotY = groupRef.current.rotation.y % (Math.PI * 2);
                 
-                // Diff invertido para corrigir o giro oposto
-                let diff = currentBodyRotY - ladderFaceAngle;
+                // On roof, we need to look in the opposite direction of faceAngle (faceAngle points INTO the wall)
+                let targetAngle = ladderFaceAngle;
+                if (isOnRoof) {
+                    targetAngle += Math.PI;
+                }
+
+                // Calculate relative angle to look at the ladder (Target - Current)
+                let diff = targetAngle - currentBodyRotY;
                 
                 // Normalize angle
                 while (diff > Math.PI) diff -= Math.PI * 2;

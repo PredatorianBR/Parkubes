@@ -8,7 +8,8 @@ let persistentLadderState = {
     isClimbing: false,
     isLadderSliding: false,
     isLadderHanging: false,
-    isLadderMounting: false
+    isLadderMounting: false,
+    ladderMountTimer: 0
 };
 
 export const updatePlayerPhysics = (
@@ -158,7 +159,8 @@ export const updatePlayerPhysics = (
         isLadderSliding: persistentLadderState.isLadderSliding,
         isNearLadder: false,
         isLadderHanging: persistentLadderState.isLadderHanging,
-        isLadderMounting: persistentLadderState.isLadderMounting
+        isLadderMounting: persistentLadderState.isLadderMounting,
+        ladderMountTimer: persistentLadderState.ladderMountTimer
     };
 
     const analogIn: any = keys.current.analog;
@@ -211,6 +213,7 @@ export const updatePlayerPhysics = (
     persistentLadderState.isLadderSliding = nextState.isLadderSliding;
     persistentLadderState.isLadderHanging = nextState.isLadderHanging;
     persistentLadderState.isLadderMounting = nextState.isLadderMounting;
+    persistentLadderState.ladderMountTimer = nextState.ladderMountTimer;
 
     // Handle Landing Event
     let justLanded = false;

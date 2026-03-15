@@ -199,7 +199,7 @@ export const generateCityLevel = (
         const minWidth = Math.max(1, maxWidth - 2);
 
         // Walk from Start to Finish
-        const maxSteps = size * 3;
+        const maxSteps = size * 4;
         for (let i = 0; i < maxSteps; i++) {
             // A nascente do rio sempre deve ser o mais grosso que aquele rio puder (USER REQUEST)
             const width = i < 8
@@ -231,11 +231,11 @@ export const generateCityLevel = (
             const dz = Math.sign(tz - cz);
 
             // Controlled movement to target with small random curves
-            if (riverOrientation === 0) { // N-S flow
+            if (riverOrientation % 2 === 0) { // N-S flow (North-South or South-North)
                 cz += dz;
                 if (Math.random() > 0.7) cx += (Math.random() > 0.5 ? 1 : -1);
                 else if (Math.abs(tx - cx) > 1) cx += dx * 0.5;
-            } else { // E-W flow
+            } else { // E-W flow (East-West or West-East)
                 cx += dx;
                 if (Math.random() > 0.7) cz += (Math.random() > 0.5 ? 1 : -1);
                 else if (Math.abs(tz - cz) > 1) cz += dz * 0.5;
@@ -246,7 +246,7 @@ export const generateCityLevel = (
             if (endEdge === 1 && cx >= tx) break;
             if (endEdge === 2 && cz >= tz) break;
             if (endEdge === 3 && cx <= tx) break;
-            if (Math.abs(cx) > halfSize + 5 || Math.abs(cz) > halfSize + 5) break;
+            if (Math.abs(cx) > halfSize + 10 || Math.abs(cz) > halfSize + 10) break;
         }
     }
 
@@ -2024,7 +2024,7 @@ export const generateCityLevel = (
             if (faceAngle < -Math.PI) faceAngle += Math.PI * 2;
 
             // The climbable zone extends slightly outward from the wall
-            const zoneRadius = 1.2;
+            const zoneRadius = 2.0;
             ladderZones.push({
                 minX: absX - zoneRadius,
                 minY: buildingBottom,
