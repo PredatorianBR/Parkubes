@@ -4,7 +4,7 @@ import * as THREE from 'three';
 export const DoorBlock: React.FC<{ position: [number, number, number], rotation: [number, number, number] }> = ({ position, rotation }) => {
     // UPDATED: Darker brown frame, door remains original wood brown
     const frameColor = "#4a3018"; // Darker brown
-    const frameDepth = 0.08;
+    const frameDepth = 0.05;
     const frameWidth = 0.06;
     const frameZ = frameDepth / 2;
 
@@ -26,16 +26,15 @@ export const DoorBlock: React.FC<{ position: [number, number, number], rotation:
                 <meshStandardMaterial color={frameColor} />
             </mesh>
 
-            {/* Door Panel - Increased Height to 2.15 to reach header (Top 1.05) */}
-            <mesh position={[0, -0.025, 0]}>
-                <boxGeometry args={[0.9, 2.15, 0.05]} />
+            <mesh position={[0, -0.025, 0.01]}>
+                <boxGeometry args={[0.9, 2.15, 0.02]} />
                 {/* Changed to brown wood color and increased roughness */}
                 <meshStandardMaterial color="#8b5a2b" roughness={0.8} />
             </mesh>
 
             {/* Handle */}
-            <mesh position={[0.35, -0.1, 0.05]}>
-                <boxGeometry args={[0.1, 0.2, 0.05]} />
+            <mesh position={[0.35, -0.1, 0.025]}>
+                <boxGeometry args={[0.1, 0.2, 0.02]} />
                 <meshStandardMaterial color="#fcd34d" metalness={0.8} roughness={0.2} />
             </mesh>
         </group>
@@ -45,7 +44,7 @@ export const DoorBlock: React.FC<{ position: [number, number, number], rotation:
 export const IndustrialDoorBlock: React.FC<{ position: [number, number, number], rotation: [number, number, number] }> = ({ position, rotation }) => {
     // UPDATED: Taller door panel
     const frameColor = "#334155";
-    const frameDepth = 0.1;
+    const frameDepth = 0.06;
     const frameWidth = 0.1;
     const frameZ = frameDepth / 2;
 
@@ -68,13 +67,13 @@ export const IndustrialDoorBlock: React.FC<{ position: [number, number, number],
             </mesh>
 
             {/* Panel - Increased Height to 2.95 (Top 1.425) */}
-            <mesh position={[0, -0.025, 0]}>
-                <boxGeometry args={[1.8, 2.95, 0.05]} />
+            <mesh position={[0, -0.025, 0.015]}>
+                <boxGeometry args={[1.8, 2.95, 0.03]} />
                 <meshStandardMaterial color="#94a3b8" metalness={0.6} roughness={0.4} />
             </mesh>
 
             {[0.25, 0.75, 1.25, -0.25, -0.75, -1.25].map((y, i) => (
-                <mesh key={i} position={[0, y - 0.2, 0.03]}>
+                <mesh key={i} position={[0, y - 0.2, 0.035]}>
                     <boxGeometry args={[1.7, 0.02, 0.01]} />
                     <meshStandardMaterial color="#64748b" />
                 </mesh>

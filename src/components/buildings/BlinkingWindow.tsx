@@ -47,7 +47,7 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
     const frameColor = type === 'residential' ? '#4a3018' : '#1f2937';
     const grillColor = type === 'residential' ? '#4a3018' : '#334155';
 
-    const frameDepth = 0.08;
+    const frameDepth = 0.05;
     const frameThickness = 0.06;
 
     const w = type === 'residential' ? size : 2.0;
@@ -81,10 +81,10 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
         <group position={[position[0], position[1], position[2]]} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-hide' }}>
             <group position={[0, 0, 0]}>
                 <Frame w={w} h={h} />
-                <mesh material={material} position={[0, 0, 0.025]}>
-                    <boxGeometry args={[w, h, 0.04]} />
+                <mesh material={material} position={[0, 0, 0.01]}>
+                    <boxGeometry args={[w, h, 0.02]} />
                 </mesh>
-                <group position={[0, 0, 0.06]}>
+                <group position={[0, 0, 0.022]}>
                     {type === 'residential' ? (
                         <>
                             <mesh position={[0, 0, 0]}>

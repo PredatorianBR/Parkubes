@@ -31,6 +31,7 @@ interface CharacterProps {
     isLadderHanging?: boolean;
     isLadderMounting?: boolean;
     waterExitTimerRef?: React.MutableRefObject<number>;
+    ladderFaceAngle?: number;
 }
 
 const ParticleEffects: React.FC<{
@@ -46,7 +47,8 @@ const ParticleEffects: React.FC<{
     justLanded: boolean;
     isTiredBreathingRef?: React.MutableRefObject<boolean>;
     isRolling: boolean;
-}> = ({ isRunning, isMoving, isGrounded, currentSurface, staminaRef, landingFactor, playerGroup, stunned, fallDistance, justLanded, isTiredBreathingRef, isRolling }) => {
+    moveSpeed: number;
+}> = ({ isRunning, isMoving, isGrounded, currentSurface, staminaRef, landingFactor, playerGroup, stunned, fallDistance, justLanded, isTiredBreathingRef, isRolling, moveSpeed }) => {
     const meshRef = useRef<THREE.InstancedMesh>(null!);
     const particles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; color: THREE.Color; scale: number; active: boolean }[]>([]);
     const dummy = React.useMemo(() => new THREE.Object3D(), []);
@@ -80,6 +82,7 @@ const ParticleEffects: React.FC<{
     const wasInWater = useRef(false);
     const wetTimer = useRef(0);
     const lastBreathCycle = useRef(0);
+    const swimPhase = useRef(0);
 
     useFrame((state, delta) => {
         if (!meshRef.current || !playerGroup.current) return;
@@ -87,8 +90,8 @@ const ParticleEffects: React.FC<{
         // SPAWN LOGIC
 
         // 1. Running Particles
-        if (isRunning && isGrounded && Math.random() < 0.3) {
-            const offset = new THREE.Vector3((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
+        if (isRunning && isGrounded && Math.random() < 0.6) {
+            const offset = new THREE.Vector3((Math.random() - 0.5) * 0.8, 0, (Math.random() - 0.5) * 0.8);
             const spawnPos = playerGroup.current.position.clone().add(offset);
 
             let color = '#a8a29e';
@@ -98,10 +101,10 @@ const ParticleEffects: React.FC<{
 
             spawnParticle(
                 spawnPos,
-                new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2 + 0.5, (Math.random() - 0.5) * 2),
+                new THREE.Vector3((Math.random() - 0.5) * 1.5, Math.random() * 1.5 + 0.5, (Math.random() - 0.5) * 1.5),
                 color,
-                0.1 + Math.random() * 0.1,
-                0.5 + Math.random() * 0.5
+                0.2 + Math.random() * 0.2,
+                0.6 + Math.random() * 0.4
             );
         }
 
@@ -131,15 +134,21 @@ const ParticleEffects: React.FC<{
         }
 
         // 2. Sweat Particles
-        if (staminaRef && staminaRef.current < 25 && Math.random() < 0.1) {
-            const headOffset = new THREE.Vector3((Math.random() - 0.5) * 0.6, 1.8, (Math.random() - 0.5) * 0.6);
+        if (staminaRef && staminaRef.current < 25 && Math.random() < 0.15) {
+            const angle = Math.random() * Math.PI * 2;
+            const radius = 0.72 + Math.random() * 0.1;
+            const headOffset = new THREE.Vector3(
+                Math.cos(angle) * radius, 
+                3.2 + (Math.random() - 0.5) * 0.8, // Face/head height range
+                Math.sin(angle) * radius
+            );
             const spawnPos = playerGroup.current.position.clone().add(headOffset);
             spawnParticle(
                 spawnPos,
-                new THREE.Vector3(0, -3, 0),
+                new THREE.Vector3(Math.cos(angle) * 0.2, -3, Math.sin(angle) * 0.2),
                 '#38bdf8',
-                0.4,
-                0.5
+                0.25 + Math.random() * 0.15,
+                0.6
             );
         }
 
@@ -183,10 +192,11 @@ const ParticleEffects: React.FC<{
         const isInWater = isOverWater && playerY < -0.5;
 
         if (isInWater && !wasInWater.current) {
+            // Splash
             for (let i = 0; i < 30; i++) {
                 const offset = new THREE.Vector3((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2);
                 const spawnPos = playerGroup.current.position.clone().add(offset);
-                spawnPos.y = -0.5;
+                spawnPos.y = -0.15;
 
                 spawnParticle(
                     spawnPos,
@@ -196,10 +206,28 @@ const ParticleEffects: React.FC<{
                     0.8
                 );
             }
+
+            // Ripple Ring
+            for (let i = 0; i < 24; i++) {
+                const angle = (i / 24) * Math.PI * 2;
+                const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+                const spawnPos = playerGroup.current.position.clone().addScaledVector(dir, 0.2);
+                spawnPos.y = -0.15;
+                const rippleVel = dir.clone().multiplyScalar(3.0 + Math.random() * 2.0);
+                rippleVel.y = 0.2;
+
+                spawnParticle(
+                    spawnPos,
+                    rippleVel,
+                    '#93c5fd',
+                    0.25 + Math.random() * 0.15,
+                    0.4 + Math.random() * 0.2
+                );
+            }
         }
 
         if (wasInWater.current && !isInWater) {
-            wetTimer.current = 2.0;
+            wetTimer.current = 4.0;
 
             // Water exit splash burst
             for (let i = 0; i < 20; i++) {
@@ -215,25 +243,116 @@ const ParticleEffects: React.FC<{
                         (Math.random() - 0.5) * 4
                     ),
                     '#93c5fd',
-                    0.15 + Math.random() * 0.15,
-                    0.7
+                    0.25 + Math.random() * 0.25,
+                    0.8
+                );
+            }
+
+            // Exit Ripple
+            for (let i = 0; i < 18; i++) {
+                const angle = (i / 18) * Math.PI * 2;
+                const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+                const spawnPos = playerGroup.current.position.clone().addScaledVector(dir, 0.2);
+                spawnPos.y = -0.15;
+                const rippleVel = dir.clone().multiplyScalar(2.0 + Math.random() * 1.5);
+                rippleVel.y = 0.1;
+
+                spawnParticle(
+                    spawnPos,
+                    rippleVel,
+                    '#93c5fd',
+                    0.2 + Math.random() * 0.1,
+                    0.3 + Math.random() * 0.2
                 );
             }
         }
+        
+        // 4.5 Swimming Splashes
+        if (isInWater && isMoving && !stunned) {
+            const speedFact = Math.min(moveSpeed / 6, 1.5);
+            swimPhase.current += delta * 9 * speedFact;
+            const t = swimPhase.current;
+            
+            const cycle = Math.sin(t);
+            const prevCycle = Math.sin(t - delta * 9 * speedFact);
+            
+            // Trigger splash on peaks of the side-to-side stroke
+            if ((cycle > 0.8 && prevCycle <= 0.8) || (cycle < -0.8 && prevCycle >= -0.8)) {
+                const side = cycle > 0 ? 1 : -1;
+                const rotY = playerGroup.current.rotation.y;
+                const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+                const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+                
+                // Arm splash point (front-side)
+                const armPos = playerGroup.current.position.clone()
+                    .addScaledVector(forward, 0.4)
+                    .addScaledVector(right, side * 0.6);
+                armPos.y = -0.15;
+
+                // Leg splash point (back-side)
+                const legPos = playerGroup.current.position.clone()
+                    .addScaledVector(forward, -0.6)
+                    .addScaledVector(right, -side * 0.4);
+                legPos.y = -0.15;
+
+                // Spawn multiple small particles for each "hit"
+                for (let i = 0; i < 5; i++) {
+                    const offset = new THREE.Vector3((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3);
+                    spawnParticle(
+                        armPos.clone().add(offset),
+                        new THREE.Vector3((Math.random() - 0.5) * 1.5, Math.random() * 2 + 1, (Math.random() - 0.5) * 1.5),
+                        '#93c5fd',
+                        0.2 + Math.random() * 0.2,
+                        0.5 + Math.random() * 0.3
+                    );
+                }
+                
+                for (let i = 0; i < 4; i++) {
+                    const offset = new THREE.Vector3((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3);
+                    spawnParticle(
+                        legPos.clone().add(offset),
+                        new THREE.Vector3((Math.random() - 0.5) * 1, Math.random() * 1.5 + 0.5, (Math.random() - 0.5) * 1),
+                        '#93c5fd',
+                        0.15 + Math.random() * 0.15,
+                        0.4 + Math.random() * 0.3
+                    );
+                }
+            }
+        } else {
+            swimPhase.current = 0;
+        }
+
         wasInWater.current = isInWater;
 
         // 5. Dripping Logic
         if (wetTimer.current > 0) {
             wetTimer.current -= delta;
-            if (Math.random() < 0.3) {
-                const offset = new THREE.Vector3((Math.random() - 0.5) * 0.8, Math.random() * 1.2, (Math.random() - 0.5) * 0.8);
+            if (Math.random() < 0.4) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 0.75 + Math.random() * 0.15; // Exterior radius (model is 0.7)
+                const h = Math.random() * 3.8; // Full body height
+                
+                const offset = new THREE.Vector3(
+                    Math.cos(angle) * radius,
+                    h,
+                    Math.sin(angle) * radius
+                );
+                
                 const spawnPos = playerGroup.current.position.clone().add(offset);
+                
+                // Outward horizontal velocity + downward flow
+                const vel = new THREE.Vector3(
+                    Math.cos(angle) * 0.8,
+                    -3 - Math.random() * 3,
+                    Math.sin(angle) * 0.8
+                );
+
                 spawnParticle(
                     spawnPos,
-                    new THREE.Vector3(0, -4, 0),
+                    vel,
                     '#38bdf8',
-                    0.15,
-                    0.4
+                    0.2 + Math.random() * 0.15,
+                    0.5 + Math.random() * 0.3
                 );
             }
         }
@@ -246,14 +365,15 @@ const ParticleEffects: React.FC<{
             if (breathCycle > 0.8 && lastBreathCycle.current <= 0.8) {
                 const rotY = playerGroup.current.rotation.y;
                 const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
-                const mouthOffset = new THREE.Vector3(0, 1.4, 0).addScaledVector(forward, 0.3);
+                // Mouth is roughly at y=2.9, forward 0.85 (model radius 0.7)
+                const mouthOffset = new THREE.Vector3(0, 2.9, 0).addScaledVector(forward, 0.85);
                 const spawnPos = playerGroup.current.position.clone().add(mouthOffset);
 
                 spawnParticle(
                     spawnPos,
-                    forward.clone().multiplyScalar(1.2).add(new THREE.Vector3(0, 0.5, 0)),
+                    forward.clone().multiplyScalar(0.8).add(new THREE.Vector3(0, 0.4, 0)),
                     '#f3f4f6',
-                    0.4 + Math.random() * 0.2,
+                    0.2 + Math.random() * 0.15,
                     0.8
                 );
             }
@@ -325,6 +445,7 @@ export const Character: React.FC<CharacterProps> = ({
     isNearLadder = false,
     isLadderHanging = false,
     isLadderMounting = false,
+    ladderFaceAngle = 0,
     waterExitTimerRef
 }) => {
     const headColor = stunned ? '#9ca3af' : '#3b82f6';
@@ -640,18 +761,31 @@ export const Character: React.FC<CharacterProps> = ({
             }
 
             rotLerpSpeed = delta * 22;
-        } else if (isGrounded && isNearLadder && !isMoving) {
-            // --- NEAR LADDER: STAND STILL AND LOOK UP ---
+        } else if (isGrounded && isNearLadder && !isMoving && !isClimbing && !isLadderSliding && !isLadderHanging && !isLadderMounting) {
+            // --- NEAR LADDER: STAND STILL AND LOOK AT LADDER ---
             const time = state.clock.getElapsedTime();
             idleTimer.current += delta;
 
             // Breathing while looking up
             idleBobY = Math.sin(time * 2) * 0.05;
-            // Look way up!
-            targetHeadRotX = -0.5;
+            
+            // Look up at the ladder
+            targetHeadRotX = -0.4;
 
-            // Occasional look around slightly
-            targetRotY = Math.sin(time * 0.5) * 0.05;
+            // Calculate relative angle to look at the ladder
+            if (groupRef.current) {
+                let currentBodyRotY = groupRef.current.rotation.y % (Math.PI * 2);
+                
+                // Diff invertido para corrigir o giro oposto
+                let diff = currentBodyRotY - ladderFaceAngle;
+                
+                // Normalize angle
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                
+                // Permitir rotação mais ampla para olhar para a escada
+                headRotYTarget = THREE.MathUtils.clamp(diff, -1.8, 1.8);
+            }
 
             rotLerpSpeed = delta * 12;
         } else if (isLadderSliding) {
@@ -1018,6 +1152,7 @@ export const Character: React.FC<CharacterProps> = ({
                 justLanded={justLanded}
                 isTiredBreathingRef={isTiredBreathing}
                 isRolling={isRolling}
+                moveSpeed={moveSpeed}
             />
             <group ref={groupRef}>
                 {/* UI Elements */}

@@ -325,7 +325,7 @@ interface PhysicsState {
 interface PhysicsInput {
     dt: number;
     moveDir: THREE.Vector3;
-    actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean, ladderUp: boolean, ladderDown: boolean };
+    actions: { jump: boolean; charge: boolean; climb: boolean; run: boolean; attemptRoll: boolean, ladderUp: boolean, ladderDown: boolean, grabLadder: boolean };
     stats: { speed: number; climbSpeed: number };
     world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number; ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[]; riverOrientation: number; riverFlow: number };
 }
@@ -334,21 +334,8 @@ export const updateEntityPhysics = (
     current: PhysicsState,
     input: PhysicsInput
 ): PhysicsState => {
-    const next = {
-        ...current,
-        vel: current.vel.clone(),
-        pos: current.pos.clone(),
-        stumbleVel: current.stumbleVel.clone(),
-        noiseLevel: NOISE_IDLE,
-        isRolling: current.isRolling,
-        didStepUp: false,
-        isClimbing: false,
-        ladderFaceAngle: 0,
-        isLadderSliding: false,
-        isNearLadder: false,
-        isLadderHanging: false,
-        isLadderMounting: false
-    };
+    const next = current; // Mutate current state directly to avoid GC allocations
+    next.noiseLevel = NOISE_IDLE;
     const { dt, moveDir, actions, stats, world } = input;
 
     // 0. Environment Check
@@ -447,28 +434,7 @@ export const updateEntityPhysics = (
         next.isCharging = false;
     }
 
-    // Jump
-    if (actions.jump && next.isGrounded && !next.isRolling) {
-        if (next.pos.y + PLAYER_HEIGHT + 0.5 < ceilingH) {
-            if (next.stamina >= STAMINA_JUMP_COST) {
-                // Dampened jump in water
-                const jumpForce = isInWater ? JUMP_FORCE * WATER_JUMP_DAMPING : JUMP_FORCE;
-
-                next.vel.y = jumpForce;
-                next.isGrounded = false;
-                next.isCharging = false;
-                next.noiseLevel = Math.max(next.noiseLevel, NOISE_JUMP);
-                next.stamina -= STAMINA_JUMP_COST;
-            }
-        }
-    }
-
-    if (next.pos.y + PLAYER_HEIGHT > ceilingH && next.vel.y > 0) {
-        next.pos.y = ceilingH - PLAYER_HEIGHT - 0.01;
-        next.vel.y = 0;
-    }
-
-    // --- LADDER CLIMBING ---
+    // --- LADDER ZONE DETECTION (early, so jump can be suppressed) ---
     let onLadder = false;
     let matchedLadderAngle = 0;
     let railX = 0, railZ = 0, ladderMinY = 0, ladderMaxY = 0;
@@ -492,17 +458,35 @@ export const updateEntityPhysics = (
         }
     }
 
-    if (onLadder && !isInWater) {
+    // Jump — suppress if player is grabbing a ladder (SPACE to grab instead of jump)
+    const suppressJumpForLadder = onLadder && actions.grabLadder && !current.isClimbing && !current.isLadderHanging && !current.isLadderSliding;
+    if (actions.jump && next.isGrounded && !next.isRolling && !suppressJumpForLadder) {
+        if (next.pos.y + PLAYER_HEIGHT + 0.5 < ceilingH) {
+            if (next.stamina >= STAMINA_JUMP_COST) {
+                // Dampened jump in water
+                const jumpForce = isInWater ? JUMP_FORCE * WATER_JUMP_DAMPING : JUMP_FORCE;
 
-        // Look up behavior when grounded near ladder base
-        if (next.isGrounded && !actions.ladderUp && next.pos.y < ladderMinY + 1.0) {
-            next.isNearLadder = true;
-            next.ladderFaceAngle = matchedLadderAngle;
+                next.vel.y = jumpForce;
+                next.isGrounded = false;
+                next.isCharging = false;
+                next.noiseLevel = Math.max(next.noiseLevel, NOISE_JUMP);
+                next.stamina -= STAMINA_JUMP_COST;
+            }
         }
+    }
 
-        // On ladder: override vertical physics and lock horizontal rails
-        // Jump lets go of ladder
-        if (actions.jump && (current.isClimbing || current.isLadderHanging || current.isLadderSliding)) {
+    if (next.pos.y + PLAYER_HEIGHT > ceilingH && next.vel.y > 0) {
+        next.pos.y = ceilingH - PLAYER_HEIGHT - 0.01;
+        next.vel.y = 0;
+    }
+
+    if (onLadder && !isInWater) {
+        // Broaden isNearLadder to the entire ladder zone to trigger facing-logic
+        next.isNearLadder = true;
+        next.ladderFaceAngle = matchedLadderAngle;
+        // Jump lets go of ladder (only if already climbing and actually trying to move away)
+        const isTryingToJumpOff = actions.jump && !actions.ladderUp && (actions.ladderDown || moveDir.lengthSq() > 0.1);
+        if (isTryingToJumpOff && (current.isClimbing || current.isLadderHanging || current.isLadderSliding)) {
             if (next.stamina >= STAMINA_JUMP_COST) {
                 // Leap away from the ladder backwards
                 next.vel.y = JUMP_FORCE * 0.7; // slightly weaker vertical push
@@ -520,19 +504,20 @@ export const updateEntityPhysics = (
                 // Face away from the ladder
                 next.lastDir.set(-Math.sin(matchedLadderAngle), -Math.cos(matchedLadderAngle));
             }
-        } else if (!actions.jump) {
+        } else if (!actions.jump || (actions.grabLadder && !current.isClimbing && !current.isLadderHanging && !current.isLadderSliding)) {
             next.ladderFaceAngle = matchedLadderAngle;
             let ladderVelY = 0;
             let dismounting = false;
 
-            const isMovingUp = actions.ladderUp && next.stamina > 0;
+            const alreadyOnLadder = current.isClimbing || current.isLadderHanging || current.isLadderSliding;
+            const isMovingUp = (actions.ladderUp || actions.grabLadder) && next.stamina > 0 && (alreadyOnLadder || actions.grabLadder);
             // Only allow descending if we are above the ladder's bottom floor
             const canMoveDown = actions.ladderDown && next.pos.y > ladderMinY + 0.1;
-            const isMovingDown = canMoveDown && !isMovingUp;
+            const isMovingDown = canMoveDown && !isMovingUp && (alreadyOnLadder || actions.grabLadder);
 
             let autoGrab = false;
-            if (next.isGrounded && next.pos.y > ladderMinY + 1.0) {
-                // Auto-grab if moving towards the ladder edge from the roof
+            if (next.isGrounded && next.pos.y > ladderMinY + 1.0 && actions.grabLadder) {
+                // Auto-grab if moving towards the ladder edge from the roof AND pressing SPACE
                 const outX = -Math.sin(matchedLadderAngle);
                 const outZ = -Math.cos(matchedLadderAngle);
                 const walkDot = moveDir.x * outX + moveDir.z * outZ;
@@ -545,18 +530,40 @@ export const updateEntityPhysics = (
                 dismounting = true;
             }
 
-            if (isMovingUp) {
-                if (next.pos.y > ladderMaxY - 0.5) {
+            const dirX = Math.sin(matchedLadderAngle);
+            const dirZ = Math.cos(matchedLadderAngle);
+            const distFromRail = (next.pos.x - railX) * dirX + (next.pos.z - railZ) * dirZ;
+
+            const isNearTop = next.pos.y > ladderMaxY - 0.5;
+            const isWalkingIntoRoof = alreadyOnLadder && !next.isLadderMounting && distFromRail > 0.05 && distFromRail < 1.5 && next.pos.y >= ladderMaxY - 0.1;
+
+            if (isMovingUp || (isNearTop && alreadyOnLadder && !actions.ladderDown) || (isWalkingIntoRoof && !actions.ladderDown)) {
+                if (isNearTop || isWalkingIntoRoof) {
                     // Smooth dismount glide
                     const glideSpeed = 4.0;
-                    next.pos.x += Math.sin(matchedLadderAngle) * glideSpeed * dt;
-                    next.pos.z += Math.cos(matchedLadderAngle) * glideSpeed * dt;
-                    next.pos.y += 3.0 * dt; 
+                    next.pos.x += dirX * glideSpeed * dt;
+                    next.pos.z += dirZ * glideSpeed * dt;
+                    
+                    if (next.pos.y < ladderMaxY) {
+                        next.pos.y += 3.0 * dt; 
+                    } else {
+                        next.pos.y = ladderMaxY;
+                    }
+                    
                     next.vel.y = 0; 
-                    next.isClimbing = false;
+                    if (next.pos.y >= ladderMaxY - 0.1) {
+                        next.isClimbing = false;
+                        next.isGrounded = true;
+                    } else {
+                        next.isClimbing = true;
+                    }
+
+                    if (distFromRail >= 1.5) {
+                        dismounting = true;
+                    }
+
                     next.isLadderSliding = false;
                     next.isLadderHanging = false;
-                    dismounting = true;
                 } else {
                     // Climb up
                     ladderVelY = CLIMB_SPEED;
@@ -573,7 +580,7 @@ export const updateEntityPhysics = (
                 next.isClimbing = false;
                 next.isLadderSliding = true;
                 next.isLadderHanging = false;
-            } else if ((!next.isGrounded || autoGrab) && !dismounting) {
+            } else if ((!next.isGrounded || autoGrab || actions.grabLadder) && !dismounting && (actions.grabLadder || current.isClimbing || current.isLadderHanging || current.isLadderSliding)) {
                 // Clinging/Hanging (gravity disabled)
                 ladderVelY = 0;
                 next.isClimbing = true;
@@ -582,8 +589,8 @@ export const updateEntityPhysics = (
                 next.stamina = Math.min(100, next.stamina + STAMINA_RECOVERY_WALK * dt);
             }
 
-            // Engage ladder rails if mid-air, OR trying to enter ladder from bottom (up), OR entering from top (down) or auto-grabbing
-            if (!dismounting && (!next.isGrounded || isMovingUp || isMovingDown || autoGrab)) {
+            // Engage ladder rails if mid-air, OR trying to enter ladder from bottom (up), OR entering from top (down) or auto-grabbing or grabLadder
+            if (!dismounting && (!next.isGrounded || isMovingUp || isMovingDown || autoGrab || actions.grabLadder) && (actions.grabLadder || current.isClimbing || current.isLadderHanging || current.isLadderSliding || isMovingUp)) {
                 // RAIL BEHAVIOR: lock X/Z to the ladder rails
                 if (autoGrab && next.pos.y > ladderMaxY - 1.0) {
                     next.isLadderMounting = true;
@@ -666,23 +673,30 @@ export const updateEntityPhysics = (
         const startX = next.pos.x;
         const startZ = next.pos.z;
 
-        const axes = [new THREE.Vector3(currentMoveDir.x, 0, 0), new THREE.Vector3(0, 0, currentMoveDir.z)];
+        // Pre-allocate axes to avoid new vector creation in hot loop
+        const moveAxisX = currentMoveDir.x;
+        const moveAxisZ = currentMoveDir.z;
+        
         const halfSize = Math.floor(world.size / 2);
         const minBound = -halfSize + PLAYER_RADIUS + 0.01;
         const maxBound = halfSize - PLAYER_RADIUS - 0.01;
 
-        for (const axis of axes) {
-            if (axis.lengthSq() === 0) continue;
+        // 2 passes for movement on X and Z axis
+        for (let pass = 0; pass < 2; pass++) {
+            const isXAxis = pass === 0;
+            const axisVal = isXAxis ? moveAxisX : moveAxisZ;
+            
+            if (axisVal === 0) continue;
 
-            const targetX = next.pos.x + axis.x * speed;
-            const targetZ = next.pos.z + axis.z * speed;
+            const targetX = next.pos.x + (isXAxis ? axisVal * speed : 0);
+            const targetZ = next.pos.z + (!isXAxis ? axisVal * speed : 0);
 
             if (targetX < minBound || targetX > maxBound || targetZ < minBound || targetZ > maxBound) continue;
 
             // With higher resolution, we check slightly further ahead
             const lookAheadDist = PLAYER_RADIUS + 0.1;
-            const checkX = next.pos.x + (axis.x > 0 ? lookAheadDist : (axis.x < 0 ? -lookAheadDist : 0));
-            const checkZ = next.pos.z + (axis.z > 0 ? lookAheadDist : (axis.z < 0 ? -lookAheadDist : 0));
+            const checkX = next.pos.x + (isXAxis ? (axisVal > 0 ? lookAheadDist : -lookAheadDist) : 0);
+            const checkZ = next.pos.z + (!isXAxis ? (axisVal > 0 ? lookAheadDist : -lookAheadDist) : 0);
 
             const targetH = getTerrainHeight(checkX, checkZ, next.pos.y, cGrid, world.bGrid, world.wGrid, world.size, CLIMB_THRESHOLD);
 
@@ -728,13 +742,10 @@ export const updateEntityPhysics = (
             if (climbingLedge && next.stamina > 0) {
                 next.vel.y = Math.max(next.vel.y, CLIMB_SPEED);
                 next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
-                next.isClimbing = true;
-                if (axis.x !== 0) {
-                    next.lastDir.set(Math.sign(axis.x), 0);
-                    next.ladderFaceAngle = Math.atan2(Math.sign(axis.x), 0);
-                } else if (axis.z !== 0) {
-                    next.lastDir.set(0, Math.sign(axis.z));
-                    next.ladderFaceAngle = Math.atan2(0, Math.sign(axis.z));
+                if (isXAxis) {
+                    next.lastDir.set(Math.sign(axisVal), 0);
+                } else {
+                    next.lastDir.set(0, Math.sign(axisVal));
                 }
             }
 

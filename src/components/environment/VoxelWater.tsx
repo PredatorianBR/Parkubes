@@ -12,7 +12,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
     const cellSize = 1.0 / GRID_SCALE;
 
     // Foam Particles State
-    const maxFoam = 600;
+    const maxFoam = 1000;
     const foamParticles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; speed: number; scale: number; offset: THREE.Vector3; type: 'drift' | 'source' | 'exit' }[]>([]);
 
     const waterTilesRef = useRef<{ x: number, z: number }[]>([]);
@@ -21,6 +21,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
     const exitTilesRef = useRef<{ x: number, z: number, side: string }[]>([]);
 
     // Build merged geometries for water surface, bed, and walls
+    // ... (rest of useMemo remains same)
     const { surfaceGeom, bedGeom, wallGeom } = useMemo(() => {
         if (!waterGrid) return { surfaceGeom: null, bedGeom: null, wallGeom: null };
 
@@ -92,10 +93,22 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         return { surfaceGeom, bedGeom, wallGeom };
     }, [size, halfSize, waterGrid, gridSize, cellSize]);
 
+    const currentMaxFoam = Math.floor(100 + riverFlow * 140); // Max 800 at flow 5
+
+    const flowVector = useMemo(() => {
+        switch (riverOrientation) {
+            case 0: return new THREE.Vector2(0, 1);    // North to South
+            case 2: return new THREE.Vector2(0, -1);   // South to North
+            case 3: return new THREE.Vector2(1, 0);    // West to East
+            case 1: return new THREE.Vector2(-1, 0);   // East to West
+            default: return new THREE.Vector2(0, 0);
+        }
+    }, [riverOrientation]);
+
     // Initialize foam particles and tile refs
     useEffect(() => {
         if (!waterGrid) return;
-
+        
         const waterTiles: { x: number, z: number }[] = [];
         const edgeTiles: { x: number, z: number, side: 'N' | 'S' | 'E' | 'W' }[] = [];
 
@@ -122,10 +135,14 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         sourceTilesRef.current = sourceTiles;
         exitTilesRef.current = exitTiles;
 
-        foamParticles.current = new Array(maxFoam).fill(0).map((_, i) => {
+        // Distribution: 50% source, 12.5% exit (waterfall), the rest drift
+        const sourceCount = Math.floor(currentMaxFoam * 0.5);
+        const exitCount = Math.floor(currentMaxFoam * 0.125);
+
+        foamParticles.current = new Array(currentMaxFoam).fill(0).map((_, i) => {
             let type: 'drift' | 'source' | 'exit' = 'drift';
-            if (i < 200 && sourceTiles.length > 0) type = 'source';
-            else if (i < 400 && exitTiles.length > 0) type = 'exit';
+            if (i < sourceCount && sourceTiles.length > 0) type = 'source';
+            else if (i < (sourceCount + exitCount) && exitTiles.length > 0) type = 'exit';
 
             if (type === 'source') {
                 const edge = sourceTiles[Math.floor(Math.random() * sourceTiles.length)];
@@ -138,10 +155,11 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 let spawnX = logicX;
                 let spawnZ = logicZ;
 
-                if (riverOrientation === 0) { vz = 2.5 + Math.random() * 2; spawnZ -= 0.2; }
-                else if (riverOrientation === 2) { vz = -2.5 - Math.random() * 2; spawnZ += 0.2; }
-                else if (riverOrientation === 3) { vx = 2.5 + Math.random() * 2; spawnX -= 0.2; }
-                else if (riverOrientation === 1) { vx = -2.5 - Math.random() * 2; spawnX += 0.2; }
+                const push = 2.5 + Math.random() * 2;
+                vx += flowVector.x * push;
+                vz += flowVector.y * push;
+                spawnX -= flowVector.x * 0.2;
+                spawnZ -= flowVector.y * 0.2;
 
                 return {
                     pos: new THREE.Vector3(spawnX, -0.18, spawnZ),
@@ -169,6 +187,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 };
             }
 
+            // Drift type (floating)
             const tile = waterTiles[Math.floor(Math.random() * waterTiles.length)] || { x: 0, z: 0 };
             return {
                 pos: new THREE.Vector3((tile.x + 0.5) / GRID_SCALE - halfSize, -0.19, (tile.z + 0.5) / GRID_SCALE - halfSize),
@@ -180,7 +199,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 type: 'drift' as const
             };
         });
-    }, [size, halfSize, waterGrid, gridSize, cellSize, riverOrientation]);
+    }, [size, halfSize, waterGrid, gridSize, cellSize, riverOrientation, riverFlow, flowVector]);
 
     useFrame((state, delta) => {
         if (!foamRef.current || !waterGrid) return;
@@ -194,10 +213,19 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         const currentRotation = new THREE.Euler();
         const currentScale = new THREE.Vector3();
 
+        if (foamRef.current.count !== currentMaxFoam) {
+            foamRef.current.count = currentMaxFoam;
+        }
+
         foamParticles.current.forEach((p, i) => {
+            if (i >= currentMaxFoam) return;
+
             p.life += delta * (p.type !== 'drift' ? 1.5 : 0.6);
 
-            if (p.life > 1.0) {
+            const margin = (p.type === 'source' || p.type === 'exit') ? 0.5 : 0.0;
+            const isOutOfBounds = Math.abs(p.pos.x) > halfSize + margin || Math.abs(p.pos.z) > halfSize + margin || p.pos.y < -GROUND_DEPTH;
+
+            if (p.life > 1.0 || isOutOfBounds) {
                 p.life = 0;
                 if (p.type === 'source' && sourceTiles.length > 0) {
                     const edge = sourceTiles[Math.floor(Math.random() * sourceTiles.length)];
@@ -210,10 +238,11 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                     let spawnX = logicX;
                     let spawnZ = logicZ;
 
-                    if (riverOrientation === 0) { vz = 2.5 + Math.random() * 2; spawnZ -= 0.2; }
-                    else if (riverOrientation === 2) { vz = -2.5 - Math.random() * 2; spawnZ += 0.2; }
-                    else if (riverOrientation === 3) { vx = 2.5 + Math.random() * 2; spawnX -= 0.2; }
-                    else if (riverOrientation === 1) { vx = -2.5 - Math.random() * 2; spawnX += 0.2; }
+                    const push = 2.5 + Math.random() * 2;
+                    vx += flowVector.x * push;
+                    vz += flowVector.y * push;
+                    spawnX -= flowVector.x * 0.2;
+                    spawnZ -= flowVector.y * 0.2;
 
                     p.pos.set(spawnX, -0.18, spawnZ);
                     p.vel.set(vx, vy, vz);
@@ -232,29 +261,28 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
             currentRotation.set(0, 0, 0);
             currentScale.set(1, 1, 1);
 
+            const speedFactor = flowStrength / 3.0;
+
             if (p.type === 'source' || p.type === 'exit') {
-                p.vel.y -= p.type === 'source' ? 12.0 * delta : 20.0 * delta;
-                p.pos.addScaledVector(p.vel, delta);
+                p.vel.y -= (p.type === 'source' ? 12.0 : 20.0) * delta;
+                p.pos.addScaledVector(p.vel, delta * speedFactor);
 
                 scaleMult = 1.1 * (1.1 - p.life * 0.7);
-                p.pos.x += Math.sin(state.clock.elapsedTime * 4 + i) * 0.01;
-                p.pos.z += Math.cos(state.clock.elapsedTime * 4 + i) * 0.01;
+                p.pos.x += Math.sin(state.clock.elapsedTime * 4 + i) * 0.01 * speedFactor;
+                p.pos.z += Math.cos(state.clock.elapsedTime * 4 + i) * 0.01 * speedFactor;
 
                 currentRotation.set(0, state.clock.elapsedTime * i * 0.1, 0);
                 currentScale.set(1, 1, 1);
             } else {
-                const movement = (p.speed + 1.0) * (flowStrength / 3.0) * delta;
-                if (riverOrientation === 0) p.pos.z += movement;
-                else if (riverOrientation === 2) p.pos.z -= movement;
-                else if (riverOrientation === 3) p.pos.x += movement;
-                else if (riverOrientation === 1) p.pos.x -= movement;
+                const movement = (p.speed + 1.0) * speedFactor * delta;
+                p.pos.x += flowVector.x * movement;
+                p.pos.z += flowVector.y * movement;
 
                 currentRotation.set(-Math.PI / 2, 0, i);
                 currentScale.set(1, 1, 0.001);
             }
 
-            const margin = (p.type === 'source' || p.type === 'exit') ? 2.0 : 0.0;
-            const alpha = (Math.abs(p.pos.x) > halfSize + margin || Math.abs(p.pos.z) > halfSize + margin || p.pos.y < -GROUND_DEPTH) ? 0 : Math.sin(p.life * Math.PI);
+            const alpha = isOutOfBounds ? 0 : Math.sin(p.life * Math.PI);
             const s = p.scale * scaleMult * (0.8 + 0.2 * Math.sin(state.clock.elapsedTime * 4 + i));
 
             dummy.position.copy(p.pos).add(p.offset);
@@ -310,7 +338,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
             {hasWater && (
                 <instancedMesh ref={foamRef} args={[undefined, undefined, maxFoam]} frustumCulled={false} renderOrder={1}>
                     <boxGeometry args={[1, 1, 1]} />
-                    <meshBasicMaterial color="#ffffff" transparent={true} opacity={0.6} depthWrite={false} />
+                    <meshBasicMaterial color="#bfdbfe" transparent={true} opacity={0.6} depthWrite={false} />
                 </instancedMesh>
             )}
         </group>

@@ -30,7 +30,7 @@ const getRandomSettings = () => {
       foliage: Math.floor(Math.random() * 40) // Foliage is density 0-40% independently or part of it
     },
     riverWidth: Math.floor(Math.random() * 6), // 0 to 5
-    riverFlow: Math.floor(Math.random() * 6)    // 0 to 5
+    riverFlow: Math.floor(Math.random() * 5) + 1 // 1 to 5
   };
 };
 
@@ -58,10 +58,10 @@ const App: React.FC = () => {
         highrise: 0,
         factory: 0,
         ruins: 0,
-        foliage: 20
+        foliage: 0
       },
       riverWidth: 0,
-      riverFlow: 0
+      riverFlow: 3
     },
     mapId: 0
   });

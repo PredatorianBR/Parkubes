@@ -97,7 +97,7 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
     if (wheatObjects.length === 0) return null;
 
     return (
-        <instancedMesh ref={meshRef} args={[geometry, undefined, wheatObjects.length]} castShadow receiveShadow>
+        <instancedMesh ref={meshRef} args={[geometry, undefined, wheatObjects.length]} castShadow receiveShadow frustumCulled={false}>
             <meshStandardMaterial
                 ref={materialRef}
                 color="#eab308"

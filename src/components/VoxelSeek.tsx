@@ -160,15 +160,15 @@ const VoxelRuins: React.FC<{ ruins: VoxelObject[], showGrid?: boolean }> = React
 
     return (
         <group>
-            <instancedMesh ref={meshRef} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+            <instancedMesh ref={meshRef} args={[undefined, undefined, ruins.length]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <GridMaterial color={ruins[0]?.color || "#4b5563"} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} transparent={false} opacity={1.0} />
             </instancedMesh>
-            <instancedMesh ref={meshTop1Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+            <instancedMesh ref={meshTop1Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} transparent={false} opacity={1.0} />
             </instancedMesh>
-            <instancedMesh ref={meshTop2Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow>
+            <instancedMesh ref={meshTop2Ref} args={[undefined, undefined, ruins.length]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={ruins[0]?.color || "#4b5563"} transparent={false} opacity={1.0} />
             </instancedMesh>
@@ -263,23 +263,23 @@ const VoxelFences: React.FC<{ fences: VoxelObject[] }> = React.memo(({ fences })
 
     return (
         <group>
-            <instancedMesh ref={postRef} args={[undefined, undefined, fences.length]} castShadow receiveShadow>
+            <instancedMesh ref={postRef} args={[undefined, undefined, fences.length]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={postColor} />
             </instancedMesh>
-            <instancedMesh ref={railNRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+            <instancedMesh ref={railNRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={railColor} />
             </instancedMesh>
-            <instancedMesh ref={railSRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+            <instancedMesh ref={railSRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={railColor} />
             </instancedMesh>
-            <instancedMesh ref={railERef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+            <instancedMesh ref={railERef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={railColor} />
             </instancedMesh>
-            <instancedMesh ref={railWRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow>
+            <instancedMesh ref={railWRef} args={[undefined, undefined, fences.length * 2]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={railColor} />
                 <meshStandardMaterial />
@@ -367,12 +367,12 @@ const VoxelFoliage: React.FC<{ objects: VoxelObject[] }> = React.memo(({ objects
     return (
         <group>
             {/* Grass and stems */}
-            <instancedMesh ref={grassRef} args={[undefined, undefined, objects.length * 60]} castShadow receiveShadow>
+            <instancedMesh ref={grassRef} args={[undefined, undefined, objects.length * 60]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color="#3f6212" transparent={false} opacity={1.0} />
             </instancedMesh>
             {/* Flower heads */}
-            <instancedMesh ref={flowersRef} args={[undefined, undefined, objects.length * 10]} castShadow receiveShadow>
+            <instancedMesh ref={flowersRef} args={[undefined, undefined, objects.length * 10]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial transparent={false} opacity={1.0} />
             </instancedMesh>
@@ -390,7 +390,7 @@ const Building: React.FC<{
     chimney?: { position: [number, number, number], scale: [number, number, number], color: string };
     attachedChimneys?: { pos: Position, scale: Position, color: string, smoke?: boolean, rotation?: number }[];
     acs?: { pos: Position, scale: Position, color: string, rotation: number, type: 'wall' | 'roof' }[];
-    lShape?: { active: boolean, cutCorner: number, cutSize: [number, number], secondCut?: { corner: number, size: [number, number] } };
+    shape?: { active: boolean, points: [number, number][], mask: boolean[][] };
     windows?: { pos: Position, rot: [number, number, number] }[];
     doors?: { pos: Position, rot: [number, number, number], type?: 'standard' | 'industrial' }[];
     ladders?: { pos: Position, rot: [number, number, number], height: number }[];
@@ -401,7 +401,7 @@ const Building: React.FC<{
     showGrid?: boolean;
     status: GameStatus;
     debugMode?: boolean;
-}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], lShape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
+}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
     const groupRef = useRef<THREE.Group>(null!);
     const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
@@ -411,114 +411,68 @@ const Building: React.FC<{
     // Memoize parts to use in both Render and Physics loop
     const parts = useMemo(() => {
         const p: { size: [number, number, number], pos: [number, number, number] }[] = [];
-        if (lShape?.active) {
-            const [cutW, cutD] = lShape.cutSize;
-            const corner = lShape.cutCorner;
-
-            if (corner === 0 || corner === 1) {
-                const b1W = w - cutW;
-                p.push({ size: [b1W, h, d], pos: [-cutW / 2, 0, 0] });
-
-                const b2W = cutW;
-                const b2D = d - cutD;
-                const b2CenterX = (w / 2) - (b2W / 2);
-                let b2CenterZ = 0;
-                if (corner === 0) { b2CenterZ = -d / 2 + b2D / 2; }
-                else { b2CenterZ = d / 2 - b2D / 2; }
-                p.push({ size: [b2W, h, b2D], pos: [b2CenterX, 0, b2CenterZ] });
-            } else {
-                const b1W = w - cutW;
-                p.push({ size: [b1W, h, d], pos: [cutW / 2, 0, 0] });
-
-                const b2W = cutW;
-                const b2D = d - cutD;
-                const b2CenterX = -w / 2 + b2W / 2;
-                let b2CenterZ = 0;
-                if (corner === 3) { b2CenterZ = -d / 2 + b2D / 2; }
-                else { b2CenterZ = d / 2 - b2D / 2; }
-                p.push({ size: [b2W, h, b2D], pos: [b2CenterX, 0, b2CenterZ] });
+        if (shape?.active && shape.mask) {
+            const { mask } = shape;
+            const mWidth = mask.length;
+            const mDepth = mask[0].length;
+            
+            for (let i = 0; i < mWidth; i++) {
+                let j = 0;
+                while (j < mDepth) {
+                    if (mask[i][j]) {
+                        let runLength = 1;
+                        while(j + runLength < mDepth && mask[i][j + runLength]) {
+                            runLength++;
+                        }
+                        const bW = 1;
+                        const bD = runLength;
+                        
+                        // Center of the 1xRun box relative to building center
+                        const cx = -w/2 + i + bW/2;
+                        const cz = -d/2 + j + bD/2;
+                        
+                        p.push({ size: [bW, h, bD], pos: [cx, 0, cz] });
+                        
+                        j += runLength;
+                    } else {
+                        j++;
+                    }
+                }
             }
         } else {
             p.push({ size: [w, h, d], pos: [0, 0, 0] });
         }
         return p;
-    }, [w, h, d, lShape]);
+    }, [w, h, d, shape]);
 
     // GEOMETRY GENERATION
-    // Use ExtrudeGeometry for L-Shapes to prevent internal faces which show up during transparency
+    // Use ExtrudeGeometry for procedural shapes to prevent internal faces
     const hullGeometry = useMemo(() => {
-        if (lShape?.active) {
-            const [cutW, cutD] = lShape.cutSize;
-            const corner = lShape.cutCorner;
-            const shape = new THREE.Shape();
+        if (shape?.active && shape.points && shape.points.length > 0) {
+            const shapeObj = new THREE.Shape();
 
-            // Build the shape path based on the full rectangle minus the cut corner
-            // Start at 0,0 which corresponds to corner 2 (SW) in our logic relative to the bounding box
-
-            // Shape Logic: Draw the footprint (X, Z plane equivalent)
-            // Coordinates in Shape are (x, y) which will become (x, z) after extrusion
-            if (corner === 2) { // SW Cut (Low X, Low Z)
-                shape.moveTo(cutW, 0);
-                shape.lineTo(w, 0);
-                shape.lineTo(w, d);
-                shape.lineTo(0, d);
-                shape.lineTo(0, cutD);
-                shape.lineTo(cutW, cutD);
-            } else if (corner === 1) { // SE Cut (High X, Low Z)
-                shape.moveTo(0, 0);
-                shape.lineTo(0, d);
-                shape.lineTo(w, d);
-                shape.lineTo(w, cutD);
-                shape.lineTo(w - cutW, cutD);
-                shape.lineTo(w - cutW, 0);
-            } else if (corner === 0) { // NE Cut (High X, High Z)
-                shape.moveTo(0, 0);
-                shape.lineTo(0, d);
-                shape.lineTo(w - cutW, d);
-                shape.lineTo(w - cutW, d - cutD);
-                shape.lineTo(w, d - cutD);
-                shape.lineTo(w, 0);
-            } else if (corner === 3) { // NW Cut (Low X, High Z)
-                shape.moveTo(0, 0);
-                shape.lineTo(0, d - cutD);
-                shape.lineTo(cutW, d - cutD);
-                shape.lineTo(cutW, d);
-                shape.lineTo(w, d);
-                shape.lineTo(w, 0);
+            const startPt = shape.points[0];
+            shapeObj.moveTo(startPt[0], startPt[1]);
+            
+            for(let i=1; i<shape.points.length; i++) {
+                shapeObj.lineTo(shape.points[i][0], shape.points[i][1]);
             }
+            shapeObj.closePath();
 
-            shape.closePath();
-
-            const geom = new THREE.ExtrudeGeometry(shape, {
+            const geom = new THREE.ExtrudeGeometry(shapeObj, {
                 depth: h,
                 bevelEnabled: false
             });
 
-            // Extrude is along Z axis. We want Height (Y). 
-            // Shape X -> World X. Shape Y -> World Z. Extrude Z -> World Y.
-            // Rotating X by 90deg maps:
-            // Old X -> New X
-            // Old Y -> New Z (but inverted, or Z inverted? Standard rotation rule)
-            // Old Z (Depth/Height) -> New Y (Height) (with sign change depending on handedness)
             geom.rotateX(Math.PI / 2);
-
-            // Center the geometry. BoxGeometry is centered at 0,0,0.
-            // Our shape starts at 0,0 corner. We need to move it to center of W,H,D.
-            geom.translate(-w / 2, h / 2, -d / 2); // Extrusion goes "up" or "down" depending on rotation.
-            // After rotateX(PI/2): +Z (Height) becomes -Y. 
-            // Actually simpler: 
-            // Shape X is Width. Shape Y is Depth. Extrude is Height.
-            // Rotate X 90: Y becomes Z. Z becomes -Y.
-            // So +Height(Z) becomes -Y.
-            // So the block is generated "downwards".
-            // To Center: X move -w/2. Z move -d/2. Y move +h/2 (to bring -h to +h range centered).
+            geom.translate(-w / 2, h / 2, -d / 2);
 
             return geom;
         }
 
         // Standard Box Fallback
         return new THREE.BoxGeometry(w, h, d);
-    }, [w, h, d, lShape]);
+    }, [w, h, d, shape]);
 
     const edges = useMemo(() => new THREE.EdgesGeometry(hullGeometry), [hullGeometry]);
 
@@ -527,6 +481,7 @@ const Building: React.FC<{
     const ray = useMemo(() => new THREE.Ray(), []);
     const intersectionPoint = useMemo(() => new THREE.Vector3(), []);
     const vecToCam = useMemo(() => new THREE.Vector3(), []);
+    const worldCenter = useMemo(() => new THREE.Vector3(), []); // Pre-allocated vector to prevent GC spikes in loops
 
     // OCCLUSION FADING LOGIC
     useFrame((state, delta) => {
@@ -592,7 +547,7 @@ const Building: React.FC<{
 
         // Check against all physical parts of the building
         for (const part of parts) {
-            const worldCenter = new THREE.Vector3(
+            worldCenter.set(
                 position.x + part.pos[0],
                 position.y, // part.pos[1] is 0 relative to center
                 position.z + part.pos[2]
@@ -836,7 +791,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         isLadderSliding: false,
         isNearLadder: false,
         isLadderHanging: false,
-        isLadderMounting: false
+        isLadderMounting: false,
+        ladderFaceAngle: 0
     });
 
     // Initialization & Map Regeneration
@@ -944,7 +900,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             characterGroup.current.position.copy(playerPos.current);
 
             // ROTATE CHARACTER: Face movement direction or face ladder
-            const isOnLadder = physicsOutput.isClimbing || physicsOutput.isLadderSliding || physicsOutput.isNearLadder;
+            const isOnLadder = physicsOutput.isClimbing || physicsOutput.isLadderSliding || physicsOutput.isLadderHanging || physicsOutput.isLadderMounting;
             if (isOnLadder) {
                 // Face the ladder wall
                 const targetAngle = physicsOutput.ladderFaceAngle;
@@ -1023,7 +979,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             isLadderSliding: physicsOutput.isLadderSliding,
             isNearLadder: physicsOutput.isNearLadder,
             isLadderHanging: physicsOutput.isLadderHanging,
-            isLadderMounting: physicsOutput.isLadderMounting
+            isLadderMounting: physicsOutput.isLadderMounting,
+            ladderFaceAngle: physicsOutput.ladderFaceAngle
         };
 
         // Simple shallow compare
@@ -1093,7 +1050,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         return (
             <>
                 <VoxelGround size={mapData.worldSize} waterGrid={mapData.wGrid} sGrid={mapData.sGrid} debugMode={debugMode} showGrid={showGrid} />
-                <VoxelWater size={mapData.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={mapData.riverFlow} />
+                <VoxelWater size={mapData.worldSize} waterGrid={mapData.wGrid} riverOrientation={mapData.riverOrientation} riverFlow={settings.riverFlow} />
                 <VoxelRuins ruins={ruins} showGrid={showGrid} />
                 <VoxelFences fences={fences} />
                 <VoxelFoliage objects={foliage} />
@@ -1110,7 +1067,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                         chimney={obj.chimney}
                         attachedChimneys={obj.attachedChimneys}
                         acs={obj.acs}
-                        lShape={obj.lShape}
+                        shape={obj.shape}
                         windows={obj.windows}
                         doors={obj.doors}
                         ladders={obj.ladders}
@@ -1123,7 +1080,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 ))}
             </>
         );
-    }, [mapData, debugMode, showGrid, showWireframe, status]);
+    }, [mapData, debugMode, showGrid, showWireframe, status, settings.riverFlow]);
 
     if (!mapData) return null;
 
@@ -1159,6 +1116,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     isNearLadder={visualState.isNearLadder}
                     isLadderHanging={visualState.isLadderHanging}
                     isLadderMounting={visualState.isLadderMounting}
+                    ladderFaceAngle={visualState.ladderFaceAngle}
                     overlayContent={null}
                 />
             )}

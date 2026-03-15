@@ -175,7 +175,8 @@ export const updatePlayerPhysics = (
             run: !!(keys.current['shift'] || isAnalogRunning),
             attemptRoll: jumpBufferTimer.current > 0,
             ladderUp: !!(keys.current['w'] || keys.current['arrowup'] || isJoyUp),
-            ladderDown: !!(keys.current['s'] || keys.current['arrowdown'] || isJoyDown)
+            ladderDown: !!(keys.current['s'] || keys.current['arrowdown'] || isJoyDown),
+            grabLadder: isJumpDown
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
         world: { collisionGrid: collisionGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, ladderZones, riverOrientation, riverFlow }

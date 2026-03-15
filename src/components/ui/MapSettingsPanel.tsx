@@ -68,7 +68,7 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
                         FORÇA CORRENTEZA <span>{settings.riverWidth === 0 ? '-' : Math.floor(settings.riverFlow)}</span>
                     </label>
                     <input
-                        type="range" min="0" max="5" step="1"
+                        type="range" min="1" max="5" step="1"
                         value={Math.floor(settings.riverFlow)}
                         onChange={(e) => updateSetting('riverFlow', parseInt(e.target.value))}
                         className={`w-full accent-cyan-400 ${settings.riverWidth === 0 ? 'cursor-not-allowed' : ''}`}

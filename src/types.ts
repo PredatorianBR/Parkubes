@@ -1,5 +1,6 @@
 
 import React from 'react';
+import * as THREE from 'three';
 
 export type Position = [number, number, number];
 
@@ -10,6 +11,24 @@ export enum GameStatus {
   PAUSED = 'PAUSED',
   ROUND_OVER = 'ROUND_OVER',
   GAME_OVER = 'GAME_OVER'
+}
+
+export interface PhysicsState {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  lastDir: THREE.Vector2; // X, Z
+  stamina: number;
+  isGrounded: boolean;
+  isRolling: boolean;
+  stumbleVel: THREE.Vector3;
+  noiseLevel: number;
+  didStepUp?: boolean;
+  isClimbing?: boolean;
+  ladderFaceAngle?: number;
+  isLadderSliding?: boolean;
+  isNearLadder?: boolean;
+  isLadderHanging?: boolean;
+  isLadderMounting?: boolean;
 }
 
 export interface GameSettings {
@@ -51,15 +70,10 @@ export interface VoxelObject {
   };
   isPost?: boolean;
 
-  // Shape Logic
-  lShape?: {
-    active: boolean;
-    cutCorner: 0 | 1 | 2 | 3; // 0=NE, 1=SE, 2=SW, 3=NW
-    cutSize: [number, number]; // Width and Depth to remove
-    secondCut?: { // Support for U-Shape or T-Shape variations
-      corner: 0 | 1 | 2 | 3;
-      size: [number, number];
-    };
+  shape?: {
+    active: boolean; // Keep for consistency or just check if shape exists
+    points: [number, number][]; // 2D contour vertices for THREE.Shape
+    mask: boolean[][]; // 2D occupancy grid
   };
   chimney?: {
     position: Position;
