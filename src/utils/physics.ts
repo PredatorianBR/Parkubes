@@ -175,6 +175,10 @@ const resolveWallCollisions = (pos: THREE.Vector3, world: { oGrid: number[][]; b
 
 // --- PHYSICS ENGINE ---
 
+const _axisX = new THREE.Vector3();
+const _axisZ = new THREE.Vector3();
+const _axes = [_axisX, _axisZ];
+
 interface PhysicsState {
     pos: THREE.Vector3;
     vel: THREE.Vector3;
@@ -345,12 +349,13 @@ export const updateEntityPhysics = (
             next.lastDir.set(currentMoveDir.x, currentMoveDir.z).normalize();
         }
 
-        const axes = [new THREE.Vector3(currentMoveDir.x, 0, 0), new THREE.Vector3(0, 0, currentMoveDir.z)];
+        _axisX.set(currentMoveDir.x, 0, 0);
+        _axisZ.set(0, 0, currentMoveDir.z);
         const halfSize = Math.floor(world.size / 2);
         const minBound = -halfSize + PLAYER_RADIUS + 0.01;
         const maxBound = halfSize - PLAYER_RADIUS - 0.01;
 
-        for (const axis of axes) {
+        for (const axis of _axes) {
             if (axis.lengthSq() === 0) continue;
             if (next.isClimbing) break;
 
