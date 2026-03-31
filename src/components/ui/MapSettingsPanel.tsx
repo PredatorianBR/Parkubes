@@ -4,7 +4,7 @@ import { LockIcon } from './Icons';
 
 interface MapSettingsPanelProps {
     settings: GameSettings;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
     toggleLock: (key: string) => void;
     resetRatios: () => void;
