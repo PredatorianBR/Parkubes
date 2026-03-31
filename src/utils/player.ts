@@ -16,7 +16,7 @@ export const updatePlayerPhysics = (
     stamina: React.MutableRefObject<number>,
     stunTimer: React.MutableRefObject<number>,
     stunned: boolean,
-    keys: React.MutableRefObject<{ [key: string]: boolean }>,
+    keys: React.MutableRefObject<{ [key: string]: boolean } & { analog?: { x: number, y: number } }>,
     playerLastDir: React.MutableRefObject<THREE.Vector2>,
     jumpPressedPrev: React.MutableRefObject<boolean>,
     speedSettings: number,
