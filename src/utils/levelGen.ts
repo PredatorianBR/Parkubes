@@ -3,6 +3,14 @@ import * as THREE from 'three';
 import { VoxelObject, GameSettings, Position } from '../types';
 import { worldToIndex, GRID_SCALE } from './physics';
 
+// Secure random number generator to replace secureRandom()
+const secureRandom = () => {
+    const array = new Uint32Array(1);
+    window.crypto.getRandomValues(array);
+    return array[0] / (0xffffffff + 1);
+};
+
+
 export const generateCityLevel = (
     pSpawn: THREE.Vector2,
     settings: GameSettings,
@@ -73,15 +81,15 @@ export const generateCityLevel = (
     };
 
     // --- RIVER GENERATION ---
-    const hasRiver = settings.riverWidth > 0 && Math.random() > 0.1;
+    const hasRiver = settings.riverWidth > 0 && secureRandom() > 0.1;
     if (hasRiver) {
-        const orientation = Math.random() > 0.5 ? 0 : 1;
-        let cx = orientation === 0 ? Math.floor(Math.random() * (size - 10)) + 5 - halfSize : -halfSize;
-        let cz = orientation === 0 ? -halfSize : Math.floor(Math.random() * (size - 10)) + 5 - halfSize;
+        const orientation = secureRandom() > 0.5 ? 0 : 1;
+        let cx = orientation === 0 ? Math.floor(secureRandom() * (size - 10)) + 5 - halfSize : -halfSize;
+        let cz = orientation === 0 ? -halfSize : Math.floor(secureRandom() * (size - 10)) + 5 - halfSize;
         const steps = size + 5;
 
         for (let i = 0; i < steps; i++) {
-            const width = Math.floor(Math.random() * settings.riverWidth) + 1;
+            const width = Math.floor(secureRandom() * settings.riverWidth) + 1;
             for (let wx = -Math.floor(width / 2); wx < Math.ceil(width / 2); wx++) {
                 for (let wz = -Math.floor(width / 2); wz < Math.ceil(width / 2); wz++) {
                     const logicX = cx + wx;
@@ -102,9 +110,9 @@ export const generateCityLevel = (
                 }
             }
             if (orientation === 0) {
-                cz += 1; cx += Math.floor(Math.random() * 3) - 1;
+                cz += 1; cx += Math.floor(secureRandom() * 3) - 1;
             } else {
-                cx += 1; cz += Math.floor(Math.random() * 3) - 1;
+                cx += 1; cz += Math.floor(secureRandom() * 3) - 1;
             }
         }
     }
@@ -159,7 +167,7 @@ export const generateCityLevel = (
                 sumWeights = weights.farm + weights.ruins + weights.house + weights.factory + weights.highrise;
             }
 
-            const rand = Math.random() * sumWeights;
+            const rand = secureRandom() * sumWeights;
             let acc = weights.farm;
             if (rand < acc) selectedType = 'farm';
             else {
@@ -203,8 +211,8 @@ export const generateCityLevel = (
             const placedRuinsInBlock = new Set<string>();
 
             for (let i = 0; i < numRuins; i++) {
-                const rx = bx + Math.floor(Math.random() * bw);
-                const rz = bz + Math.floor(Math.random() * bd);
+                const rx = bx + Math.floor(secureRandom() * bw);
+                const rz = bz + Math.floor(secureRandom() * bd);
 
                 const key = `${rx},${rz}`;
                 if (placedRuinsInBlock.has(key)) continue;
@@ -241,7 +249,7 @@ export const generateCityLevel = (
                     }
 
                     // Player height is ~4.0. Cap maximum ruin height at 3.8.
-                    const h = 1.0 + Math.random() * 2.8;
+                    const h = 1.0 + secureRandom() * 2.8;
                     objects.push({
                         id: uid(`ruin-${rx}-${rz}`),
                         // The ruin logic coordinates form a 2x2. The world position is the center.
@@ -272,8 +280,8 @@ export const generateCityLevel = (
             typeId = 3;
         }
 
-        const availW = Math.max(4, bw - Math.random() * 4);
-        const availD = Math.max(4, bd - Math.random() * 4);
+        const availW = Math.max(4, bw - secureRandom() * 4);
+        const availD = Math.max(4, bd - secureRandom() * 4);
 
         let fillW = Math.floor(availW);
         let fillD = Math.floor(availD);
@@ -298,8 +306,8 @@ export const generateCityLevel = (
         if (fillW % 2 !== 0) fillW = Math.max(4, fillW - 1);
         if (fillD % 2 !== 0) fillD = Math.max(4, fillD - 1);
 
-        const alignX = Math.random();
-        const alignZ = Math.random();
+        const alignX = secureRandom();
+        const alignZ = secureRandom();
 
         let startX = bx;
         if (alignX < 0.3) startX = bx;
@@ -326,24 +334,24 @@ export const generateCityLevel = (
 
         let height = 6;
         if (type === 'house') {
-            height = (Math.floor(Math.random() * 3) + 3) * 2;
+            height = (Math.floor(secureRandom() * 3) + 3) * 2;
         } else if (type === 'factory') {
-            height = (Math.floor(Math.random() * 4) + 4) * 2;
+            height = (Math.floor(secureRandom() * 4) + 4) * 2;
         } else {
-            height = (Math.floor(Math.random() * 7) + 5) * 2;
+            height = (Math.floor(secureRandom() * 7) + 5) * 2;
             if (height > 16 && (fillW < 4 || fillD < 4)) height = 16;
         }
 
         const canBeL = fillW >= 6 && fillD >= 6;
-        const isLShape = canBeL && Math.random() > 0.4;
+        const isLShape = canBeL && secureRandom() > 0.4;
 
         let lShapeConfig = undefined;
         let cutMask: boolean[][] = Array(fillW).fill(null).map(() => Array(fillD).fill(false));
 
         if (isLShape) {
-            const cutCorner = Math.floor(Math.random() * 4) as 0 | 1 | 2 | 3;
-            let cutW = Math.max(2, Math.floor(fillW * (0.3 + Math.random() * 0.3)));
-            let cutD = Math.max(2, Math.floor(fillD * (0.3 + Math.random() * 0.3)));
+            const cutCorner = Math.floor(secureRandom() * 4) as 0 | 1 | 2 | 3;
+            let cutW = Math.max(2, Math.floor(fillW * (0.3 + secureRandom() * 0.3)));
+            let cutD = Math.max(2, Math.floor(fillD * (0.3 + secureRandom() * 0.3)));
 
             if (cutW % 2 !== 0) cutW -= 1;
             if (cutD % 2 !== 0) cutD -= 1;
@@ -368,7 +376,7 @@ export const generateCityLevel = (
             }
         }
 
-        const variant = Math.floor(Math.random() * 4);
+        const variant = Math.floor(secureRandom() * 4);
         const buildingId = uid(`bldg-${bx}-${bz}`);
 
         const cx = startX + fillW / 2;
@@ -376,9 +384,9 @@ export const generateCityLevel = (
         const objType = type === 'house' ? 'box' : type;
 
         let baseColor = colors.house[0];
-        if (type === 'house') baseColor = colors.house[Math.floor(Math.random() * colors.house.length)];
-        if (type === 'highrise') baseColor = colors.highrise[Math.floor(Math.random() * colors.highrise.length)];
-        if (type === 'factory') baseColor = colors.factory[Math.floor(Math.random() * colors.factory.length)];
+        if (type === 'house') baseColor = colors.house[Math.floor(secureRandom() * colors.house.length)];
+        if (type === 'highrise') baseColor = colors.highrise[Math.floor(secureRandom() * colors.highrise.length)];
+        if (type === 'factory') baseColor = colors.factory[Math.floor(secureRandom() * colors.factory.length)];
 
         const assignedWindows: { pos: Position, rot: [number, number, number] }[] = [];
         const attachedChimneys: { pos: Position, scale: Position, color: string, smoke?: boolean, rotation?: number }[] = [];
@@ -554,7 +562,7 @@ export const generateCityLevel = (
             }
 
             let feature: 'door' | 'chimney' | 'window' | 'ac' | 'none' = 'none';
-            const rand = Math.random();
+            const rand = secureRandom();
 
             if (type === 'house' && !hasChimney && (fillW >= 8 || fillD >= 8) && rand < 0.4) {
                 feature = 'chimney';
@@ -590,7 +598,7 @@ export const generateCityLevel = (
                 if (type === 'factory') {
                     if (indDoorsCount < 1) dType = 'industrial';
                     else if (stdDoorsCount < 1) dType = 'standard';
-                    else dType = Math.random() > 0.5 ? 'industrial' : 'standard';
+                    else dType = secureRandom() > 0.5 ? 'industrial' : 'standard';
                 }
                 const wallKey = `${col.dx},${col.dz}:${dType}`;
                 if (buildingWallDoorTypes.has(wallKey)) {
@@ -663,7 +671,7 @@ export const generateCityLevel = (
                         const lz = (col.worldZ - (col.dz * 0.5) + 0.5 + tZ * shift) - cz;
 
                         let canPlaceAC = true;
-                        if (Math.random() < 0.2 && f > 0) {
+                        if (secureRandom() < 0.2 && f > 0) {
                             if (type === 'factory' && factoryWallACs >= 1) canPlaceAC = false;
                             if ((type === 'house' || type === 'highrise') && floorsWithWallAC[f]) canPlaceAC = false;
                         } else {
@@ -762,7 +770,7 @@ export const generateCityLevel = (
                     pos: [(faceX + offsetX) - cx + 0.5 + tX * shimneyShift, ly, (faceZ + offsetZ) - cz + 0.5 + tZ * shimneyShift],
                     scale: [2.0, scaleY, 2.0],
                     color: colors.chimneyResidential,
-                    smoke: Math.random() > 0.5,
+                    smoke: secureRandom() > 0.5,
                     rotation: col.rot
                 });
 
@@ -775,7 +783,7 @@ export const generateCityLevel = (
 
         if (type === 'factory') {
             // UPDATED: Increase count to up to 3 objects
-            const numRoofObjs = Math.floor(Math.random() * 3) + 1;
+            const numRoofObjs = Math.floor(secureRandom() * 3) + 1;
 
             for (let k = 0; k < numRoofObjs; k++) {
                 // FIXED: Increase padding to 2 to ensure objects are never on the very edge
@@ -796,22 +804,22 @@ export const generateCityLevel = (
                 // "Fabricas menores" logic: Scale ACs down for small footprints
                 if (fillW < 12 || fillD < 12) {
                     // Prefer 2x2 ACs for small buildings, occasionally 4x2 if space permits
-                    acW = (availObjW >= 4 && Math.random() > 0.7) ? 4 : 2;
-                    acD = (availObjD >= 4 && Math.random() > 0.7) ? 4 : 2;
+                    acW = (availObjW >= 4 && secureRandom() > 0.7) ? 4 : 2;
+                    acD = (availObjD >= 4 && secureRandom() > 0.7) ? 4 : 2;
                 } else {
                     // Larger buildings
                     const maxACW = Math.max(4, Math.floor(fillW / 2));
                     const maxACD = Math.max(4, Math.floor(fillD / 2));
 
                     // Constrain random selection by actual available space
-                    const targetW = Math.min(8, Math.floor(Math.random() * (maxACW - 2)) + 4);
-                    const targetD = Math.min(8, Math.floor(Math.random() * (maxACD - 2)) + 4);
+                    const targetW = Math.min(8, Math.floor(secureRandom() * (maxACW - 2)) + 4);
+                    const targetD = Math.min(8, Math.floor(secureRandom() * (maxACD - 2)) + 4);
 
                     acW = Math.min(availObjW, targetW);
                     acD = Math.min(availObjD, targetD);
                 }
 
-                const acRot = Math.floor(Math.random() * 4) * (Math.PI / 2);
+                const acRot = Math.floor(secureRandom() * 4) * (Math.PI / 2);
                 let visualW = acW;
                 let visualD = acD;
                 if (Math.abs(Math.sin(acRot)) > 0.5) {
@@ -820,7 +828,7 @@ export const generateCityLevel = (
                 }
 
                 // REDUCED HEIGHT: ACs now much shorter (half of previous 2.5 average)
-                const acH = (1.0 + Math.random() * 0.8) * 2;
+                const acH = (1.0 + secureRandom() * 0.8) * 2;
 
                 // Range calculation
                 const rangeX = fillW - 2 * pad - visualW;
@@ -829,8 +837,8 @@ export const generateCityLevel = (
                 if (rangeX < 0 || rangeZ < 0) continue;
 
                 // Random position within safe zone (integers for grid index)
-                const rx = Math.floor(Math.random() * (rangeX + 1)) + pad;
-                const rz = Math.floor(Math.random() * (rangeZ + 1)) + pad;
+                const rx = Math.floor(secureRandom() * (rangeX + 1)) + pad;
+                const rz = Math.floor(secureRandom() * (rangeZ + 1)) + pad;
 
                 let overlap = false;
 
@@ -865,7 +873,7 @@ export const generateCityLevel = (
                 }
 
                 if (!overlap) {
-                    const isChimney = Math.random() > 0.6;
+                    const isChimney = secureRandom() > 0.6;
                     if (isChimney) {
                         // Chimney is always 2x2. Verify that 2x2 footprint also clears cutMask.
                         let chimneyOverlap = false;
@@ -881,18 +889,18 @@ export const generateCityLevel = (
 
                         if (!chimneyOverlap) {
                             // NEW: Industrial chimneys can start from the roof (50% chance)
-                            const startsAtRoof = Math.random() > 0.5;
+                            const startsAtRoof = secureRandom() > 0.5;
                             let chimneyHeight: number;
                             let ly: number;
 
                             if (startsAtRoof) {
                                 // Roof-start chimney: shorter but still significant
-                                chimneyHeight = 4.0 + Math.random() * 8.0;
+                                chimneyHeight = 4.0 + secureRandom() * 8.0;
                                 // Positioned so its base is exactly at the building height
                                 ly = (height / 2) + (chimneyHeight / 2);
                             } else {
                                 // Ground-start chimney: taller to exceed building height
-                                chimneyHeight = height + 6.0 + Math.random() * 6.0;
+                                chimneyHeight = height + 6.0 + secureRandom() * 6.0;
                                 // Positioned so its base is at world y=0
                                 ly = (chimneyHeight / 2) - (height / 2);
                             }
@@ -977,15 +985,15 @@ export const generateCityLevel = (
         // Leave at least 2 voxels clear at the edge of the map
         let x = -halfSize + 2;
         while (x < halfSize - 2) {
-            const currentStreetWidth = Math.random() > 0.8 ? baseStreetWidth + 1 : baseStreetWidth;
-            let blockW = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+            const currentStreetWidth = secureRandom() > 0.8 ? baseStreetWidth + 1 : baseStreetWidth;
+            let blockW = Math.floor(secureRandom() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
             if (blockW % 2 !== 0) blockW -= 1;
             blockW = Math.max(4, blockW);
             if (x + blockW >= halfSize - 1) break;
 
             let z = -halfSize + 2;
             while (z < halfSize - 2) {
-                let blockD = Math.floor(Math.random() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
+                let blockD = Math.floor(secureRandom() * (maxBlockSize - minBlockSize + 1)) + minBlockSize;
                 if (blockD % 2 !== 0) blockD -= 1;
                 blockD = Math.max(4, blockD);
                 if (z + blockD >= halfSize - 1) break;
@@ -1030,7 +1038,7 @@ export const generateCityLevel = (
                     }
                 }
                 if (isEdge) {
-                    if (Math.random() > 0.02) {
+                    if (secureRandom() > 0.02) {
                         fenceLocations.add(`${x},${z}`);
                     }
                 }
@@ -1084,12 +1092,12 @@ export const generateCityLevel = (
                 const logicZ = z - halfSize + 0.5;
 
                 // Exactly 1 huge crop cluster per farm block
-                const scaleY = 4.2 + (Math.random() * 0.4);
+                const scaleY = 4.2 + (secureRandom() * 0.4);
                 objects.push({
                     id: uid(`wheat-${logicX}-${logicZ}`),
                     position: [logicX, 0, logicZ], // Anchor geometry bottom to floor
                     scale: [1.0, scaleY, 1.0], // Full 1.0 thickness
-                    rotation: Math.random() * Math.PI * 2, // Random Y Rotation
+                    rotation: secureRandom() * Math.PI * 2, // Random Y Rotation
                     color: '#fde047',
                     type: 'wheat'
                 });
@@ -1257,8 +1265,8 @@ export const generateCityLevel = (
     for (let k = 0; k < 1000; k++) {
         // Try random positions within a safer inner bound (avoiding map edges completely)
         const safePadding = 10;
-        const rx = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
-        const rz = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
+        const rx = Math.floor(secureRandom() * (size - safePadding * 2)) + safePadding;
+        const rz = Math.floor(secureRandom() * (size - safePadding * 2)) + safePadding;
 
         // Check if it's street (0) and not water
         const logicX = rx - halfSize;
