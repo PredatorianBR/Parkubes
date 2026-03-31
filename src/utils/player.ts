@@ -16,7 +16,7 @@ export const updatePlayerPhysics = (
     stamina: React.MutableRefObject<number>,
     stunTimer: React.MutableRefObject<number>,
     stunned: boolean,
-    keys: React.MutableRefObject<{ [key: string]: boolean }>,
+    keys: React.MutableRefObject<{ [key: string]: boolean | { x: number; y: number } | undefined; analog?: { x: number; y: number } }>,
     playerLastDir: React.MutableRefObject<THREE.Vector2>,
     jumpPressedPrev: React.MutableRefObject<boolean>,
     speedSettings: number,
@@ -157,8 +157,8 @@ export const updatePlayerPhysics = (
         actions: {
             jump: performJump,
             charge: isVisualPreJumping,
-            climb: isJumpDown,
-            run: keys.current['shift'] || isAnalogRunning,
+            climb: isJumpDown === true,
+            run: keys.current['shift'] === true || isAnalogRunning,
             attemptRoll: jumpBufferTimer.current > 0
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
@@ -169,7 +169,7 @@ export const updatePlayerPhysics = (
     const nextState = updateEntityPhysics(currentState, inputs);
 
     // Update Input History
-    jumpPressedPrev.current = isJumpDown;
+    jumpPressedPrev.current = isJumpDown === true;
 
     // TRIGGER STEP UP ANIMATION
     if (nextState.didStepUp && stepUpTimer.current <= 0) {
