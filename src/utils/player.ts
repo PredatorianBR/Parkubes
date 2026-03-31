@@ -3,6 +3,12 @@ import React from 'react';
 import * as THREE from 'three';
 import { updateEntityPhysics } from './physics';
 
+// Module-level Vector3 instances to avoid allocations during input parsing
+const _inputDir = new THREE.Vector3();
+const _camForward = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _upVector = new THREE.Vector3(0, 1, 0);
+
 // Wrapper to bridge Game Inputs -> Physics Engine
 export const updatePlayerPhysics = (
     dt: number,
@@ -36,19 +42,17 @@ export const updatePlayerPhysics = (
 ) => {
 
     // 1. Calculate Input Direction Relative to Camera
-    const inputDir = new THREE.Vector3(0, 0, 0);
+    _inputDir.set(0, 0, 0);
     let isAnalogRunning = false;
 
     if (canMove && !stunned && rollTimer.current <= 0) {
         // Get Camera Direction projected to XZ plane
-        const camForward = new THREE.Vector3();
-        camera.getWorldDirection(camForward);
-        camForward.y = 0;
-        camForward.normalize();
+        camera.getWorldDirection(_camForward);
+        _camForward.y = 0;
+        _camForward.normalize();
 
         // Calculate Right Vector (Forward x Up)
-        const camRight = new THREE.Vector3();
-        camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+        _camRight.crossVectors(_camForward, _upVector).normalize();
 
         // Analog Input Priority
         const analogInput: any = keys.current.analog;
@@ -61,19 +65,19 @@ export const updatePlayerPhysics = (
             if (mag > 0.9) isAnalogRunning = true;
 
             // In screen space, Up (-Y) means Forward. Right (+X) means Right.
-            inputDir.addScaledVector(camForward, joyY);
-            inputDir.addScaledVector(camRight, joyX);
+            _inputDir.addScaledVector(_camForward, joyY);
+            _inputDir.addScaledVector(_camRight, joyX);
         } else {
             // Keyboard Fallback
-            if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
-            if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
-            if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
-            if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
+            if (keys.current['w'] || keys.current['arrowup']) _inputDir.add(_camForward);
+            if (keys.current['s'] || keys.current['arrowdown']) _inputDir.sub(_camForward);
+            if (keys.current['d'] || keys.current['arrowright']) _inputDir.add(_camRight);
+            if (keys.current['a'] || keys.current['arrowleft']) _inputDir.sub(_camRight);
         }
 
-        if (inputDir.lengthSq() > 0) {
+        if (_inputDir.lengthSq() > 0) {
             // Clamp magnitude to 1.0 for analog (so diagonal isn't faster, but partial push is slower)
-            if (inputDir.lengthSq() > 1) inputDir.normalize();
+            if (_inputDir.lengthSq() > 1) _inputDir.normalize();
         }
     }
 
@@ -153,7 +157,7 @@ export const updatePlayerPhysics = (
 
     const inputs = {
         dt: dt,
-        moveDir: inputDir,
+        moveDir: _inputDir,
         actions: {
             jump: performJump,
             charge: isVisualPreJumping,
@@ -219,11 +223,11 @@ export const updatePlayerPhysics = (
     const stepUpFactor = stepUpTimer.current / 0.25;
 
     return {
-        isRunning: (keys.current['shift'] || isAnalogRunning) && inputDir.lengthSq() > 0,
+        isRunning: (keys.current['shift'] || isAnalogRunning) && _inputDir.lengthSq() > 0,
         isClimbing: nextState.isClimbing,
         isCharging: nextState.isCharging || isVisualPreJumping,
         isRolling: nextState.isRolling,
-        pMoving: inputDir.lengthSq() > 0,
+        pMoving: _inputDir.lengthSq() > 0,
         pDir: new THREE.Vector3(nextState.lastDir.x, 0, nextState.lastDir.y),
         effectiveStunned,
         isStumbling: stumbleTimer.current > 0,
