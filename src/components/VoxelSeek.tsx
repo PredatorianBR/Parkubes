@@ -3,6 +3,7 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { GameStatus, VoxelObject, GameSettings, Position } from '../types';
 import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
@@ -448,6 +449,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     mapId
 }) => {
     const { camera, controls } = useThree(); // Access Controls
+    const orbitControls = controls as unknown as OrbitControlsImpl | null;
     const keys = useControls();
 
     // Physics Refs
@@ -518,15 +520,14 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     // RESET CAMERA ON PREP (RESPAWN)
     useEffect(() => {
         if (status === GameStatus.PREP) {
-            if (controls) {
-                // @ts-ignore
-                if (controls.reset) controls.reset();
+            if (orbitControls) {
+                orbitControls.reset();
             }
             // Force Isometric Defaults
             camera.position.set(100, 100, 100);
             camera.lookAt(0, 0, 0);
         }
-    }, [status, camera, controls]);
+    }, [status, camera, orbitControls]);
 
     useFrame((state, delta) => {
         if (!mapData) return;
@@ -658,23 +659,18 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
             camera.position.lerp(camPos, dt * 2);
 
-            if (controls) {
-                // @ts-ignore
-                controls.target.lerp(target, dt * 5);
-                // @ts-ignore
-                controls.update();
+            if (orbitControls) {
+                orbitControls.target.lerp(target, dt * 5);
+                orbitControls.update();
             }
         }
         else if (settings.cameraFollow) {
-            // Cast controls to any to access OrbitControls properties
-            const ctrl = controls as unknown as { target: THREE.Vector3, update: () => void } | null;
-
             const target = playerPos.current.clone();
 
             // Simple follow: smooth lerp to target position
-            if (ctrl) {
-                ctrl.target.lerp(target, dt * 3.0);
-                ctrl.update();
+            if (orbitControls) {
+                orbitControls.target.lerp(target, dt * 3.0);
+                orbitControls.update();
             }
         }
     });
