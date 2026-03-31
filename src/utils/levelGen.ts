@@ -1203,12 +1203,7 @@ export const generateCityLevel = (
 
     // --- SECOND PASS: collision logic for ALL DETAILS (so they sit correctly on populated grids) ---
     objects.forEach(obj => {
-        const details = [
-            ...(obj.attachedChimneys || []).map(c => ({ ...c, isChimney: true, detailType: 'chimney' })),
-            ...(obj.acs || []).map(a => ({ ...a, isChimney: false, detailType: a.type }))
-        ];
-
-        details.forEach(det => {
+        const processDetail = (det: { pos: Position, scale: Position, rotation?: number }) => {
             let dW = det.scale[0];
             const dH = det.scale[1];
             let dD = det.scale[2];
@@ -1247,7 +1242,18 @@ export const generateCityLevel = (
                     }
                 }
             }
-        });
+        };
+
+        if (obj.attachedChimneys) {
+            for (let i = 0; i < obj.attachedChimneys.length; i++) {
+                processDetail(obj.attachedChimneys[i]);
+            }
+        }
+        if (obj.acs) {
+            for (let i = 0; i < obj.acs.length; i++) {
+                processDetail(obj.acs[i]);
+            }
+        }
     });
 
     // --- CALCULATE RANDOM SPAWN POINT ---
