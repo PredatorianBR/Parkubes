@@ -852,16 +852,16 @@ export const generateCityLevel = (
                 const checkX = rx - fillW / 2 + visualW / 2;
                 const checkZ = rz - fillD / 2 + visualD / 2;
 
-                // Overlap Check (using approximate radius)
+                // Overlap Check (using approximate radius squared)
                 for (const ac of assignedACs) {
                     const dx = ac.pos[0] - checkX;
                     const dz = ac.pos[2] - checkZ;
-                    if (Math.sqrt(dx * dx + dz * dz) < 2.5) overlap = true;
+                    if ((dx * dx + dz * dz) < 6.25) overlap = true;
                 }
                 for (const ch of attachedChimneys) {
                     const dx = ch.pos[0] - checkX;
                     const dz = ch.pos[2] - checkZ;
-                    if (Math.sqrt(dx * dx + dz * dz) < 2.5) overlap = true;
+                    if ((dx * dx + dz * dz) < 6.25) overlap = true;
                 }
 
                 if (!overlap) {
