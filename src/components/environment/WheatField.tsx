@@ -45,7 +45,7 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
         meshRef.current.instanceMatrix.needsUpdate = true;
     }, [wheatObjects]);
 
-    const onBeforeCompile = (shader: any) => {
+    const onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
         shader.uniforms.uTime = { value: 0 };
         shader.uniforms.uPlayerPos = { value: new THREE.Vector3() };
 
