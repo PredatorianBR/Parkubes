@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 
 export const useControls = () => {
-  const keys = useRef<{ [key: string]: boolean; analog?: { x: number, y: number } }>({});
+  const keys = useRef<{ [key: string]: boolean | any; analog?: { x: number, y: number } }>(Object.create(null));
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
