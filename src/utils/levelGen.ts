@@ -26,13 +26,23 @@ export const generateCityLevel = (
 
     // Grids (Scaled Up for Physics Precision)
     const gridSize = size * GRID_SCALE;
-    const oGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Height Grid
-    const bGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Bridge Grid
-    const wGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Water Grid
-    const sGrid: number[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)); // Surface Grid (0: Grass, 1: Water, 2: Street, 3: Hard)
+    const oGrid: number[][] = new Array(gridSize); // Height Grid
+    const bGrid: number[][] = new Array(gridSize); // Bridge Grid
+    const wGrid: number[][] = new Array(gridSize); // Water Grid
+    const sGrid: number[][] = new Array(gridSize); // Surface Grid (0: Grass, 1: Water, 2: Street, 3: Hard)
+
+    for (let i = 0; i < gridSize; i++) {
+        oGrid[i] = new Array(gridSize).fill(0);
+        bGrid[i] = new Array(gridSize).fill(0);
+        wGrid[i] = new Array(gridSize).fill(0);
+        sGrid[i] = new Array(gridSize).fill(0);
+    }
 
     // Type Grid remains Logic Resolution (1x1) for building placement logic
-    const tGrid: number[][] = Array(size).fill(null).map(() => Array(size).fill(0));
+    const tGrid: number[][] = new Array(size);
+    for (let i = 0; i < size; i++) {
+        tGrid[i] = new Array(size).fill(0);
+    }
 
     // Tracking Sets
     const globalWallOccupied = new Set<string>();
