@@ -571,7 +571,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             // ROTATE CHARACTER: Face movement direction
             if (physicsOutput.pMoving && !physicsOutput.isClimbing && !physicsOutput.effectiveStunned) {
                 // pDir now reflects world direction relative to camera
-                const targetAngle = Math.atan2(physicsOutput.pDir.x, physicsOutput.pDir.z);
+                const targetAngle = Math.atan2(physicsOutput.pDirX, physicsOutput.pDirZ);
                 let currentAngle = characterGroup.current.rotation.y;
                 let diff = targetAngle - currentAngle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
