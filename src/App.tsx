@@ -81,10 +81,10 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateSetting = (key: keyof GameSettings, value: any) => {
+  const updateSetting = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
     setGameState(prev => {
       // Only regenerate map if structural settings change
-      const shouldRegen = key === 'worldSize' || key === 'riverWidth';
+      const shouldRegen = key === 'worldSize' || key === 'riverWidth' as string;
       return {
         ...prev,
         settings: { ...prev.settings, [key]: value },
