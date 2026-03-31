@@ -29,6 +29,10 @@ interface CharacterProps {
     justLanded?: boolean;
 }
 
+// Pre-allocate vectors to avoid GC pressure in useFrame
+const _tempPos = new THREE.Vector3();
+const _tempVel = new THREE.Vector3();
+
 const ParticleEffects: React.FC<{
     isRunning: boolean;
     isMoving: boolean;
@@ -83,17 +87,20 @@ const ParticleEffects: React.FC<{
 
         // 1. Running Particles
         if (isRunning && isGrounded && Math.random() < 0.3) {
-            const offset = new THREE.Vector3((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
-            const spawnPos = playerGroup.current.position.clone().add(offset);
+            _tempPos.copy(playerGroup.current.position);
+            _tempPos.x += (Math.random() - 0.5) * 0.5;
+            _tempPos.z += (Math.random() - 0.5) * 0.5;
 
             let color = '#a8a29e';
             if (currentSurface === 0) color = '#4ade80';
             else if (currentSurface === 1) color = '#60a5fa';
             else if (currentSurface === 3) color = '#d6d3d1';
 
+            _tempVel.set((Math.random() - 0.5) * 2, Math.random() * 2 + 0.5, (Math.random() - 0.5) * 2);
+
             spawnParticle(
-                spawnPos,
-                new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2 + 0.5, (Math.random() - 0.5) * 2),
+                _tempPos,
+                _tempVel,
                 color,
                 0.1 + Math.random() * 0.1,
                 0.5 + Math.random() * 0.5
@@ -102,11 +109,16 @@ const ParticleEffects: React.FC<{
 
         // 2. Sweat Particles
         if (staminaRef && staminaRef.current < 25 && Math.random() < 0.1) {
-            const headOffset = new THREE.Vector3((Math.random() - 0.5) * 0.6, 1.8, (Math.random() - 0.5) * 0.6);
-            const spawnPos = playerGroup.current.position.clone().add(headOffset);
+            _tempPos.copy(playerGroup.current.position);
+            _tempPos.x += (Math.random() - 0.5) * 0.6;
+            _tempPos.y += 1.8;
+            _tempPos.z += (Math.random() - 0.5) * 0.6;
+
+            _tempVel.set(0, -3, 0);
+
             spawnParticle(
-                spawnPos,
-                new THREE.Vector3(0, -3, 0),
+                _tempPos,
+                _tempVel,
                 '#38bdf8',
                 0.25,
                 0.5
@@ -133,12 +145,19 @@ const ParticleEffects: React.FC<{
                 }
 
                 for (let i = 0; i < count; i++) {
-                    const offset = new THREE.Vector3((Math.random() - 0.5) * spread, 0, (Math.random() - 0.5) * spread);
-                    const spawnPos = playerGroup.current.position.clone().add(offset);
+                    _tempPos.copy(playerGroup.current.position);
+                    _tempPos.x += (Math.random() - 0.5) * spread;
+                    _tempPos.z += (Math.random() - 0.5) * spread;
+
+                    _tempVel.set(
+                        (Math.random() - 0.5) * 3,
+                        Math.random() * 3,
+                        (Math.random() - 0.5) * 3
+                    );
 
                     spawnParticle(
-                        spawnPos,
-                        new THREE.Vector3((Math.random() - 0.5) * 3, Math.random() * 3, (Math.random() - 0.5) * 3),
+                        _tempPos,
+                        _tempVel,
                         color,
                         scaleBase + Math.random() * 0.15,
                         0.6
@@ -155,13 +174,20 @@ const ParticleEffects: React.FC<{
 
         if (isInWater && !wasInWater.current) {
             for (let i = 0; i < 30; i++) {
-                const offset = new THREE.Vector3((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2);
-                const spawnPos = playerGroup.current.position.clone().add(offset);
-                spawnPos.y = -0.5;
+                _tempPos.copy(playerGroup.current.position);
+                _tempPos.x += (Math.random() - 0.5) * 1.2;
+                _tempPos.y = -0.5;
+                _tempPos.z += (Math.random() - 0.5) * 1.2;
+
+                _tempVel.set(
+                    (Math.random() - 0.5) * 3,
+                    Math.random() * 4 + 2,
+                    (Math.random() - 0.5) * 3
+                );
 
                 spawnParticle(
-                    spawnPos,
-                    new THREE.Vector3((Math.random() - 0.5) * 3, Math.random() * 4 + 2, (Math.random() - 0.5) * 3),
+                    _tempPos,
+                    _tempVel,
                     '#60a5fa',
                     0.2 + Math.random() * 0.2,
                     0.8
@@ -178,11 +204,16 @@ const ParticleEffects: React.FC<{
         if (wetTimer.current > 0) {
             wetTimer.current -= delta;
             if (Math.random() < 0.3) {
-                const offset = new THREE.Vector3((Math.random() - 0.5) * 0.8, Math.random() * 1.2, (Math.random() - 0.5) * 0.8);
-                const spawnPos = playerGroup.current.position.clone().add(offset);
+                _tempPos.copy(playerGroup.current.position);
+                _tempPos.x += (Math.random() - 0.5) * 0.8;
+                _tempPos.y += Math.random() * 1.2;
+                _tempPos.z += (Math.random() - 0.5) * 0.8;
+
+                _tempVel.set(0, -4, 0);
+
                 spawnParticle(
-                    spawnPos,
-                    new THREE.Vector3(0, -4, 0),
+                    _tempPos,
+                    _tempVel,
                     '#38bdf8',
                     0.15,
                     0.4
@@ -197,13 +228,25 @@ const ParticleEffects: React.FC<{
             // Trigger puff on rising edge
             if (breathCycle > 0.8 && lastBreathCycle.current <= 0.8) {
                 const rotY = playerGroup.current.rotation.y;
-                const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
-                const mouthOffset = new THREE.Vector3(0, 1.4, 0).addScaledVector(forward, 0.3);
-                const spawnPos = playerGroup.current.position.clone().add(mouthOffset);
+
+                // Avoid allocating 'forward' Vector3 by using math
+                const forwardX = Math.sin(rotY);
+                const forwardZ = Math.cos(rotY);
+
+                _tempPos.copy(playerGroup.current.position);
+                _tempPos.x += forwardX * 0.3;
+                _tempPos.y += 1.4;
+                _tempPos.z += forwardZ * 0.3;
+
+                _tempVel.set(
+                    forwardX * 1.2,
+                    0.5,
+                    forwardZ * 1.2
+                );
 
                 spawnParticle(
-                    spawnPos,
-                    forward.clone().multiplyScalar(1.2).add(new THREE.Vector3(0, 0.5, 0)),
+                    _tempPos,
+                    _tempVel,
                     '#f3f4f6',
                     0.15 + Math.random() * 0.1,
                     0.8
