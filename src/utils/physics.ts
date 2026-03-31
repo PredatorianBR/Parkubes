@@ -200,6 +200,10 @@ interface PhysicsInput {
     world: { oGrid: number[][]; bGrid: number[][]; wGrid: number[][]; size: number };
 }
 
+const _xAxis = new THREE.Vector3();
+const _zAxis = new THREE.Vector3();
+const _axes = [_xAxis, _zAxis];
+
 export const updateEntityPhysics = (
     current: PhysicsState,
     input: PhysicsInput
@@ -345,7 +349,9 @@ export const updateEntityPhysics = (
             next.lastDir.set(currentMoveDir.x, currentMoveDir.z).normalize();
         }
 
-        const axes = [new THREE.Vector3(currentMoveDir.x, 0, 0), new THREE.Vector3(0, 0, currentMoveDir.z)];
+        _xAxis.set(currentMoveDir.x, 0, 0);
+        _zAxis.set(0, 0, currentMoveDir.z);
+        const axes = _axes;
         const halfSize = Math.floor(world.size / 2);
         const minBound = -halfSize + PLAYER_RADIUS + 0.01;
         const maxBound = halfSize - PLAYER_RADIUS - 0.01;
