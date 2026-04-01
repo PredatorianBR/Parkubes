@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { GameStatus, VoxelObject, GameSettings, Position } from '../types';
+import { GameStatus, VoxelObject, GameSettings, Position, BuildingType } from '../types';
 import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
 import { generateCityLevel } from '../utils/levelGen';
@@ -106,7 +106,7 @@ const Building: React.FC<{
     position: THREE.Vector3;
     scale: [number, number, number];
     color: string;
-    type: 'box' | 'factory' | 'highrise';
+    type: BuildingType;
     playerPos: React.MutableRefObject<THREE.Vector3>;
     playerVel: React.MutableRefObject<THREE.Vector3>;
     chimney?: { position: [number, number, number], scale: [number, number, number], color: string };
@@ -691,26 +691,29 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     if (obj.type === 'ruin') return <RuinBlock key={obj.id} position={new THREE.Vector3(...obj.position)} scale={obj.scale} color={obj.color} showGrid={showGrid} />;
                     if (obj.type === 'fence') return <FenceBlock key={obj.id} position={new THREE.Vector3(...obj.position)} color={obj.color} neighbors={obj.neighbors} isPost={obj.isPost} />;
 
-                    return (
-                        <Building
-                            key={obj.id}
-                            position={new THREE.Vector3(...obj.position)}
-                            scale={obj.scale}
-                            color={obj.color}
-                            type={obj.type as any}
-                            playerPos={playerPos}
-                            playerVel={playerVel}
-                            chimney={obj.chimney}
-                            attachedChimneys={obj.attachedChimneys}
-                            acs={obj.acs}
-                            lShape={obj.lShape}
-                            windows={obj.windows}
-                            doors={obj.doors}
-                            variant={obj.variant}
-                            showWireframe={showWireframe}
-                            showGrid={showGrid}
-                        />
-                    );
+                    if (obj.type === 'box' || obj.type === 'factory' || obj.type === 'highrise') {
+                        return (
+                            <Building
+                                key={obj.id}
+                                position={new THREE.Vector3(...obj.position)}
+                                scale={obj.scale}
+                                color={obj.color}
+                                type={obj.type}
+                                playerPos={playerPos}
+                                playerVel={playerVel}
+                                chimney={obj.chimney}
+                                attachedChimneys={obj.attachedChimneys}
+                                acs={obj.acs}
+                                lShape={obj.lShape}
+                                windows={obj.windows}
+                                doors={obj.doors}
+                                variant={obj.variant}
+                                showWireframe={showWireframe}
+                                showGrid={showGrid}
+                            />
+                        );
+                    }
+                    return null;
                 })}
                 <WheatField wheatObjects={mapData.objects.filter(o => o.type === 'wheat')} playerPos={playerPos} />
             </>

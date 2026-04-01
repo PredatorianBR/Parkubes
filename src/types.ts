@@ -29,10 +29,12 @@ export interface GameSettings {
   cameraFollow: boolean;
 }
 
+export type BuildingType = 'box' | 'factory' | 'highrise';
+
 export interface VoxelObject {
   id: string;
   position: Position;
-  type: 'box' | 'wheat' | 'fence' | 'chimney' | 'chimney-house' | 'ruin' | 'factory' | 'highrise' | 'roof-ac' | 'wall-ac' | 'industrial-ac' | 'residential-ac';
+  type: BuildingType | 'wheat' | 'fence' | 'chimney' | 'chimney-house' | 'ruin' | 'roof-ac' | 'wall-ac' | 'industrial-ac' | 'residential-ac';
   color: string;
   scale: [number, number, number];
   rotation?: number;
