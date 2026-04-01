@@ -227,7 +227,7 @@ const ParticleEffects: React.FC<{
         }
 
         if (wasInWater.current && !isInWater) {
-            wetTimer.current = 4.0;
+            wetTimer.current = 3.0;
 
             // Water exit splash burst
             for (let i = 0; i < 20; i++) {
@@ -636,8 +636,8 @@ export const Character: React.FC<CharacterProps> = ({
         // --- WATER EXIT ANIMATION ---
         const inWaterNow = currentSurface === 1 && isGrounded;
         if (wasInWaterAnim.current && !inWaterNow) {
-            waterExitTimer.current = 0.7; // Slightly longer for more expressive shake
-            if (waterExitTimerRef) waterExitTimerRef.current = 0.7;
+            waterExitTimer.current = 3.0; // Consistência com o efeito visual de 3s
+            if (waterExitTimerRef) waterExitTimerRef.current = 3.0;
         }
         wasInWaterAnim.current = inWaterNow;
 
@@ -912,7 +912,7 @@ export const Character: React.FC<CharacterProps> = ({
 
         // --- WATER EXIT SHAKE-OFF OVERLAY (Enhanced) ---
         if (waterExitTimer.current > 0 && !stunned && !isRolling) {
-            const WATER_EXIT_DURATION = 0.7;
+            const WATER_EXIT_DURATION = 3.0;
             const progress = 1.0 - (waterExitTimer.current / WATER_EXIT_DURATION);
 
             // Phase 1: Rapid dog-shake (0-60%)
