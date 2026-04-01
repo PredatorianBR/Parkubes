@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 
 export const useControls = () => {
-  const keys = useRef<{ [key: string]: boolean; analog?: { x: number, y: number } }>({});
+  const keys = useRef<{ [key: string]: boolean } & { analog?: { x: number, y: number } }>({});
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -21,7 +21,7 @@ export const useControls = () => {
     };
     
     // Analog Joystick Events
-    const joystickMove = (e: any) => {
+    const joystickMove = (e: CustomEvent<{ x: number, y: number }>) => {
         if (e.detail) keys.current.analog = { x: e.detail.x, y: e.detail.y };
     };
     const joystickEnd = () => {
@@ -32,7 +32,7 @@ export const useControls = () => {
     window.addEventListener('keyup', up);
     window.addEventListener('game-control-down', virtualDown);
     window.addEventListener('game-control-up', virtualUp);
-    window.addEventListener('game-joystick-move', joystickMove);
+    window.addEventListener('game-joystick-move', joystickMove as EventListener);
     window.addEventListener('game-joystick-end', joystickEnd);
 
     return () => {
@@ -40,7 +40,7 @@ export const useControls = () => {
       window.removeEventListener('keyup', up);
       window.removeEventListener('game-control-down', virtualDown);
       window.removeEventListener('game-control-up', virtualUp);
-      window.removeEventListener('game-joystick-move', joystickMove);
+      window.removeEventListener('game-joystick-move', joystickMove as EventListener);
       window.removeEventListener('game-joystick-end', joystickEnd);
     };
   }, []);
