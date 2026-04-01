@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 
 export const useControls = () => {
-  const keys = useRef<{ [key: string]: boolean; analog?: { x: number, y: number } }>({});
+  const keys = useRef<{ [key: string]: boolean } & { analog?: { x: number, y: number } }>({});
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -32,6 +32,8 @@ export const useControls = () => {
     window.addEventListener('keyup', up);
     window.addEventListener('game-control-down', virtualDown as EventListener);
     window.addEventListener('game-control-up', virtualUp as EventListener);
+    window.addEventListener('game-control-down', virtualDown);
+    window.addEventListener('game-control-up', virtualUp);
     window.addEventListener('game-joystick-move', joystickMove as EventListener);
     window.addEventListener('game-joystick-end', joystickEnd);
 
@@ -40,6 +42,8 @@ export const useControls = () => {
       window.removeEventListener('keyup', up);
       window.removeEventListener('game-control-down', virtualDown as EventListener);
       window.removeEventListener('game-control-up', virtualUp as EventListener);
+      window.removeEventListener('game-control-down', virtualDown);
+      window.removeEventListener('game-control-up', virtualUp);
       window.removeEventListener('game-joystick-move', joystickMove as EventListener);
       window.removeEventListener('game-joystick-end', joystickEnd);
     };
