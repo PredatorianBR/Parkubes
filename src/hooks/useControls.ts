@@ -13,10 +13,10 @@ export const useControls = () => {
     };
 
     // Custom events for touch/click controls
-    const virtualDown = (e: any) => {
+    const virtualDown = (e: CustomEvent<{ key: string }>) => {
         if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = true;
     };
-    const virtualUp = (e: any) => {
+    const virtualUp = (e: CustomEvent<{ key: string }>) => {
         if (e.detail?.key) keys.current[e.detail.key.toLowerCase()] = false;
     };
     
@@ -30,6 +30,8 @@ export const useControls = () => {
 
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
+    window.addEventListener('game-control-down', virtualDown as EventListener);
+    window.addEventListener('game-control-up', virtualUp as EventListener);
     window.addEventListener('game-control-down', virtualDown);
     window.addEventListener('game-control-up', virtualUp);
     window.addEventListener('game-joystick-move', joystickMove as EventListener);
@@ -38,6 +40,8 @@ export const useControls = () => {
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      window.removeEventListener('game-control-down', virtualDown as EventListener);
+      window.removeEventListener('game-control-up', virtualUp as EventListener);
       window.removeEventListener('game-control-down', virtualDown);
       window.removeEventListener('game-control-up', virtualUp);
       window.removeEventListener('game-joystick-move', joystickMove as EventListener);
