@@ -14,7 +14,7 @@ interface InGameMenuProps {
     togglePause: () => void;
     restartRound: () => void;
     resetToMenu: () => void;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     setIsEditing: (val: boolean) => void;
 }
 
