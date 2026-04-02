@@ -13,6 +13,11 @@ export enum GameStatus {
   GAME_OVER = 'GAME_OVER'
 }
 
+export enum GameMode {
+  FREE = 'FREE',
+  HIDE_AND_SEEK = 'HIDE_AND_SEEK'
+}
+
 export interface PhysicsState {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
@@ -117,11 +122,15 @@ export interface MatchState {
   currentRound: number;
   maxRounds: number;
   scorePlayer: number;
+  scoreAI?: number;
+  playerRole?: 'SEEKER' | 'HIDER';
+  phase?: 'WAITING' | 'HUNTING';
   timer: number;
 }
 
 export interface GameState {
   status: GameStatus;
+  mode: GameMode;
   match: MatchState;
   taunt: string;
   hint: string;

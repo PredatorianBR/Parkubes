@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { updateEntityPhysics, SpatialHashGrid } from './physics';
 
 // Wrapper to bridge Game Inputs -> Physics Engine
-let persistentLadderState = {
+let globalLadderState = {
     isClimbing: false,
     isLadderSliding: false,
     isLadderHanging: false,
@@ -45,48 +45,59 @@ export const updatePlayerPhysics = (
     lastFallDistRef: React.MutableRefObject<number>,
     riverOrientation: number,
     riverFlow: number,
-    ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[]
+    ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[],
+    aiInput?: { moveDir: THREE.Vector3, jump: boolean, run: boolean, ladderUp?: boolean, ladderDown?: boolean },
+    ladderStateRef?: React.MutableRefObject<any>
 ) => {
+    
+    let activeLadderState = ladderStateRef?.current ?? globalLadderState;
 
-    // 1. Calculate Input Direction Relative to Camera
+    // 1. Calculate Input Direction
     const inputDir = new THREE.Vector3(0, 0, 0);
     let isAnalogRunning = false;
 
     if (canMove && !stunned && rollTimer.current <= 0) {
-        // Get Camera Direction projected to XZ plane
-        const camForward = new THREE.Vector3();
-        camera.getWorldDirection(camForward);
-        camForward.y = 0;
-        camForward.normalize();
-
-        // Calculate Right Vector (Forward x Up)
-        const camRight = new THREE.Vector3();
-        camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
-
-        // Analog Input Priority
-        const analogInput: any = keys.current.analog;
-        if (analogInput && (analogInput.x !== 0 || analogInput.y !== 0)) {
-            const joyX = analogInput.x;
-            const joyY = -analogInput.y; // Invert Y (Screen Y is down, World Z is forward/back)
-
-            // Check magnitude for running
-            const mag = Math.sqrt(joyX * joyX + joyY * joyY);
-            if (mag > 0.9) isAnalogRunning = true;
-
-            // In screen space, Up (-Y) means Forward. Right (+X) means Right.
-            inputDir.addScaledVector(camForward, joyY);
-            inputDir.addScaledVector(camRight, joyX);
-        } else {
-            // Keyboard Fallback
-            if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
-            if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
-            if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
-            if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
-        }
-
-        if (inputDir.lengthSq() > 0) {
-            // Clamp magnitude to 1.0 for analog (so diagonal isn't faster, but partial push is slower)
+        if (aiInput) {
+            // AI Movement
+            inputDir.copy(aiInput.moveDir);
+            isAnalogRunning = aiInput.run;
             if (inputDir.lengthSq() > 1) inputDir.normalize();
+        } else {
+            // Get Camera Direction projected to XZ plane
+            const camForward = new THREE.Vector3();
+            camera.getWorldDirection(camForward);
+            camForward.y = 0;
+            camForward.normalize();
+
+            // Calculate Right Vector (Forward x Up)
+            const camRight = new THREE.Vector3();
+            camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+            // Analog Input Priority
+            const analogInput: any = keys.current.analog;
+            if (analogInput && (analogInput.x !== 0 || analogInput.y !== 0)) {
+                const joyX = analogInput.x;
+                const joyY = -analogInput.y; // Invert Y (Screen Y is down, World Z is forward/back)
+
+                // Check magnitude for running
+                const mag = Math.sqrt(joyX * joyX + joyY * joyY);
+                if (mag > 0.9) isAnalogRunning = true;
+
+                // In screen space, Up (-Y) means Forward. Right (+X) means Right.
+                inputDir.addScaledVector(camForward, joyY);
+                inputDir.addScaledVector(camRight, joyX);
+            } else {
+                // Keyboard Fallback
+                if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
+                if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
+                if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
+                if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
+            }
+
+            if (inputDir.lengthSq() > 0) {
+                // Clamp magnitude to 1.0 for analog (so diagonal isn't faster, but partial push is slower)
+                if (inputDir.lengthSq() > 1) inputDir.normalize();
+            }
         }
     }
 
@@ -104,8 +115,8 @@ export const updatePlayerPhysics = (
     }
 
     // Input Detection
-    const isJumpDown = !!keys.current[' '];
-    const justPressedJump = isJumpDown && !jumpPressedPrev.current;
+    const isJumpDown = aiInput ? aiInput.jump : !!keys.current[' '];
+    const justPressedJump = aiInput ? (aiInput.jump && !jumpPressedPrev.current) : (isJumpDown && !jumpPressedPrev.current);
 
     // --- JUMP BUFFER (For Roll) ---
     if (justPressedJump) {
@@ -157,16 +168,16 @@ export const updatePlayerPhysics = (
         airTimeHigh: airTimeHighPoint.current,
         lastDir: playerLastDir.current,
         noiseLevel: 0,
-        isClimbing: persistentLadderState.isClimbing,
+        isClimbing: activeLadderState.isClimbing,
         ladderFaceAngle: 0,
-        isLadderSliding: persistentLadderState.isLadderSliding,
+        isLadderSliding: activeLadderState.isLadderSliding,
         isNearLadder: false,
-        isLadderHanging: persistentLadderState.isLadderHanging,
-        isLadderMounting: persistentLadderState.isLadderMounting,
-        ladderMountTimer: persistentLadderState.ladderMountTimer,
-        isWallClimbing: persistentLadderState.isWallClimbing,
-        wallClimbProgress: persistentLadderState.wallClimbProgress,
-        wallClimbDir: persistentLadderState.wallClimbDir.clone()
+        isLadderHanging: activeLadderState.isLadderHanging,
+        isLadderMounting: activeLadderState.isLadderMounting,
+        ladderMountTimer: activeLadderState.ladderMountTimer,
+        isWallClimbing: activeLadderState.isWallClimbing,
+        wallClimbProgress: activeLadderState.wallClimbProgress,
+        wallClimbDir: activeLadderState.wallClimbDir.clone()
     };
 
     const analogIn: any = keys.current.analog;
@@ -180,10 +191,10 @@ export const updatePlayerPhysics = (
             jump: (performJump && !currentState.isClimbing && !currentState.isLadderSliding && !currentState.isLadderHanging) || (justPressedJump && (currentState.isClimbing || currentState.isLadderSliding || currentState.isLadderHanging)),
             charge: isVisualPreJumping,
             climb: !!isJumpDown,
-            run: !!(keys.current['shift'] || isAnalogRunning),
+            run: !!((keys.current['shift'] && !aiInput) || isAnalogRunning || (aiInput && aiInput.run)),
             attemptRoll: jumpBufferTimer.current > 0,
-            ladderUp: !!(keys.current['w'] || keys.current['arrowup'] || isJoyUp),
-            ladderDown: !!(keys.current['s'] || keys.current['arrowdown'] || isJoyDown),
+            ladderUp: !!(!aiInput && (keys.current['w'] || keys.current['arrowup'] || isJoyUp)) || !!(aiInput && aiInput.ladderUp),
+            ladderDown: !!(!aiInput && (keys.current['s'] || keys.current['arrowdown'] || isJoyDown)) || !!(aiInput && aiInput.ladderDown),
             grabLadder: justPressedJump
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
@@ -215,14 +226,14 @@ export const updatePlayerPhysics = (
     stumbleTimer.current = nextState.stumbleTimer;
     stumbleVelocityRef.current.copy(nextState.stumbleVel);
 
-    persistentLadderState.isClimbing = nextState.isClimbing;
-    persistentLadderState.isLadderSliding = nextState.isLadderSliding;
-    persistentLadderState.isLadderHanging = nextState.isLadderHanging;
-    persistentLadderState.isLadderMounting = nextState.isLadderMounting;
-    persistentLadderState.ladderMountTimer = nextState.ladderMountTimer;
-    persistentLadderState.isWallClimbing = nextState.isWallClimbing;
-    persistentLadderState.wallClimbProgress = nextState.wallClimbProgress;
-    persistentLadderState.wallClimbDir.copy(nextState.wallClimbDir);
+    activeLadderState.isClimbing = nextState.isClimbing;
+    activeLadderState.isLadderSliding = nextState.isLadderSliding;
+    activeLadderState.isLadderHanging = nextState.isLadderHanging;
+    activeLadderState.isLadderMounting = nextState.isLadderMounting;
+    activeLadderState.ladderMountTimer = nextState.ladderMountTimer;
+    activeLadderState.isWallClimbing = nextState.isWallClimbing;
+    activeLadderState.wallClimbProgress = nextState.wallClimbProgress;
+    activeLadderState.wallClimbDir.copy(nextState.wallClimbDir);
 
     // Cancel jump delay timer when on a ladder to prevent delayed performJump from releasing
     if (nextState.isClimbing || nextState.isLadderSliding || nextState.isLadderHanging) {
@@ -252,7 +263,7 @@ export const updatePlayerPhysics = (
 
 
     return {
-        isRunning: !!(keys.current['shift'] || isAnalogRunning) && inputDir.lengthSq() > 0,
+        isRunning: !!((keys.current['shift'] && !aiInput) || isAnalogRunning || (aiInput && aiInput.run)) && inputDir.lengthSq() > 0,
         isCharging: nextState.isCharging || isVisualPreJumping,
         isRolling: nextState.isRolling,
         pMoving: inputDir.lengthSq() > 0,

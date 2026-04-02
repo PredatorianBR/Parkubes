@@ -1,5 +1,5 @@
 import React from 'react';
-import { GameStatus, GameState, GameSettings } from '../../types';
+import { GameStatus, GameState, GameSettings, GameMode } from '../../types';
 import { MapSettingsPanel } from './MapSettingsPanel';
 
 interface MainMenuProps {
@@ -17,11 +17,12 @@ interface MainMenuProps {
     showWireframe?: boolean;
     setShowWireframe?: (val: boolean) => void;
     setIsEditing: (val: boolean) => void;
+    setGameMode: (mode: GameMode) => void;
 }
 
 export const MainMenu: React.FC<MainMenuProps> = ({
     gameState, debugMode, setDebugMode, startGame, playAgain, nextRound, resetToMenu,
-    updateSetting, updateRatio, resetRatios, showWireframe, setShowWireframe, setIsEditing
+    updateSetting, updateRatio, resetRatios, showWireframe, setShowWireframe, setIsEditing, setGameMode
 }) => {
     if (gameState.status !== GameStatus.IDLE && gameState.status !== GameStatus.GAME_OVER && gameState.status !== GameStatus.ROUND_OVER) {
         return null;
@@ -59,6 +60,25 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                         setShowWireframe={setShowWireframe}
                     />
 
+                    <div className="flex gap-4 mb-6 mt-4">
+                        <button
+                            onClick={() => setGameMode(GameMode.FREE)}
+                            className={`pixel-font text-xs px-4 py-2 border-b-4 transition-all ${
+                                gameState.mode === GameMode.FREE ? 'bg-cyan-600 border-cyan-800 text-white' : 'bg-gray-800 border-gray-900 text-gray-400'
+                            }`}
+                        >
+                            MODO LIVRE
+                        </button>
+                        <button
+                            onClick={() => setGameMode(GameMode.HIDE_AND_SEEK)}
+                            className={`pixel-font text-xs px-4 py-2 border-b-4 transition-all ${
+                                gameState.mode === GameMode.HIDE_AND_SEEK ? 'bg-orange-600 border-orange-800 text-white' : 'bg-gray-800 border-gray-900 text-gray-400'
+                            }`}
+                        >
+                            ESCONDE ESCONDE
+                        </button>
+                    </div>
+
                     <button onClick={startGame} className="pixel-font bg-yellow-500 hover:bg-yellow-400 text-black px-10 py-5 transform hover:scale-105 transition-all shadow-xl shadow-yellow-500/20">
                         INICIAR PARTIDA
                     </button>
@@ -83,9 +103,21 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 <div className="flex flex-col items-center">
                     <h2 className="pixel-font text-4xl mb-4 text-yellow-400">PARTIDA ENCERRADA</h2>
                     <div className="text-2xl mb-2 font-bold uppercase">
-                        PARKOUR COMPLETADO
+                        {gameState.mode === GameMode.HIDE_AND_SEEK ? 'FIM DE JOGO' : 'PARKOUR COMPLETADO'}
                     </div>
-                    <p className="mb-8 text-gray-400 italic">Score Final: {gameState.match.scorePlayer}</p>
+                    {gameState.mode === GameMode.HIDE_AND_SEEK ? (
+                        <div className="mb-8 text-gray-300">
+                            <p className="mb-2">Placar Final:</p>
+                            <p className="text-blue-400">JOGADOR: {gameState.match.scorePlayer}</p>
+                            <p className="text-red-400">IA: {gameState.match.scoreAI}</p>
+                            <p className="text-xl mt-4 font-bold text-yellow-300">
+                                {gameState.match.scorePlayer > (gameState.match.scoreAI ?? 0) ? 'VOCÊ VENCEU!' : 
+                                 gameState.match.scorePlayer < (gameState.match.scoreAI ?? 0) ? 'IA VENCEU!' : 'EMPATE!'}
+                            </p>
+                        </div>
+                    ) : (
+                        <p className="mb-8 text-gray-400 italic">Score Final: {gameState.match.scorePlayer}</p>
+                    )}
                     <div className="flex flex-col gap-3">
                         <button onClick={playAgain} className="pixel-font bg-yellow-500 hover:bg-yellow-400 text-black px-10 py-5">
                             JOGAR NOVAMENTE

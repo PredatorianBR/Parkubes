@@ -5,7 +5,7 @@ import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@
 import { VoxelSeek } from './components/VoxelSeek';
 import { GameInterface } from './components/ui/GameInterface';
 import { OnScreenControls } from './components/ui/OnScreenControls';
-import { GameStatus, GameState, GameSettings } from './types';
+import { GameStatus, GameState, GameSettings, GameMode } from './types';
 import * as THREE from 'three';
 const getRandomSettings = () => {
   // Randomize Ratios (Sum to 100)
@@ -38,11 +38,15 @@ const App: React.FC = () => {
   const initialRandom = getRandomSettings();
   const [gameState, setGameState] = useState<GameState>({
     status: GameStatus.IDLE,
+    mode: GameMode.FREE,
     match: {
       currentRound: 1,
       maxRounds: 4,
       scorePlayer: 0,
-      timer: 0 // Timer ignored
+      scoreAI: 0,
+      playerRole: 'SEEKER',
+      phase: 'WAITING',
+      timer: 0 // Timer managed by VoxelSeek or app interval
     },
     taunt: "Pratique seu parkour!",
     hint: "Use obstáculos para ganhar altura.",
@@ -77,7 +81,15 @@ const App: React.FC = () => {
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
-      match: { ...prev.match, currentRound: 1, scorePlayer: 0 }
+      match: { 
+        ...prev.match, 
+        currentRound: 1, 
+        scorePlayer: 0, 
+        scoreAI: 0, 
+        playerRole: 'SEEKER',
+        phase: 'WAITING',
+        timer: 5 // Start with 5 seconds waiting
+      }
     }));
   };
 
@@ -85,7 +97,15 @@ const App: React.FC = () => {
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
-      match: { ...prev.match, currentRound: 1, scorePlayer: 0 },
+      match: { 
+        ...prev.match, 
+        currentRound: 1, 
+        scorePlayer: 0, 
+        scoreAI: 0, 
+        playerRole: 'SEEKER',
+        phase: 'WAITING',
+        timer: 5
+      },
       mapId: prev.mapId + 1
     }));
   };
@@ -99,7 +119,15 @@ const App: React.FC = () => {
   }, []);
 
   const restartRound = () => {
-    setGameState(prev => ({ ...prev, status: GameStatus.PREP }));
+    setGameState(prev => ({ 
+      ...prev, 
+      status: GameStatus.PREP,
+      match: {
+        ...prev.match,
+        phase: 'WAITING',
+        timer: 5
+      }
+    }));
   };
 
   const resetToMenu = () => {
@@ -154,16 +182,35 @@ const App: React.FC = () => {
       }
       return {
         ...prev, status: GameStatus.PREP,
-        match: { ...prev.match, currentRound: nextRound }
+        match: { 
+          ...prev.match, 
+          currentRound: nextRound,
+          playerRole: nextRound % 2 === 0 ? 'HIDER' : 'SEEKER',
+          phase: 'WAITING',
+          timer: 5
+        }
       };
     });
   }, []);
 
   const handleRoundEnd = useCallback((playerWon: boolean) => {
-    setGameState(prev => ({
-      ...prev, status: GameStatus.ROUND_OVER,
-      match: { ...prev.match, scorePlayer: prev.match.scorePlayer + 1 }
-    }));
+    setGameState(prev => {
+      // Determine if it was Seeker winning (catching) or Hider surviving
+      const newScorePlayer = playerWon ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
+      const newScoreAI = !playerWon ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
+      
+      const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
+      
+      return {
+        ...prev, 
+        status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
+        match: { 
+          ...prev.match, 
+          scorePlayer: newScorePlayer,
+          scoreAI: newScoreAI
+        }
+      };
+    });
   }, []);
 
   const handlePrepComplete = useCallback(() => {
@@ -195,7 +242,60 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePause]);
 
-  // Removed Timer Interval Logic
+  // Manage Hide & Seek Timer Interval
+  useEffect(() => {
+    if (gameState.mode !== GameMode.HIDE_AND_SEEK || gameState.status !== GameStatus.PLAYING) return;
+    
+    const interval = setInterval(() => {
+      setGameState(prev => {
+        if (prev.status !== GameStatus.PLAYING) return prev;
+        
+        const newTimer = prev.match.timer - 1;
+        
+        // Phase Transitions
+        if (newTimer <= 0) {
+          if (prev.match.phase === 'WAITING') {
+            return {
+              ...prev,
+              match: {
+                ...prev.match,
+                phase: 'HUNTING',
+                timer: 30 // 30 seconds for hunting
+              }
+            };
+          } else if (prev.match.phase === 'HUNTING') {
+            // Time is up! Hider wins.
+            const playerIsHider = prev.match.playerRole === 'HIDER';
+            // Determine round end scores inside here to keep state consistent
+            const newScorePlayer = playerIsHider ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
+            const newScoreAI = !playerIsHider ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
+            
+            const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
+            return {
+              ...prev,
+              status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
+              match: {
+                ...prev.match,
+                timer: 0,
+                scorePlayer: newScorePlayer,
+                scoreAI: newScoreAI
+              }
+            };
+          }
+        }
+        
+        return {
+          ...prev,
+          match: {
+            ...prev.match,
+            timer: newTimer
+          }
+        };
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [gameState.status, gameState.mode]);
 
   const shadowSize = gameState.settings.worldSize * 1.5;
 
@@ -227,6 +327,8 @@ const App: React.FC = () => {
         <OrbitControls makeDefault enabled={true} />
         <VoxelSeek
           status={gameState.status}
+          mode={gameState.mode}
+          match={gameState.match}
           settings={gameState.settings}
           timer={gameState.match.timer}
           onRoundEnd={handleRoundEnd}
@@ -262,6 +364,7 @@ const App: React.FC = () => {
         resetRatios={resetRatios}
         showMission={showMission}
         setIsEditing={setIsEditing}
+        setGameMode={(mode) => setGameState(prev => ({ ...prev, mode }))}
       />
 
       <OnScreenControls visible={showVirtualControls} />

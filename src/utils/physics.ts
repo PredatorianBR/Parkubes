@@ -228,6 +228,36 @@ export const getCeilingHeight = (
 };
 
 /**
+ * Simple Raycasting for Line of Sight.
+ * Returns true if the path is clear between start and end.
+ */
+export const checkLineOfSight = (
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    collisionGrid: SpatialHashGrid
+): boolean => {
+    const dist = start.distanceTo(end);
+    if (dist <= 0) return true;
+    
+    const stepSize = 0.5;
+    const dir = new THREE.Vector3().subVectors(end, start).normalize();
+    const probe = new THREE.Vector3();
+    
+    for (let d = stepSize; d < dist; d += stepSize) {
+        probe.copy(start).addScaledVector(dir, d);
+        const boxes = collisionGrid.query(probe.x, probe.z, 0.1);
+        for (const box of boxes) {
+            if (probe.y >= box.minY && probe.y <= box.maxY) {
+                if (probe.x >= box.minX && probe.x <= box.maxX && probe.z >= box.minZ && probe.z <= box.maxZ) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+};
+
+/**
  * 3D AABB collision resolution: push the player's cylinder out of any overlapping boxes.
  * Uses proper 3D overlap tests – the player is modeled as a vertical cylinder.
  */
@@ -874,7 +904,7 @@ export const updateEntityPhysics = (
         groundH = -Infinity;
     }
 
-    const safeGround = groundH === -Infinity ? -10 : groundH;
+    const safeGround = groundH === -Infinity ? 0 : groundH;
 
     if (next.pos.y <= safeGround) {
         // Fall damage logic
@@ -963,9 +993,7 @@ export const updateEntityPhysics = (
         // Particles move at: (p.speed + 1.0) * (Math.max(1.0, riverFlow) / 3.0)
         // Average p.speed is 2.5, so average speed is 3.5 * (Math.max(1.0, riverFlow) / 3.0)
         const flowStrength = Math.max(1.0, world.riverFlow) * (3.5 / 3.0) * waterRatio;
-        const margin = PLAYER_RADIUS + 0.1;
-        const minBound = -halfSize + margin;
-        const maxBound = halfSize - margin;
+        const riverMargin = PLAYER_RADIUS + 0.1;
 
         const push = new THREE.Vector3(0, 0, 0);
         if (world.riverOrientation === 0) push.z = flowStrength * dt;      // N->S
@@ -981,11 +1009,14 @@ export const updateEntityPhysics = (
         for (let i = 0; i < 3; i++) {
             resolveWallCollisions(next.pos, next.vel, world);
         }
-
-        // Final map boundary clamping
-        next.pos.x = THREE.MathUtils.clamp(next.pos.x, minBound, maxBound);
-        next.pos.z = THREE.MathUtils.clamp(next.pos.z, minBound, maxBound);
     }
 
+    // Final map boundary clamping (Global)
+    const GLOBAL_MARGIN = PLAYER_RADIUS + 0.1;
+    const minBoundFinal = -halfSize + GLOBAL_MARGIN;
+    const maxBoundFinal = halfSize - GLOBAL_MARGIN;
+    next.pos.x = THREE.MathUtils.clamp(next.pos.x, minBoundFinal, maxBoundFinal);
+    next.pos.z = THREE.MathUtils.clamp(next.pos.z, minBoundFinal, maxBoundFinal);
+
     return next;
-}
+};

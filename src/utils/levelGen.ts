@@ -9,7 +9,8 @@ export const findSpawnPos = (
     tGrid: number[][],
     collisionGrid: SpatialHashGrid,
     wGrid: number[][],
-    isWaterLogic: (lx: number, lz: number) => boolean
+    isWaterLogic: (lx: number, lz: number) => boolean,
+    quadrant?: 1 | 2 | 3 | 4
 ) => {
     let bestPos = new THREE.Vector3(0, 10, 0);
     let bestScore = -1;
@@ -39,8 +40,16 @@ export const findSpawnPos = (
     for (let k = 0; k < 1000; k++) {
         // Try random positions within a safer inner bound (avoiding map edges completely)
         const safePadding = 10;
-        const rx = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
-        const rz = Math.floor(Math.random() * (size - safePadding * 2)) + safePadding;
+        let minX = safePadding, maxX = size - safePadding;
+        let minZ = safePadding, maxZ = size - safePadding;
+        
+        if (quadrant === 1) { minX = halfSize; maxZ = halfSize; }
+        else if (quadrant === 2) { maxX = halfSize; maxZ = halfSize; }
+        else if (quadrant === 3) { maxX = halfSize; minZ = halfSize; }
+        else if (quadrant === 4) { minX = halfSize; minZ = halfSize; }
+
+        const rx = Math.floor(Math.random() * (maxX - minX)) + minX;
+        const rz = Math.floor(Math.random() * (maxZ - minZ)) + minZ;
 
         // Check if it's street (0) and not water
         const logicX = rx - halfSize;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { GameStatus, GameState, GameSettings } from '../../types';
+import { GameStatus, GameState, GameSettings, GameMode } from '../../types';
 import { MainMenu } from './MainMenu';
 import { InGameMenu } from './InGameMenu';
 import { HUD } from './HUD';
@@ -26,10 +26,11 @@ interface GameInterfaceProps {
     resetRatios: () => void;
     showMission: boolean;
     setIsEditing: (val: boolean) => void;
+    setGameMode: (mode: GameMode) => void;
 }
 
 export const GameInterface: React.FC<GameInterfaceProps> = ({
-    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing
+    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing, setGameMode
 }) => {
 
     return (
@@ -61,8 +62,8 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
 
             <HUD
                 status={gameState.status}
-                currentRound={gameState.match.currentRound}
-                scorePlayer={gameState.match.scorePlayer}
+                mode={gameState.mode}
+                match={gameState.match}
                 showMission={showMission}
             />
 
@@ -80,6 +81,7 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
                 showWireframe={showWireframe}
                 setShowWireframe={setShowWireframe}
                 setIsEditing={setIsEditing}
+                setGameMode={setGameMode}
             />
         </>
     );

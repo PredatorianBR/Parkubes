@@ -34,6 +34,7 @@ interface CharacterProps {
     ladderFaceAngle?: number;
     isWallClimbing?: boolean;
     wallClimbProgress?: number;
+    color?: string; // Optional coloring
 }
 
 const ParticleEffects: React.FC<{
@@ -450,10 +451,11 @@ export const Character: React.FC<CharacterProps> = ({
     ladderFaceAngle = 0,
     isWallClimbing = false,
     wallClimbProgress = 0,
-    waterExitTimerRef
+    waterExitTimerRef,
+    color = '#1f91db' // Default character color (blue)
 }) => {
-    const headColor = stunned ? '#9ca3af' : '#3b82f6';
-    const bodyColor = stunned ? '#4b5563' : '#1d4ed8';
+    const headColor = stunned ? '#9ca3af' : color;
+    const bodyColor = stunned ? '#4b5563' : new THREE.Color(color).clone().multiplyScalar(0.8).getStyle();
 
     // Internal refs for animation parts
     const modelGroup = useRef<THREE.Group>(null!);
