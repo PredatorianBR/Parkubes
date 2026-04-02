@@ -32,6 +32,8 @@ interface CharacterProps {
     isLadderMounting?: boolean;
     waterExitTimerRef?: React.MutableRefObject<number>;
     ladderFaceAngle?: number;
+    isWallClimbing?: boolean;
+    wallClimbProgress?: number;
 }
 
 const ParticleEffects: React.FC<{
@@ -446,6 +448,8 @@ export const Character: React.FC<CharacterProps> = ({
     isLadderHanging = false,
     isLadderMounting = false,
     ladderFaceAngle = 0,
+    isWallClimbing = false,
+    wallClimbProgress = 0,
     waterExitTimerRef
 }) => {
     const headColor = stunned ? '#9ca3af' : '#3b82f6';
@@ -497,6 +501,12 @@ export const Character: React.FC<CharacterProps> = ({
     // Head independent animation
     const headRotX = useRef(0);
     const headScaleY = useRef(1);
+
+    // Wall Climb Animation State
+    const wallClimbPhase = useRef(0);
+    const wallClimbAnimTime = useRef(0);
+    const wasWallClimbing = useRef(false);
+    const wallClimbRecoveryTimer = useRef(0);
 
     useFrame((state, delta) => {
         const stunTimeLeft = stunTimerRef?.current || 0;
@@ -842,13 +852,13 @@ export const Character: React.FC<CharacterProps> = ({
             // Wiggle with asymmetric weight shift
             targetRotZ = sharpPull * 0.18;
 
-            // Corpo reto e não inclinado para trás
+            // Body straight, not leaning back
             targetRotX = 0;
 
-            // Esticado, sem encolher na puxada
+            // Stretched and elongated, less squash on pull
             moveSquash = -0.05;
 
-            // Afastar da parede para dar espaço para a cabeça ao olhar para cima
+            // Pull away from wall for head room
             targetZOffset = -0.3;
 
             // Vertical bob with sharp pull up
@@ -856,14 +866,25 @@ export const Character: React.FC<CharacterProps> = ({
             bobY = pullBob;
 
             if (isLadderMounting) {
-                // MOUNTING TRANSITION
-                // Reach down over the ledge while rotating into position
-                targetRotX = -0.5; // Lean forward/down heavily
-                targetHeadRotX = 0.5; // Look down at the ladder
-                moveSquash = 0.2; // Squash down as weight shifts
-                targetRotZ = 0.0;
-                targetZOffset = 0.2; // Move slightly over the edge
-                bobY = -0.2; // Dip down
+                // MOUNTING TRANSITION — Enhanced with multi-phase animation
+                const mountTime = state.clock.getElapsedTime();
+                
+                // Phase 1: Lean and reach over the edge
+                targetRotX = -0.55; // Deep forward lean over the ledge
+                targetHeadRotX = 0.6; // Look down at the ladder
+                
+                // Progressive committed weight shift
+                moveSquash = 0.25;
+                targetRotZ = Math.sin(mountTime * 12) * 0.04; // Effort wobble
+                
+                // Move body over the edge
+                targetZOffset = 0.3;
+                
+                // Dip down as weight transfers
+                bobY = -0.25;
+                
+                // Urgency twitch
+                headRotYTarget = Math.sin(mountTime * 15) * 0.03;
             } else if (isLadderHanging) {
                 idleTimer.current += delta;
                 const time = state.clock.getElapsedTime();
@@ -903,7 +924,85 @@ export const Character: React.FC<CharacterProps> = ({
             }
 
             rotLerpSpeed = delta * 20;
+        } else if (isWallClimbing && !isGrounded) {
+            // --- WALL CLIMB / MANTLE ANIMATION ---
+            // Multi-phase: reach up → pull / scramble → heave over
+            wallClimbAnimTime.current += delta;
+            wasWallClimbing.current = true;
+            const t = wallClimbAnimTime.current;
+            const progress = wallClimbProgress;
+
+            // Phase 1: REACH (0-30%) — arms up, lean into wall, stretched tall
+            if (progress < 0.3) {
+                const phaseP = progress / 0.3;
+                const eased = Math.sin(phaseP * Math.PI * 0.5); // ease-out
+                
+                // Lean into the wall aggressively
+                targetRotX = 0.35 * eased;
+                // Arms reaching up — indicated by stretching tall
+                moveSquash = -0.15 * eased; // negative = stretch
+                // Head looks up at the ledge
+                targetHeadRotX = -0.4 * eased;
+                // Slight urgency wobble
+                targetRotZ = Math.sin(t * 18) * 0.03 * eased;
+                // Bob up as reaching
+                bobY = 0.1 * eased;
+            }
+            // Phase 2: PULL (30-70%) — heaving body up, scrambling against wall
+            else if (progress < 0.7) {
+                const phaseP = (progress - 0.3) / 0.4;
+                const pullEased = Math.sin(phaseP * Math.PI); // bell curve
+                
+                // Sharp alternating pull motions
+                const scrambCycle = Math.sin(t * 22);
+                targetRotZ = scrambCycle * 0.22 * (1 - phaseP * 0.5);
+                
+                // Body tilts forward as pulling over edge
+                targetRotX = 0.35 - phaseP * 0.55;
+                
+                // Squash/stretch with each pull
+                moveSquash = -0.1 + pullEased * 0.2;
+                
+                // Violent effort bob
+                bobY = 0.15 + Math.sin(t * 16) * 0.08 * (1 - phaseP);
+                
+                // Head alternates looking up and at wall
+                targetHeadRotX = -0.3 + scrambCycle * 0.15;
+                
+                // Slight forward surge
+                targetZOffset = 0.15 * pullEased;
+            }
+            // Phase 3: HEAVE OVER (70-100%) — body crests the ledge
+            else {
+                const phaseP = (progress - 0.7) / 0.3;
+                const eased = 1 - Math.pow(1 - phaseP, 2); // ease-out
+                
+                // Body pivots over the ledge
+                targetRotX = -0.2 + eased * 0.3;
+                targetPivotY = 0.3 * (1 - eased);
+                
+                // Final stretch
+                moveSquash = 0.1 * (1 - eased);
+                
+                // Head looks forward/down as cresting
+                targetHeadRotX = 0.15 * eased;
+                
+                // Settle wobble
+                targetRotZ = Math.sin(t * 8) * 0.04 * (1 - eased);
+                
+                bobY = 0.1 * (1 - eased);
+                targetZOffset = 0.15 * (1 - eased);
+            }
+
+            rotLerpSpeed = delta * 25;
         } else {
+            // Reset wall climbing animation when not climbing
+            if (wasWallClimbing.current) {
+                wasWallClimbing.current = false;
+                wallClimbRecoveryTimer.current = 0.25;
+                wallClimbAnimTime.current = 0;
+                wallClimbPhase.current = 0;
+            }
             if (modelGroup.current) {
                 modelGroup.current.position.x = THREE.MathUtils.lerp(modelGroup.current.position.x, 0, delta * 12);
             }
@@ -985,6 +1084,9 @@ export const Character: React.FC<CharacterProps> = ({
             totalSquash = 0.25 + moveSquash;
         } else if (isLadderSliding) {
             totalSquash = 0.12 + moveSquash;
+        } else if (isWallClimbing) {
+            // Wall climbing uses moveSquash set by the wall climb animation phases
+            totalSquash = moveSquash;
         }
 
         // Reset stun tracking
@@ -1071,6 +1173,21 @@ export const Character: React.FC<CharacterProps> = ({
             targetRotZ += oscillation * 0.06;
             bobY += Math.abs(oscillation) * 0.15;
             rotLerpSpeed = delta * 30;
+        } else if (wallClimbRecoveryTimer.current > 0 && !stunned && !isWallClimbing) {
+            // Wall climb recovery: staggered landing after mantling a ledge
+            wallClimbRecoveryTimer.current -= delta;
+            if (wallClimbRecoveryTimer.current < 0) wallClimbRecoveryTimer.current = 0;
+            const rp = 1 - (wallClimbRecoveryTimer.current / 0.25);
+            const springFreq = 10;
+            const damping = Math.exp(-rp * 5);
+            const oscillation = Math.sin(rp * springFreq) * damping;
+            // Forward tilt then spring back
+            targetRotX = oscillation * 0.18;
+            targetRotZ += Math.sin(rp * springFreq * 1.3) * 0.04 * damping;
+            bobY += Math.abs(oscillation) * 0.1;
+            // Head snaps forward then settles
+            targetHeadRotX = oscillation * 0.1;
+            rotLerpSpeed = delta * 25;
         } else if (isCharging) {
             // Head looks up in anticipation of jump
             targetHeadRotX = -0.12;

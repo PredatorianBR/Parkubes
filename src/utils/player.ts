@@ -9,7 +9,10 @@ let persistentLadderState = {
     isLadderSliding: false,
     isLadderHanging: false,
     isLadderMounting: false,
-    ladderMountTimer: 0
+    ladderMountTimer: 0,
+    isWallClimbing: false,
+    wallClimbProgress: 0,
+    wallClimbDir: new THREE.Vector2(0, 0)
 };
 
 export const updatePlayerPhysics = (
@@ -160,7 +163,10 @@ export const updatePlayerPhysics = (
         isNearLadder: false,
         isLadderHanging: persistentLadderState.isLadderHanging,
         isLadderMounting: persistentLadderState.isLadderMounting,
-        ladderMountTimer: persistentLadderState.ladderMountTimer
+        ladderMountTimer: persistentLadderState.ladderMountTimer,
+        isWallClimbing: persistentLadderState.isWallClimbing,
+        wallClimbProgress: persistentLadderState.wallClimbProgress,
+        wallClimbDir: persistentLadderState.wallClimbDir.clone()
     };
 
     const analogIn: any = keys.current.analog;
@@ -171,14 +177,14 @@ export const updatePlayerPhysics = (
         dt: dt,
         moveDir: inputDir,
         actions: {
-            jump: performJump || (justPressedJump && (currentState.isClimbing || currentState.isLadderSliding || currentState.isLadderHanging)),
+            jump: (performJump && !currentState.isClimbing && !currentState.isLadderSliding && !currentState.isLadderHanging) || (justPressedJump && (currentState.isClimbing || currentState.isLadderSliding || currentState.isLadderHanging)),
             charge: isVisualPreJumping,
             climb: !!isJumpDown,
             run: !!(keys.current['shift'] || isAnalogRunning),
             attemptRoll: jumpBufferTimer.current > 0,
             ladderUp: !!(keys.current['w'] || keys.current['arrowup'] || isJoyUp),
             ladderDown: !!(keys.current['s'] || keys.current['arrowdown'] || isJoyDown),
-            grabLadder: isJumpDown
+            grabLadder: justPressedJump
         },
         stats: { speed: speedSettings, climbSpeed: 2.5 },
         world: { collisionGrid: collisionGrid, bGrid: bridgeGrid, wGrid: waterGrid, size: worldSize, ladderZones, riverOrientation, riverFlow }
@@ -214,6 +220,14 @@ export const updatePlayerPhysics = (
     persistentLadderState.isLadderHanging = nextState.isLadderHanging;
     persistentLadderState.isLadderMounting = nextState.isLadderMounting;
     persistentLadderState.ladderMountTimer = nextState.ladderMountTimer;
+    persistentLadderState.isWallClimbing = nextState.isWallClimbing;
+    persistentLadderState.wallClimbProgress = nextState.wallClimbProgress;
+    persistentLadderState.wallClimbDir.copy(nextState.wallClimbDir);
+
+    // Cancel jump delay timer when on a ladder to prevent delayed performJump from releasing
+    if (nextState.isClimbing || nextState.isLadderSliding || nextState.isLadderHanging) {
+        jumpDelayTimer.current = 0;
+    }
 
     // Handle Landing Event
     let justLanded = false;
@@ -255,6 +269,8 @@ export const updatePlayerPhysics = (
         noiseLevel: nextState.noiseLevel,
         landingFactor: landingAnimTimer.current / 0.3,
         fallDistance: lastFallDistRef.current,
-        justLanded
+        justLanded,
+        isWallClimbing: nextState.isWallClimbing,
+        wallClimbProgress: nextState.wallClimbProgress
     };
 };

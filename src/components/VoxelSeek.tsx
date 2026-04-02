@@ -792,7 +792,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         isNearLadder: false,
         isLadderHanging: false,
         isLadderMounting: false,
-        ladderFaceAngle: 0
+        ladderFaceAngle: 0,
+        isWallClimbing: false,
+        wallClimbProgress: 0
     });
 
     // Initialization & Map Regeneration
@@ -980,7 +982,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             isNearLadder: physicsOutput.isNearLadder,
             isLadderHanging: physicsOutput.isLadderHanging,
             isLadderMounting: physicsOutput.isLadderMounting,
-            ladderFaceAngle: physicsOutput.ladderFaceAngle
+            ladderFaceAngle: physicsOutput.ladderFaceAngle,
+            isWallClimbing: physicsOutput.isWallClimbing,
+            wallClimbProgress: physicsOutput.wallClimbProgress
         };
 
         // Simple shallow compare
@@ -1003,6 +1007,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         else if (newVisualState.isNearLadder !== visualState.isNearLadder) changed = true;
         else if (newVisualState.isLadderHanging !== visualState.isLadderHanging) changed = true;
         else if (newVisualState.isLadderMounting !== visualState.isLadderMounting) changed = true;
+        else if (newVisualState.isWallClimbing !== visualState.isWallClimbing) changed = true;
+        else if (Math.abs(newVisualState.wallClimbProgress - visualState.wallClimbProgress) > 0.05) changed = true;
 
         if (changed) {
             setVisualState(newVisualState);
@@ -1117,6 +1123,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                     isLadderHanging={visualState.isLadderHanging}
                     isLadderMounting={visualState.isLadderMounting}
                     ladderFaceAngle={visualState.ladderFaceAngle}
+                    isWallClimbing={visualState.isWallClimbing}
+                    wallClimbProgress={visualState.wallClimbProgress}
                     overlayContent={null}
                 />
             )}
