@@ -22,6 +22,9 @@ import { Ladder } from './buildings/Ladder';
 import { GridMaterial } from './GridMaterial';
 import { BlinkingWindow } from './buildings/BlinkingWindow';
 import { Roof } from './buildings/Roof';
+import { computeAIPath } from '../utils/navigation';
+import { Line } from '@react-three/drei';
+
 
 interface VoxelSeekProps {
     status: GameStatus;
@@ -798,6 +801,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         wallClimbProgress: 0,
         wallClimbDir: new THREE.Vector2(0, 0)
     });
+    
+    const aiPath = useRef<THREE.Vector3[]>([]);
+    const lastPathPos = useRef<THREE.Vector3>(new THREE.Vector3());
+    const pathTimer = useRef(0);
+
 
     const playerStartPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiStartPos = useRef(new THREE.Vector3(0, 0, 0));
@@ -809,6 +817,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     const aiSmoothedMoveSpeed = useRef(0);
     const losLineRef = useRef<any>(null!);
     const lastKnownMarkerRef = useRef<THREE.Mesh>(null!);
+    
+    const pathLineRef = useRef<any>(null!);
     
     const [aiVisualState, setAiVisualState] = useState({
         isCharging: false,
@@ -1080,106 +1090,123 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 losLineRef.current.visible = false;
                 lastKnownMarkerRef.current.visible = false;
             }
-            
-            const targetPos = lastKnownPlayerPos.current || playerPos.current;
 
-            const dist = aiPos.current.distanceTo(playerPos.current);
             
-            const dirToTarget = new THREE.Vector3().subVectors(targetPos, aiPos.current);
-            const dyToPlayer = dirToTarget.y; 
-            dirToTarget.y = 0;
-            const distXZ = dirToTarget.length(); 
-            
-            const actualDirToPlayer = new THREE.Vector3().subVectors(playerPos.current, aiPos.current);
-            actualDirToPlayer.y = 0;
-            const actualDistXZ = actualDirToPlayer.length();
+            // --- AI PATHFINDING LOGIC ---
+            pathTimer.current -= dt;
+            let targetPos = lastKnownPlayerPos.current || playerPos.current;
 
-            // 1. Stamina Management
-            if (aiStamina.current < 25) {
-                aiInput.run = false; // Walk to recover
-            } else if (aiStamina.current > 60) {
-                if (isSeeker) aiInput.run = true;
-                else aiInput.run = actualDistXZ < 30;
-            } else {
-                aiInput.run = isSeeker ? true : actualDistXZ < 20; // Hysteresis approximation
+            if (!isSeeker) {
+                // FUGITIVE AI: Target a point far away from player
+                const halfSize = Math.floor(settings.worldSize / 2);
+                const corners = [
+                    new THREE.Vector3(-halfSize, 0, -halfSize),
+                    new THREE.Vector3(-halfSize, 0, halfSize),
+                    new THREE.Vector3(halfSize, 0, -halfSize),
+                    new THREE.Vector3(halfSize, 0, halfSize)
+                ];
+                // Sort corners by distance to player, descending
+                corners.sort((a, b) => b.distanceTo(playerPos.current) - a.distanceTo(playerPos.current));
+                // Use furthest corner as goal
+                targetPos = corners[0];
             }
             
-            if (match.phase === 'WAITING') {
-                // If it's waiting phase and AI is seeker, stay still.
-                if (isSeeker) {
-                    aiInput.moveDir.set(0, 0, 0);
-                    aiInput.run = false;
+            // Recalculate path if no path, cooldown finished, or target moved far (only for seeker)
+            let needsNewPath = aiPath.current.length === 0 || pathTimer.current <= 0;
+            if (isSeeker) {
+                needsNewPath = needsNewPath || lastPathPos.current.distanceTo(targetPos) > 3.0;
+            }
+
+            if (needsNewPath) {
+                const newPath = computeAIPath(aiPos.current, targetPos, {
+                    collisionGrid: mapData.collisionGrid,
+                    bGrid: mapData.bGrid,
+                    tGrid: mapData.tGrid,
+                    wGrid: mapData.wGrid,
+                    worldSize: settings.worldSize
+                }, settings);
+                
+                if (newPath.length > 0) {
+                    aiPath.current = newPath;
+                    lastPathPos.current.copy(targetPos);
+                    pathTimer.current = 1.0; // Recalculate every second if needed
+                }
+            }
+
+            // Waypoint following
+            if (aiPath.current.length > 0) {
+                // Move towards next waypoint
+                const nextWaypoint = aiPath.current[0].clone();
+                // Ensure same height as current AI relative locally if it's horizontal move
+                const toWaypoint = nextWaypoint.clone().sub(aiPos.current);
+                toWaypoint.y = 0;
+                const distToWaypoint = toWaypoint.length();
+                
+                if (distToWaypoint < 1.0) {
+                    // Reached waypoint!
+                    aiPath.current.shift();
+                    if (aiPath.current.length > 0) {
+                        aiInput.moveDir.copy(aiPath.current[0]).sub(aiPos.current).setY(0).normalize();
+                    } else {
+                        aiInput.moveDir.set(0,0,0);
+                    }
                 } else {
-                    // AI is hider, run away from player initially
-                    aiInput.moveDir.copy(dirToTarget).negate().normalize();
+                    aiInput.moveDir.copy(toWaypoint).normalize();
+                }
+
+                // Visual Path Debug
+                if (debugMode && pathLineRef.current) {
+                    pathLineRef.current.visible = true;
+                    // Prepend current AI position for a smooth line from the AI
+                    const points = [aiPos.current, ...aiPath.current];
+                    const pts = new Float32Array(points.length * 3);
+                    points.forEach((p, i) => {
+                        pts[i * 3] = p.x;
+                        pts[i * 3 + 1] = p.y + 0.1; // Slightly above ground
+                        pts[i * 3 + 2] = p.z;
+                    });
+                    pathLineRef.current.geometry.setPositions(pts);
+                } else if (pathLineRef.current) {
+                    pathLineRef.current.visible = false;
                 }
             } else {
-                // HUNTING Phase
-                if (isSeeker) {
-                    if (distXZ > 1.0) {
-                        aiInput.moveDir.copy(dirToTarget).normalize();
-                    } else {
-                        if (!isVisible && lastKnownPlayerPos.current) {
-                            if (lastKnownPlayerDir.current && lastKnownPlayerDir.current.lengthSq() > 0.1) {
-                                // First time reached last known pos: Extrapolate!
-                                lastKnownPlayerPos.current.add(lastKnownPlayerDir.current.clone().multiplyScalar(15.0));
-                                lastKnownPlayerDir.current.set(0, 0, 0); // Clear so next time it patrols
-                            } else {
-                                // Reached extrapolated point or previous patrol point: Patrol!
-                                const angle = Math.random() * Math.PI * 2;
-                                const patrolDist = 10 + Math.random() * 10;
-                                lastKnownPlayerPos.current.set(
-                                    aiPos.current.x + Math.cos(angle) * patrolDist,
-                                    aiPos.current.y,
-                                    aiPos.current.z + Math.sin(angle) * patrolDist
-                                );
-                            }
-                            
-                            // Clamp to map bounds
-                            const boundHalf = Math.floor(settings.worldSize / 2) - 2;
-                            lastKnownPlayerPos.current.x = THREE.MathUtils.clamp(lastKnownPlayerPos.current.x, -boundHalf, boundHalf);
-                            lastKnownPlayerPos.current.z = THREE.MathUtils.clamp(lastKnownPlayerPos.current.z, -boundHalf, boundHalf);
-                            
-                            // Ensure it's not inside a building by snapping to terrain/roof
-                            const tH = getTerrainHeight(lastKnownPlayerPos.current.x, lastKnownPlayerPos.current.z, 1000, mapData.collisionGrid, mapData.bGrid, mapData.wGrid, settings.worldSize, 0.6);
-                            if (tH > -Infinity) {
-                                lastKnownPlayerPos.current.y = tH;
-                            }
-                            
-                        } else {
-                            aiInput.moveDir.set(0, 0, 0);
-                            aiInput.run = false;
-                        }
-                    }
-                    
-                    // Walk while patrolling to save stamina
-                    if (!isVisible && (!lastKnownPlayerDir.current || lastKnownPlayerDir.current.lengthSq() === 0)) {
-                        aiInput.run = false;
-                    }
+                // Fallback to direct steering if no path
+                if (pathLineRef.current) pathLineRef.current.visible = false;
 
-                    // Catch logic!
-                    if (dist < 1.5) {
-                        aiCatchTriggered = true;
-                    }
-                } else {
-                    // AI is hider
-                    if (distXZ > 0.5) {
-                        aiInput.moveDir.copy(dirToTarget).negate().normalize();
-                        
-                        // Stop and hide to save stamina if far from last known position and without line of sight
-                        if (!isVisible && distXZ > 30) {
-                            aiInput.moveDir.set(0, 0, 0);
-                            aiInput.run = false;
-                        }
-                    } else {
+                const dirToTargetCorner = new THREE.Vector3().subVectors(targetPos, aiPos.current);
+                dirToTargetCorner.y = 0;
+                const distXZ = dirToTargetCorner.length(); 
+                
+                if (match.phase === 'WAITING') {
+                    if (isSeeker) {
                         aiInput.moveDir.set(0, 0, 0);
+                        aiInput.run = false;
+                    } else {
+                        // Fugitive runs AWAY from player if no path
+                        const playerDir = new THREE.Vector3().subVectors(playerPos.current, aiPos.current);
+                        playerDir.y = 0;
+                        aiInput.moveDir.copy(playerDir).negate().normalize();
                     }
-                    // Catch logic (player caught ai)
-                    if (dist < 1.5) {
-                        aiCatchTriggered = true;
+                } else {
+                    if (isSeeker) {
+                        if (distXZ > 1.0) {
+                            aiInput.moveDir.copy(dirToTargetCorner).normalize();
+                        }
+                    } else {
+                        // Fugitive runs AWAY from player direktly if pathfinding corner is weird or failed
+                        const playerDir = new THREE.Vector3().subVectors(playerPos.current, aiPos.current);
+                        playerDir.y = 0;
+                        aiInput.moveDir.copy(playerDir).negate().normalize();
                     }
                 }
             }
+            
+            // Adjust catch dist for seeker
+            const distToRealTarget = aiPos.current.distanceTo(playerPos.current);
+            if (distToRealTarget < 1.5) {
+                aiCatchTriggered = true;
+            }
+
             
             // Advanced Hiding: seek cover behind objects if hider
             if (!isSeeker && match.phase === 'HUNTING' && aiInput.moveDir.lengthSq() > 0) {
@@ -1220,8 +1247,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 const checkZ = p.z + d.z * lookAheadDist;
                 const filterObstacles = (b: any) => {
                     if (b.maxY <= p.y + 0.1 || b.minY >= p.y + 1.0) return false;
-                    const isClimbable = b.maxY <= p.y + 4.0; // PLAYER_HEIGHT is 4.0
-                    return !(isClimbable && dyToPlayer > -1.0);
+                    const dy = targetPos.y - p.y;
+                    return b.maxY > p.y + 4.0; // Not jumpable
+
                 };
                 
                 const rawBoxes = mapData.collisionGrid.query(checkX, checkZ, aiRadius);
@@ -1514,11 +1542,17 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={mapData.worldSize} visible={!!showCollision} />
             )}
             
-            {/* AI DEBUG VISUALIZERS */}
-            <lineSegments ref={losLineRef} visible={false}>
-                <bufferGeometry attach="geometry" />
-                <lineBasicMaterial attach="material" color="green" linewidth={2} />
-            </lineSegments>
+            {debugMode && aiPath.current.length > 1 && (
+                <Line
+                    points={aiPath.current.map(p => [p.x, p.y + 0.5, p.z])}
+                    color="#ff3366"
+                    lineWidth={3}
+                    dashed={false}
+                    transparent
+                    opacity={0.8}
+                />
+            )}
+
             
             <mesh ref={lastKnownMarkerRef} visible={false}>
                 <boxGeometry args={[1, 4, 1]} />
@@ -1569,36 +1603,55 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                     />
 
                     {mode === GameMode.HIDE_AND_SEEK && (
-                        <Character
-                            groupRef={aiGroup}
-                            stunned={aiVisualState.stunned}
-                            isCharging={aiVisualState.isCharging}
-                            isRolling={aiVisualState.isRolling}
-                            isStumbling={aiVisualState.isStumbling}
-                            isRunning={aiVisualState.isRunning}
-                            isMoving={aiVisualState.isMoving}
-                            moveSpeed={aiVisualState.moveSpeed}
-                            isGrounded={aiVisualState.isGrounded}
-                            landingFactor={aiVisualState.landingFactor}
-                            stunTimerRef={aiStunTimer}
-                            rollTimerRef={aiRollTimer}
-                            staminaRef={aiStamina}
-                            currentSurface={aiVisualState.currentSurface}
-                            fallDistance={aiVisualState.fallDistance}
-                            justLanded={aiVisualState.justLanded}
-                            isHiding={false}
-                            isClimbing={aiVisualState.isClimbing}
-                            isLadderSliding={aiVisualState.isLadderSliding}
-                            isNearLadder={aiVisualState.isNearLadder}
-                            isLadderHanging={aiVisualState.isLadderHanging}
-                            isLadderMounting={aiVisualState.isLadderMounting}
-                            ladderFaceAngle={aiVisualState.ladderFaceAngle}
-                            isWallClimbing={aiVisualState.isWallClimbing}
-                            wallClimbProgress={aiVisualState.wallClimbProgress}
-                            overlayContent={null}
-                            color="#ef4444" // AI Color
-                        />
+                        <>
+                            <Character
+                                groupRef={aiGroup}
+                                stunned={aiVisualState.stunned}
+                                isCharging={aiVisualState.isCharging}
+                                isRolling={aiVisualState.isRolling}
+                                isStumbling={aiVisualState.isStumbling}
+                                isRunning={aiVisualState.isRunning}
+                                isMoving={aiVisualState.isMoving}
+                                moveSpeed={aiVisualState.moveSpeed}
+                                isGrounded={aiVisualState.isGrounded}
+                                landingFactor={aiVisualState.landingFactor}
+                                stunTimerRef={aiStunTimer}
+                                rollTimerRef={aiRollTimer}
+                                staminaRef={aiStamina}
+                                currentSurface={aiVisualState.currentSurface}
+                                fallDistance={aiVisualState.fallDistance}
+                                justLanded={aiVisualState.justLanded}
+                                isHiding={false}
+                                isClimbing={aiVisualState.isClimbing}
+                                isLadderSliding={aiVisualState.isLadderSliding}
+                                isNearLadder={aiVisualState.isNearLadder}
+                                isLadderHanging={aiVisualState.isLadderHanging}
+                                isLadderMounting={aiVisualState.isLadderMounting}
+                                ladderFaceAngle={aiVisualState.ladderFaceAngle}
+                                isWallClimbing={aiVisualState.isWallClimbing}
+                                wallClimbProgress={aiVisualState.wallClimbProgress}
+                                overlayContent={null}
+                                color="#ef4444" // AI Color
+                            />
+                            {/* AI Path Visualizer */}
+                            <Line
+                                ref={pathLineRef}
+                                points={[[0, 0, 0], [0, 0, 0]]}
+                                color="#ff3366"
+                                lineWidth={3}
+                                transparent
+                                opacity={0.6}
+                                visible={false}
+                                depthTest={false}
+                            />
+                            {/* AI Vision LOS Debug */}
+                            <line ref={losLineRef}>
+                                <bufferGeometry />
+                                <lineBasicMaterial transparent opacity={0.5} depthTest={false} />
+                            </line>
+                        </>
                     )}
+
                 </>
             )}
         </group>
