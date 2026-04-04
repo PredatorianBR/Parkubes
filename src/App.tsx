@@ -70,6 +70,7 @@ const App: React.FC = () => {
     mapId: 0
   });
 
+  const [matchTimer, setMatchTimer] = useState(0);
   const [debugMode, setDebugMode] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showCollision, setShowCollision] = useState(false);
@@ -78,6 +79,7 @@ const App: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
 
   const startGame = () => {
+    setMatchTimer(3);
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
@@ -88,12 +90,13 @@ const App: React.FC = () => {
         scoreAI: 0, 
         playerRole: 'SEEKER',
         phase: 'WAITING',
-        timer: 5 // Start with 5 seconds waiting
+        timer: 3 // Keep for state consistency if needed, but matchTimer handles HUD
       }
     }));
   };
 
   const playAgain = () => {
+    setMatchTimer(3);
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
@@ -104,7 +107,7 @@ const App: React.FC = () => {
         scoreAI: 0, 
         playerRole: 'SEEKER',
         phase: 'WAITING',
-        timer: 5
+        timer: 3
       },
       mapId: prev.mapId + 1
     }));
@@ -119,13 +122,14 @@ const App: React.FC = () => {
   }, []);
 
   const restartRound = () => {
+    setMatchTimer(3);
     setGameState(prev => ({ 
       ...prev, 
       status: GameStatus.PREP,
       match: {
         ...prev.match,
         phase: 'WAITING',
-        timer: 5
+        timer: 3
       }
     }));
   };
@@ -180,6 +184,7 @@ const App: React.FC = () => {
       if (nextRound > prev.match.maxRounds) {
         return { ...prev, status: GameStatus.GAME_OVER };
       }
+      setMatchTimer(3);
       return {
         ...prev, status: GameStatus.PREP,
         match: { 
@@ -187,7 +192,7 @@ const App: React.FC = () => {
           currentRound: nextRound,
           playerRole: nextRound % 2 === 0 ? 'HIDER' : 'SEEKER',
           phase: 'WAITING',
-          timer: 5
+          timer: 3
         }
       };
     });
@@ -242,60 +247,58 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePause]);
 
-  // Manage Hide & Seek Timer Interval
+  // Timer decrement: simple interval that only updates matchTimer
   useEffect(() => {
     if (gameState.mode !== GameMode.HIDE_AND_SEEK || gameState.status !== GameStatus.PLAYING) return;
     
     const interval = setInterval(() => {
-      setGameState(prev => {
-        if (prev.status !== GameStatus.PLAYING) return prev;
-        
-        const newTimer = prev.match.timer - 1;
-        
-        // Phase Transitions
-        if (newTimer <= 0) {
-          if (prev.match.phase === 'WAITING') {
-            return {
-              ...prev,
-              match: {
-                ...prev.match,
-                phase: 'HUNTING',
-                timer: 30 // 30 seconds for hunting
-              }
-            };
-          } else if (prev.match.phase === 'HUNTING') {
-            // Time is up! Hider wins.
-            const playerIsHider = prev.match.playerRole === 'HIDER';
-            // Determine round end scores inside here to keep state consistent
-            const newScorePlayer = playerIsHider ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
-            const newScoreAI = !playerIsHider ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
-            
-            const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
-            return {
-              ...prev,
-              status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
-              match: {
-                ...prev.match,
-                timer: 0,
-                scorePlayer: newScorePlayer,
-                scoreAI: newScoreAI
-              }
-            };
-          }
-        }
-        
-        return {
-          ...prev,
-          match: {
-            ...prev.match,
-            timer: newTimer
-          }
-        };
-      });
+      setMatchTimer(t => t - 1);
     }, 1000);
     
     return () => clearInterval(interval);
   }, [gameState.status, gameState.mode]);
+
+  // Phase & Round Transitions: observe matchTimer and act on 0
+  useEffect(() => {
+    if (gameState.mode !== GameMode.HIDE_AND_SEEK || gameState.status !== GameStatus.PLAYING) return;
+
+    if (matchTimer <= 0) {
+      setGameState(prev => {
+        if (prev.status !== GameStatus.PLAYING) return prev;
+
+        if (prev.match.phase === 'WAITING') {
+          // Finish waiting -> Start hunting
+          setMatchTimer(30);
+          return {
+            ...prev,
+            match: {
+              ...prev.match,
+              phase: 'HUNTING',
+              timer: 30
+            }
+          };
+        } else if (prev.match.phase === 'HUNTING') {
+          // Finish hunting (time is up) -> Round Over
+          const playerIsHider = prev.match.playerRole === 'HIDER';
+          const newScorePlayer = playerIsHider ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
+          const newScoreAI = !playerIsHider ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
+          const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
+          
+          return {
+            ...prev,
+            status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
+            match: {
+              ...prev.match,
+              timer: 0,
+              scorePlayer: newScorePlayer,
+              scoreAI: newScoreAI
+            }
+          };
+        }
+        return prev;
+      });
+    }
+  }, [matchTimer, gameState.mode, gameState.status]);
 
   const shadowSize = gameState.settings.worldSize * 1.5;
 
@@ -330,7 +333,7 @@ const App: React.FC = () => {
           mode={gameState.mode}
           match={gameState.match}
           settings={gameState.settings}
-          timer={gameState.match.timer}
+          timer={gameState.match.phase === 'WAITING' ? matchTimer : 0}
           onRoundEnd={handleRoundEnd}
           onPrepComplete={handlePrepComplete}
           debugMode={debugMode}
@@ -345,6 +348,7 @@ const App: React.FC = () => {
 
       <GameInterface
         gameState={gameState}
+        matchTimer={matchTimer}
         debugMode={debugMode}
         setDebugMode={setDebugMode}
         showGrid={showGrid}

@@ -6,6 +6,7 @@ import { HUD } from './HUD';
 
 interface GameInterfaceProps {
     gameState: GameState;
+    matchTimer: number;
     debugMode: boolean;
     setDebugMode: (val: boolean) => void;
     showGrid?: boolean;
@@ -30,7 +31,7 @@ interface GameInterfaceProps {
 }
 
 export const GameInterface: React.FC<GameInterfaceProps> = ({
-    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing, setGameMode
+    gameState, matchTimer, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing, setGameMode
 }) => {
 
     return (
@@ -64,6 +65,7 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
                 status={gameState.status}
                 mode={gameState.mode}
                 match={gameState.match}
+                timer={matchTimer}
                 showMission={showMission}
             />
 

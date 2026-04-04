@@ -728,7 +728,7 @@ const Building: React.FC<{
     );
 };
 
-export const VoxelSeek: React.FC<VoxelSeekProps> = ({
+export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     status,
     mode,
     match,
@@ -748,7 +748,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const keys = useControls();
 
     // Physics Refs
-    const playerPos = useRef(new THREE.Vector3(0, 10, 0));
+    const playerPos = useRef(new THREE.Vector3(0, 0, 0));
     const playerVel = useRef(new THREE.Vector3(0, 0, 0));
     const playerLastDir = useRef(new THREE.Vector2(0, 1));
     const isGrounded = useRef(false);
@@ -765,11 +765,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
     const stumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
     const landingAnimTimer = useRef(0);
     const lastFallDist = useRef(0);
-    const prevPlayerPos = useRef(new THREE.Vector3(0, 10, 0));
+    const prevPlayerPos = useRef(new THREE.Vector3(0, 0, 0));
     const smoothedMoveSpeed = useRef(0);
 
     // --- AI Refs ---
-    const aiPos = useRef(new THREE.Vector3(0, 10, 0));
+    const aiPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiVel = useRef(new THREE.Vector3(0, 0, 0));
     const aiLastDir = useRef(new THREE.Vector2(0, 1));
     const isAIGrounded = useRef(false);
@@ -798,11 +798,14 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         wallClimbProgress: 0,
         wallClimbDir: new THREE.Vector2(0, 0)
     });
+
+    const playerStartPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiStartPos = useRef(new THREE.Vector3(0, 0, 0));
     
     // AI Visual state 
     // Character Refs for AI
     const aiGroup = useRef<THREE.Group>(null!);
-    const prevAIPos = useRef(new THREE.Vector3(0, 10, 0));
+    const prevAIPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiSmoothedMoveSpeed = useRef(0);
     const losLineRef = useRef<any>(null!);
     const lastKnownMarkerRef = useRef<THREE.Mesh>(null!);
@@ -873,7 +876,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
 
             // Reset Player to Initial Spawn
             playerPos.current.copy(data.spawnPos);
+            prevPlayerPos.current.copy(data.spawnPos);
             playerVel.current.set(0, 0, 0);
+            isGrounded.current = true;
+            airTimeHighPoint.current = data.spawnPos.y;
             stamina.current = 100;
             stunTimer.current = 0;
         }, 150); // 150ms debounce
@@ -908,12 +914,16 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 mapData.collisionGrid,
                 mapData.wGrid,
                 isWaterLogic,
-                mode === GameMode.HIDE_AND_SEEK ? playerQuad : undefined
+                playerQuad
             );
 
             // 2. Reset Player State to the new random spawn
             playerPos.current.copy(newSpawn);
+            prevPlayerPos.current.copy(newSpawn);
+            playerStartPos.current.copy(newSpawn);
             playerVel.current.set(0, 0, 0);
+            isGrounded.current = true;
+            airTimeHighPoint.current = newSpawn.y;
             stamina.current = 100;
             stunTimer.current = 0;
 
@@ -922,7 +932,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                 let aiSpawn = findSpawnPos(settings.worldSize, halfSize, mapData.tGrid, mapData.collisionGrid, mapData.wGrid, isWaterLogic, aiQuad);
                 
                 aiPos.current.copy(aiSpawn);
+                prevAIPos.current.copy(aiSpawn);
+                aiStartPos.current.copy(aiSpawn);
                 aiVel.current.set(0, 0, 0);
+                isAIGrounded.current = true;
+                aiAirTimeHighPoint.current = aiSpawn.y;
                 aiStamina.current = 100;
                 aiStunTimer.current = 0;
             }
@@ -1436,11 +1450,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
         // --- FALL SAFETY (DEATH ZONE) ---
         if ((playerCanMove || aiCanMove) && mapData && status === GameStatus.PLAYING) {
             if (playerPos.current.y < -10) {
-                playerPos.current.copy(mapData.spawnPos);
+                playerPos.current.copy(playerStartPos.current);
                 playerVel.current.set(0, 0, 0);
             }
             if (aiPos.current.y < -10) {
-                aiPos.current.copy(mapData.spawnPos);
+                aiPos.current.copy(aiStartPos.current);
                 aiVel.current.set(0, 0, 0);
             }
         }
@@ -1539,8 +1553,19 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
                         isLadderMounting={visualState.isLadderMounting}
                         ladderFaceAngle={visualState.ladderFaceAngle}
                         isWallClimbing={visualState.isWallClimbing}
-                        wallClimbProgress={visualState.wallClimbProgress}
-                        overlayContent={null}
+                        color="#3b82f6"
+                        overlayContent={
+                            mode === GameMode.HIDE_AND_SEEK && match.phase === 'WAITING' && (
+                                <div className="flex flex-col items-center select-none pointer-events-none">
+                                    <div className="bg-black/80 backdrop-blur-sm text-white border-2 border-[#3b82f6] px-4 py-1.5 rounded-full text-sm font-black mb-2 pixel-font tracking-widest animate-bounce shadow-[0_0_15px_rgba(59,130,246,0.6)]">
+                                        VOCÊ
+                                    </div>
+                                    <div className="text-6xl font-black pixel-font text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)] animate-pulse">
+                                        {timer}
+                                    </div>
+                                </div>
+                            )
+                        }
                     />
 
                     {mode === GameMode.HIDE_AND_SEEK && (
@@ -1578,4 +1603,4 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = ({
             )}
         </group>
     );
-};
+});

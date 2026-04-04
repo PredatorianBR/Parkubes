@@ -40,13 +40,14 @@ export const findSpawnPos = (
     for (let k = 0; k < 1000; k++) {
         // Try random positions within a safer inner bound (avoiding map edges completely)
         const safePadding = 10;
+        const centerMargin = 8; // Assure they don't spawn in the middle
         let minX = safePadding, maxX = size - safePadding;
         let minZ = safePadding, maxZ = size - safePadding;
         
-        if (quadrant === 1) { minX = halfSize; maxZ = halfSize; }
-        else if (quadrant === 2) { maxX = halfSize; maxZ = halfSize; }
-        else if (quadrant === 3) { maxX = halfSize; minZ = halfSize; }
-        else if (quadrant === 4) { minX = halfSize; minZ = halfSize; }
+        if (quadrant === 1) { minX = halfSize + centerMargin; maxZ = halfSize - centerMargin; }
+        else if (quadrant === 2) { maxX = halfSize - centerMargin; maxZ = halfSize - centerMargin; }
+        else if (quadrant === 3) { maxX = halfSize - centerMargin; minZ = halfSize + centerMargin; }
+        else if (quadrant === 4) { minX = halfSize + centerMargin; minZ = halfSize + centerMargin; }
 
         const rx = Math.floor(Math.random() * (maxX - minX)) + minX;
         const rz = Math.floor(Math.random() * (maxZ - minZ)) + minZ;
@@ -65,7 +66,9 @@ export const findSpawnPos = (
                 }
             }
             if (maxH < 2.0) {
-                const score = getClearanceScore(rx, rz);
+                const distFromCenter = Math.sqrt(logicX * logicX + logicZ * logicZ);
+                const distBonus = (distFromCenter / halfSize) * 15.0; // Stronger bonus for being far from center
+                const score = getClearanceScore(rx, rz) + distBonus;
                 if (score > bestScore) {
                     bestScore = score;
                     // Ao nível do chão
@@ -78,30 +81,31 @@ export const findSpawnPos = (
 
     if (foundAny) return bestPos;
 
-    // If no safe spot found on street, try any spot without water or tall objects
-    const gridSize = size * GRID_SCALE;
-    for (let x = 0; x < gridSize; x++) {
-        for (let z = 0; z < gridSize; z++) {
-            if (wGrid[x][z] === 0) {
-                const logicX = (x + 0.5) / GRID_SCALE - halfSize;
-                const logicZ = (z + 0.5) / GRID_SCALE - halfSize;
-                const nearby = collisionGrid.query(logicX, logicZ, 0.5);
-                let maxH = 0;
-                for (const box of nearby) {
-                    if (logicX >= box.minX && logicX <= box.maxX && logicZ >= box.minZ && logicZ <= box.maxZ) {
-                        if (box.maxY > maxH) maxH = box.maxY;
-                    }
-                }
-                if (maxH < 2.0) {
-                    bestPos.set(logicX, maxH, logicZ);
-                    return bestPos;
-                }
+    // If no safe spot found on street, try any spot in the requested quadrant without water
+    // Restrict to the outer 60% of the quadrant to ensure they look distinct from center
+    if (quadrant) {
+        let minX = 10, maxX = size - 10;
+        let minZ = 10, maxZ = size - 10;
+        const outerMargin = Math.floor(size * 0.2); // Avoid the inner 20%
+        
+        if (quadrant === 1) { minX = halfSize + outerMargin; maxZ = halfSize - outerMargin; }
+        else if (quadrant === 2) { maxX = halfSize - outerMargin; maxZ = halfSize - outerMargin; }
+        else if (quadrant === 3) { maxX = halfSize - outerMargin; minZ = halfSize + outerMargin; }
+        else if (quadrant === 4) { minX = halfSize + outerMargin; minZ = halfSize + outerMargin; }
+
+        for (let k = 0; k < 100; k++) {
+            const rx = Math.floor(Math.random() * (maxX - minX)) + minX;
+            const rz = Math.floor(Math.random() * (maxZ - minZ)) + minZ;
+            const logicX = rx - halfSize;
+            const logicZ = rz - halfSize;
+            if (!isWaterLogic(logicX, logicZ)) {
+                return new THREE.Vector3(logicX, 0, logicZ);
             }
         }
     }
 
     // Ultimate fallback if map is completely filled (unlikely)
-    bestPos.set(0, 10, 0);
+    bestPos.set(0, 0, 0);
     return bestPos;
 };
 
@@ -2049,7 +2053,9 @@ export const generateCityLevel = (
     });
 
     // --- DEFAULT SPAWN POINT (Menu/Preview) ---
-    const spawnPos = new THREE.Vector3(0, 10, 0);
+    // Ensure we pick a real ground position in a random quadrant for the initial reveal
+    const spawnQuad = (Math.floor(Math.random() * 4) + 1) as 1 | 2 | 3 | 4;
+    const spawnPos = findSpawnPos(size, halfSize, tGrid, collisionGrid, wGrid, isWaterLogic, spawnQuad);
 
     // Populate sGrid with Water where applicable (if not overwritten by objects)
     for (let x = 0; x < gridSize; x++) {

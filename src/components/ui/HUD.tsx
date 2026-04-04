@@ -5,10 +5,11 @@ interface HUDProps {
     status: GameStatus;
     mode: GameMode;
     match: MatchState;
+    timer: number;
     showMission: boolean;
 }
 
-export const HUD: React.FC<HUDProps> = ({ status, mode, match, showMission }) => {
+export const HUD: React.FC<HUDProps> = ({ status, mode, match, timer, showMission }) => {
     return (
         <>
             {/* HUD PRINCIPAL */}
@@ -33,7 +34,7 @@ export const HUD: React.FC<HUDProps> = ({ status, mode, match, showMission }) =>
                                 <div className="flex justify-between items-center mb-1">
                                     <span className="text-[10px] font-bold">
                                         VOCÊ É:{' '}
-                                        <span className={match.playerRole === 'SEEKER' ? 'text-red-400' : 'text-blue-400'}>
+                                        <span className="text-blue-400">
                                             {match.playerRole === 'SEEKER' ? 'CAÇADOR' : 'ESCONDIDO'}
                                         </span>
                                     </span>
@@ -43,7 +44,7 @@ export const HUD: React.FC<HUDProps> = ({ status, mode, match, showMission }) =>
                                         {match.phase === 'WAITING' ? 'ESPERE:' : 'TEMPO:'}
                                     </span>
                                     <span className={`pixel-font text-lg ${match.phase === 'WAITING' ? 'text-yellow-400 animate-pulse' : 'text-white'}`}>
-                                        {match.timer}s
+                                        {timer}s
                                     </span>
                                 </div>
                             </div>
@@ -61,7 +62,7 @@ export const HUD: React.FC<HUDProps> = ({ status, mode, match, showMission }) =>
                     
                     {mode === GameMode.HIDE_AND_SEEK ? (
                         <>
-                            <div className={`text-6xl pixel-font font-black tracking-tighter drop-shadow-[0_0_15px_rgba(0,0,0,0.8)] mb-8 transform scale-100 transition-transform ${match.playerRole === 'SEEKER' ? 'text-red-500' : 'text-blue-500'}`}>
+                            <div className="text-6xl pixel-font font-black tracking-tighter drop-shadow-[0_0_15px_rgba(0,0,0,0.8)] mb-8 transform scale-100 transition-transform text-blue-500">
                                 {match.playerRole === 'SEEKER' ? 'CAÇE A IA!' : 'ESCONDA-SE!'}
                             </div>
                             <div className="text-white/90 font-mono text-sm bg-black/60 px-6 py-3 rounded backdrop-blur-md">
