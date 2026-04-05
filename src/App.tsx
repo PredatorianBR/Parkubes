@@ -55,7 +55,7 @@ const App: React.FC = () => {
       playerSpeed: 0.85,
       staminaDuration: 2.0,
       cameraZoom: 15,
-      cameraFollow: true,
+      cameraFollow: false,
       ratios: {
         farm: 0,
         house: 0,

@@ -526,7 +526,8 @@ const Building: React.FC<{
         // Skip occlusion check for buildings that are definitely not blocking the player
         // In this isometric view, only buildings within a certain radius or "behind" the player matter
         const distSq = position.distanceToSquared(playerPos.current);
-        if (distSq > 2500) { // Approx 50 units
+        if (distSq > 10000) { // Approx 100 units
+
             // Ensure we reset opacity if player moved away
             groupRef.current.traverse((child) => {
                 if ((child as THREE.Mesh).isMesh && (child.userData.type === 'hull' || child.userData.type === 'detail-fade')) {
@@ -541,7 +542,10 @@ const Building: React.FC<{
         }
 
         // Setup Ray: Player -> Camera
+        // Offset ray origin slightly above feet to avoid floor collisions
         ray.origin.copy(playerPos.current);
+        ray.origin.y += 0.5; 
+        
         // For orthographic camera, the direction to camera is actually constant
         // but we'll use this for simplicity and compatibility with perspective
         vecToCam.subVectors(camera.position, playerPos.current);
@@ -562,8 +566,8 @@ const Building: React.FC<{
             const pH = part.size[1];
             const pD = part.size[2];
 
-            box.min.set(worldCenter.x - pW / 2, worldCenter.y - pH / 2, worldCenter.z - pD / 2);
-            box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH / 2, worldCenter.z + pD / 2);
+            box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
+            box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
 
             // 1. Is Player INSIDE?
             if (box.containsPoint(playerPos.current)) {
@@ -627,11 +631,32 @@ const Building: React.FC<{
                 const mat = mesh.material as THREE.MeshStandardMaterial;
                 // Fade both Hull and Detail-Fade meshes together
                 if (mat && (mesh.userData.type === 'hull' || mesh.userData.type === 'detail-fade')) {
-                    if (Math.abs(mat.opacity - targetOpacity) > 0.01) {
+                    if (Math.abs(mat.opacity - targetOpacity) > 0.001) {
                         const fadeSpeed = delta * 8;
                         mat.opacity = THREE.MathUtils.lerp(mat.opacity, targetOpacity, fadeSpeed);
-                        mat.transparent = mat.opacity < 0.99;
-                        mat.depthWrite = mat.opacity > 0.8;
+                        
+                        // STABLE MATERIAL STATE:
+                        // We keep transparent=true if opacity < 1.0 to avoid jumping between render passes.
+                        // We avoid setting needsUpdate=true as it's not needed for opacity changes and causes flickering.
+                        const isFading = mat.opacity < 0.99;
+                        if (mat.transparent !== isFading) {
+                            mat.transparent = isFading;
+                            // Only update these when transparency state changes, not every frame
+                            mat.depthWrite = !isFading || mat.opacity > 0.8;
+                            mat.needsUpdate = true; // IMPORTANT for pass switching
+                        } else if (isFading) {
+                            // Update depthWrite based on threshold but only if fading
+                            const shouldWriteDepth = mat.opacity > 0.8;
+                            if (mat.depthWrite !== shouldWriteDepth) {
+                                mat.depthWrite = shouldWriteDepth;
+                                mat.needsUpdate = true;
+                            }
+                        }
+                    } else if (targetOpacity >= 0.99 && mat.transparent) {
+                        // Ensure it's fully opaque if the lerp is done and target is 1.0
+                        mat.opacity = 1.0;
+                        mat.transparent = false;
+                        mat.depthWrite = true;
                         mat.needsUpdate = true;
                     }
                 }
