@@ -4,7 +4,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GameStatus, VoxelObject, GameSettings, Position, GameMode, MatchState } from '../types';
-import { Character } from './Character';
+import { Character, MatchTimerOverlay } from './Character';
 import { useControls } from '../hooks/useControls';
 import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
@@ -406,7 +406,7 @@ const Building: React.FC<{
     showGrid?: boolean;
     status: GameStatus;
     debugMode?: boolean;
-}> = ({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
+}> = React.memo(({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
     const groupRef = useRef<THREE.Group>(null!);
     const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
@@ -487,10 +487,28 @@ const Building: React.FC<{
     const intersectionPoint = useMemo(() => new THREE.Vector3(), []);
     const vecToCam = useMemo(() => new THREE.Vector3(), []);
     const worldCenter = useMemo(() => new THREE.Vector3(), []); // Pre-allocated vector to prevent GC spikes in loops
+    const playerPartPos = useMemo(() => new THREE.Vector3(), []); // NEW: Pre-allocated for multi-point occlusion
+
+    // Offsets to cover the character's volume (approx 0.7 radius, 3.8 height)
+    const occlusionOffsets = useMemo(() => [
+        new THREE.Vector3(0, 0.5, 0),    // Feet level
+        new THREE.Vector3(0, 1.8, 0),    // Mid level
+        new THREE.Vector3(0, 3.4, 0),    // Head level
+        new THREE.Vector3(0.6, 1.8, 0),  // Right side
+        new THREE.Vector3(-0.6, 1.8, 0), // Left side
+        new THREE.Vector3(0, 1.8, 0.6),  // Front side
+        new THREE.Vector3(0, 1.8, -0.6), // Back side
+    ], []);
 
     // OCCLUSION FADING LOGIC
+    const frameCount = useRef(Math.floor(Math.random() * 10)); // Individual building offset
+    const isBlockingRef = useRef(false);
+
     useFrame((state, delta) => {
         if (!groupRef.current) return;
+
+        frameCount.current++;
+        const shouldUpdateOcclusion = frameCount.current % 6 === 0;
 
         // Update Grid Uniform
         if (gridShaderRef.current) {
@@ -541,50 +559,59 @@ const Building: React.FC<{
             return;
         }
 
-        // Setup Ray: Player -> Camera
-        // Offset ray origin slightly above feet to avoid floor collisions
-        ray.origin.copy(playerPos.current);
-        ray.origin.y += 0.5; 
-        
+        // Setup Ray Direction: Player -> Camera
         // For orthographic camera, the direction to camera is actually constant
         // but we'll use this for simplicity and compatibility with perspective
         vecToCam.subVectors(camera.position, playerPos.current);
         const distToCam = vecToCam.length();
         ray.direction.copy(vecToCam).normalize();
 
-        let isBlocking = false;
+        if (shouldUpdateOcclusion) {
+            let isBlocking = false;
+            // Check against all physical parts of the building
+            for (const part of parts) {
+                worldCenter.set(
+                    position.x + part.pos[0],
+                    position.y, // part.pos[1] is 0 relative to center
+                    position.z + part.pos[2]
+                );
 
-        // Check against all physical parts of the building
-        for (const part of parts) {
-            worldCenter.set(
-                position.x + part.pos[0],
-                position.y, // part.pos[1] is 0 relative to center
-                position.z + part.pos[2]
-            );
+                const pW = part.size[0];
+                const pH = part.size[1];
+                const pD = part.size[2];
 
-            const pW = part.size[0];
-            const pH = part.size[1];
-            const pD = part.size[2];
+                box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
+                box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
 
-            box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
-            box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
-
-            // 1. Is Player INSIDE?
-            if (box.containsPoint(playerPos.current)) {
-                isBlocking = true;
-                break;
-            }
-
-            // 2. Does Ray intersect?
-            const hit = ray.intersectBox(box, intersectionPoint);
-            if (hit) {
-                // Ensure hit is actually between player and camera
-                if (hit.distanceTo(playerPos.current) < distToCam) {
-                    isBlocking = true;
-                    break;
+                // 1. Is ANY part of the Player INSIDE this building part?
+                for (const offset of occlusionOffsets) {
+                    playerPartPos.copy(playerPos.current).add(offset);
+                    if (box.containsPoint(playerPartPos)) {
+                        isBlocking = true;
+                        break;
+                    }
                 }
+                if (isBlocking) break;
+
+                // 2. Does Ray from ANY part of the player intersect?
+                for (const offset of occlusionOffsets) {
+                    ray.origin.copy(playerPos.current).add(offset);
+                    
+                    const hit = ray.intersectBox(box, intersectionPoint);
+                    if (hit) {
+                        // Ensure hit is actually between player part and camera
+                        if (hit.distanceTo(ray.origin) < distToCam) {
+                            isBlocking = true;
+                            break;
+                        }
+                    }
+                }
+                if (isBlocking) break;
             }
+            isBlockingRef.current = isBlocking;
         }
+
+        const isBlocking = isBlockingRef.current;
 
         let targetOpacity = 1.0;
         if (isBlocking) {
@@ -754,7 +781,7 @@ const Building: React.FC<{
             }
         </group >
     );
-};
+});
 
 export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     status,
@@ -830,7 +857,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     const aiPath = useRef<THREE.Vector3[]>([]);
     const lastPathPos = useRef<THREE.Vector3>(new THREE.Vector3());
     const pathTimer = useRef(0);
-
+    const pathfindingInProgress = useRef(false);
+    const pendingPathTarget = useRef<THREE.Vector3 | null>(null);
 
     const playerStartPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiStartPos = useRef(new THREE.Vector3(0, 0, 0));
@@ -1136,25 +1164,53 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 targetPos = corners[0];
             }
             
-            // Recalculate path if no path, cooldown finished, or target moved far (only for seeker)
+            // Recalculate path if no path, cooldown finished, or target moved far
             let needsNewPath = aiPath.current.length === 0 || pathTimer.current <= 0;
+            
+            // For seeker (hunting), check if player moved far from last path target
+            // For hider (waiting), check if the fugitive needs a new escape route
+            const distTargetMoved = lastPathPos.current.distanceTo(targetPos);
             if (isSeeker) {
-                needsNewPath = needsNewPath || lastPathPos.current.distanceTo(targetPos) > 3.0;
+                needsNewPath = needsNewPath || distTargetMoved > 2.0;
+            } else if (match.phase === 'WAITING') {
+                // Hider AI recalcs less often in waiting phase unless player gets too close
+                needsNewPath = needsNewPath || (distTargetMoved > 5.0 && pathTimer.current <= -2.0);
             }
 
             if (needsNewPath) {
-                const newPath = computeAIPath(aiPos.current, targetPos, {
-                    collisionGrid: mapData.collisionGrid,
-                    bGrid: mapData.bGrid,
-                    tGrid: mapData.tGrid,
-                    wGrid: mapData.wGrid,
-                    worldSize: settings.worldSize
-                }, settings);
-                
-                if (newPath.length > 0) {
-                    aiPath.current = newPath;
-                    lastPathPos.current.copy(targetPos);
-                    pathTimer.current = 1.0; // Recalculate every second if needed
+                // Don't recalculate if already in progress
+                if (!pathfindingInProgress.current) {
+                    pathfindingInProgress.current = true;
+                    pendingPathTarget.current = targetPos.clone();
+                    
+                    // Defer pathfinding to next microtask to avoid frame blocking
+                    const pathfindingTask = () => {
+                        // Pass seeker position if fugitive is fleeing (to avoid paths near seeker)
+                        const threat = !isSeeker ? playerPos.current : undefined;
+                        
+                        try {
+                            const newPath = computeAIPath(aiPos.current, targetPos, {
+                                collisionGrid: mapData.collisionGrid,
+                                bGrid: mapData.bGrid,
+                                tGrid: mapData.tGrid,
+                                wGrid: mapData.wGrid,
+                                worldSize: settings.worldSize
+                            }, settings, threat);
+                            
+                            if (newPath && newPath.length > 0) {
+                                aiPath.current = newPath;
+                                lastPathPos.current.copy(targetPos);
+                                pathTimer.current = 3.0;
+                            }
+                        } catch (error) {
+                            console.error('Pathfinding error:', error);
+                            pathTimer.current = 1.0; // Retry later if error
+                        }
+                        pathfindingInProgress.current = false;
+                    };
+                    
+                    // Use setTimeout to defer calculation off the main frame
+                    setTimeout(pathfindingTask, 0);
                 }
             }
 
@@ -1620,7 +1676,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                                         VOCÊ
                                     </div>
                                     <div className="text-6xl font-black pixel-font text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)] animate-pulse">
-                                        {timer}
+                                        <MatchTimerOverlay />
                                     </div>
                                 </div>
                             )
@@ -1681,4 +1737,19 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             )}
         </group>
     );
+}, (prev, next) => {
+    // CUSTOM COMPARISON: Ignore timer changes to prevent heavy re-renders every second.
+    // The timer is only used in a simple overlay div, it doesn't affect the 3D scene/physics.
+    // By ignoring it here, we save massive React reconciliation time.
+    return prev.status === next.status &&
+           prev.mode === next.mode &&
+           prev.match === next.match && // match.timer might change, but we care about phase/currentRound
+           prev.settings === next.settings &&
+           prev.mapId === next.mapId &&
+           prev.debugMode === next.debugMode &&
+           prev.showGrid === next.showGrid &&
+           prev.showCollision === next.showCollision &&
+           prev.showWireframe === next.showWireframe &&
+           prev.isEditing === next.isEditing;
+           // We explicitly skip comparing 'timer'
 });

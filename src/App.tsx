@@ -7,6 +7,10 @@ import { GameInterface } from './components/ui/GameInterface';
 import { OnScreenControls } from './components/ui/OnScreenControls';
 import { GameStatus, GameState, GameSettings, GameMode } from './types';
 import * as THREE from 'three';
+import { MatchState } from './types';
+
+// Context to avoid re-rendering heavy 3D components for every timer tick
+export const MatchContext = React.createContext<{ timer: number }>({ timer: 0 });
 const getRandomSettings = () => {
   // Randomize Ratios (Sum to 100)
   const keys = ['farm', 'house', 'highrise', 'factory', 'ruins', 'foliage'] as const;
@@ -34,6 +38,119 @@ const getRandomSettings = () => {
   };
 };
 
+
+const GameLayout: React.FC<{
+  status: GameStatus;
+  mode: GameMode;
+  match: MatchState;
+  settings: GameSettings;
+  debugMode: boolean;
+  showGrid: boolean;
+  showCollision: boolean;
+  showWireframe: boolean;
+  isEditing: boolean;
+  mapId: number;
+  handleRoundEnd: (playerWon: boolean) => void;
+  handlePrepComplete: () => void;
+  onPhaseChange: (newPhase: 'HUNTING' | 'OVER', scoreUpdates?: { player: number, ai: number }) => void;
+  gameInterfaceProps: any;
+}> = React.memo(({ 
+  status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, isEditing, mapId,
+  handleRoundEnd, handlePrepComplete, onPhaseChange, gameInterfaceProps
+}) => {
+  const [matchTimer, setMatchTimer] = useState(0);
+
+  // Sync initial timer when phase/status changes at App level
+  useEffect(() => {
+    if (status === GameStatus.PREP || match.phase === 'WAITING') {
+      setMatchTimer(3);
+    } else if (match.phase === 'HUNTING') {
+      setMatchTimer(30);
+    }
+  }, [status, match.phase, match.currentRound]);
+
+  // Timer decrement: simple interval that only updates local matchTimer
+  useEffect(() => {
+    if (mode !== GameMode.HIDE_AND_SEEK || status !== GameStatus.PLAYING) return;
+    
+    const interval = setInterval(() => {
+      setMatchTimer(t => {
+        if (t <= 1) {
+          // Trigger phase transition logic in parent only when timer hits 0
+          if (match.phase === 'WAITING') {
+             onPhaseChange('HUNTING');
+          } else if (match.phase === 'HUNTING') {
+             const playerIsHider = match.playerRole === 'HIDER';
+             const newScorePlayer = playerIsHider ? 1 : 0;
+             const newScoreAI = !playerIsHider ? 1 : 0;
+             onPhaseChange('OVER', { player: newScorePlayer, ai: newScoreAI });
+          }
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [status, mode, match.phase, onPhaseChange, match.playerRole]);
+
+  const shadowSize = settings.worldSize * 1.5;
+
+  return (
+    <>
+      <MatchContext.Provider value={{ timer: matchTimer }}>
+        <Canvas shadows gl={{ antialias: true }} onCreated={({ gl }) => {
+          const canvas = gl.domElement;
+          canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.warn('WebGL context lost. Attempting recovery...');
+          });
+          canvas.addEventListener('webglcontextrestored', () => {
+            console.log('WebGL context restored.');
+          });
+        }}>
+          <OrthographicCamera
+            makeDefault
+            position={[100, 100, 100]}
+            near={0.1}
+            far={5000}
+            zoom={settings.cameraZoom}
+          />
+          <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
+          <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
+          <ambientLight intensity={0.4} />
+          <directionalLight castShadow position={[60, 120, 40]} intensity={2.0} shadow-mapSize={[2048, 2048]} shadow-camera-left={-shadowSize} shadow-camera-right={shadowSize} shadow-camera-top={shadowSize} shadow-camera-bottom={-shadowSize} shadow-camera-near={0.1} shadow-camera-far={500} shadow-bias={-0.0005} />
+          <OrbitControls makeDefault enabled={true} />
+          <VoxelSeek
+            status={status}
+            mode={mode}
+            match={match}
+            settings={settings}
+            timer={match.phase === 'WAITING' ? matchTimer : 0}
+            onRoundEnd={handleRoundEnd}
+            onPrepComplete={handlePrepComplete}
+            debugMode={debugMode}
+            showGrid={showGrid}
+            showCollision={showCollision}
+            showWireframe={showWireframe}
+            isEditing={isEditing}
+            mapId={mapId}
+          />
+          <ContactShadows position={[0, -0.01, 0]} opacity={0.5} scale={150} blur={2.5} far={10} color="#000000" />
+        </Canvas>
+      </MatchContext.Provider>
+
+      <GameInterface
+        {...gameInterfaceProps}
+        matchTimer={matchTimer}
+      />
+    </>
+  );
+});
+
+// A small helper to keep GameInterface separate if needed, but for now we'll put it in GameLayout
+const GameLayoutHUD = ({ children }: { children: React.ReactNode }) => <>{children}</>;
+
 const App: React.FC = () => {
   const initialRandom = getRandomSettings();
   const [gameState, setGameState] = useState<GameState>({
@@ -46,7 +163,7 @@ const App: React.FC = () => {
       scoreAI: 0,
       playerRole: 'SEEKER',
       phase: 'WAITING',
-      timer: 0 // Timer managed by VoxelSeek or app interval
+      timer: 0 
     },
     taunt: "Pratique seu parkour!",
     hint: "Use obstáculos para ganhar altura.",
@@ -70,16 +187,14 @@ const App: React.FC = () => {
     mapId: 0
   });
 
-  const [matchTimer, setMatchTimer] = useState(0);
   const [debugMode, setDebugMode] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showCollision, setShowCollision] = useState(false);
-  const [showWireframe, setShowWireframe] = useState(false); // Novo estado
+  const [showWireframe, setShowWireframe] = useState(false);
   const [showMission, setShowMission] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
   const startGame = () => {
-    setMatchTimer(3);
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
@@ -90,13 +205,12 @@ const App: React.FC = () => {
         scoreAI: 0, 
         playerRole: 'SEEKER',
         phase: 'WAITING',
-        timer: 3 // Keep for state consistency if needed, but matchTimer handles HUD
+        timer: 3 
       }
     }));
   };
 
   const playAgain = () => {
-    setMatchTimer(3);
     setGameState(prev => ({
       ...prev,
       status: GameStatus.PREP,
@@ -122,7 +236,6 @@ const App: React.FC = () => {
   }, []);
 
   const restartRound = () => {
-    setMatchTimer(3);
     setGameState(prev => ({ 
       ...prev, 
       status: GameStatus.PREP,
@@ -143,7 +256,6 @@ const App: React.FC = () => {
 
   const updateSetting = (key: keyof GameSettings, value: any) => {
     setGameState(prev => {
-      // Only regenerate map if structural settings change
       const shouldRegen = key === 'worldSize' || key === 'riverWidth';
       return {
         ...prev,
@@ -158,10 +270,7 @@ const App: React.FC = () => {
       const newRandom = getRandomSettings();
       return {
         ...prev,
-        settings: {
-          ...prev.settings,
-          ...newRandom
-        },
+        settings: { ...prev.settings, ...newRandom },
         mapId: prev.mapId + 1
       };
     });
@@ -184,7 +293,6 @@ const App: React.FC = () => {
       if (nextRound > prev.match.maxRounds) {
         return { ...prev, status: GameStatus.GAME_OVER };
       }
-      setMatchTimer(3);
       return {
         ...prev, status: GameStatus.PREP,
         match: { 
@@ -200,12 +308,9 @@ const App: React.FC = () => {
 
   const handleRoundEnd = useCallback((playerWon: boolean) => {
     setGameState(prev => {
-      // Determine if it was Seeker winning (catching) or Hider surviving
       const newScorePlayer = playerWon ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
       const newScoreAI = !playerWon ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
-      
       const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
-      
       return {
         ...prev, 
         status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
@@ -216,6 +321,34 @@ const App: React.FC = () => {
         }
       };
     });
+  }, []);
+
+  const handlePhaseChange = useCallback((newPhase: 'HUNTING' | 'OVER', scoreUpdates?: { player: number, ai: number }) => {
+      setGameState(prev => {
+          if (newPhase === 'HUNTING') {
+              return {
+                  ...prev,
+                  match: { ...prev.match, phase: 'HUNTING', timer: 30 }
+              };
+          } else {
+              // Finish hunting (time is up) -> Round Over
+              const playerWon = scoreUpdates?.player === 1;
+              const newScorePlayer = prev.match.scorePlayer + (scoreUpdates?.player ?? 0);
+              const newScoreAI = (prev.match.scoreAI ?? 0) + (scoreUpdates?.ai ?? 0);
+              const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
+              
+              return {
+                ...prev,
+                status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
+                match: {
+                  ...prev.match,
+                  timer: 0,
+                  scorePlayer: newScorePlayer,
+                  scoreAI: newScoreAI
+                }
+              };
+          }
+      });
   }, []);
 
   const handlePrepComplete = useCallback(() => {
@@ -247,130 +380,35 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePause]);
 
-  // Timer decrement: simple interval that only updates matchTimer
-  useEffect(() => {
-    if (gameState.mode !== GameMode.HIDE_AND_SEEK || gameState.status !== GameStatus.PLAYING) return;
-    
-    const interval = setInterval(() => {
-      setMatchTimer(t => t - 1);
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, [gameState.status, gameState.mode]);
-
-  // Phase & Round Transitions: observe matchTimer and act on 0
-  useEffect(() => {
-    if (gameState.mode !== GameMode.HIDE_AND_SEEK || gameState.status !== GameStatus.PLAYING) return;
-
-    if (matchTimer <= 0) {
-      setGameState(prev => {
-        if (prev.status !== GameStatus.PLAYING) return prev;
-
-        if (prev.match.phase === 'WAITING') {
-          // Finish waiting -> Start hunting
-          setMatchTimer(30);
-          return {
-            ...prev,
-            match: {
-              ...prev.match,
-              phase: 'HUNTING',
-              timer: 30
-            }
-          };
-        } else if (prev.match.phase === 'HUNTING') {
-          // Finish hunting (time is up) -> Round Over
-          const playerIsHider = prev.match.playerRole === 'HIDER';
-          const newScorePlayer = playerIsHider ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
-          const newScoreAI = !playerIsHider ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
-          const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
-          
-          return {
-            ...prev,
-            status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
-            match: {
-              ...prev.match,
-              timer: 0,
-              scorePlayer: newScorePlayer,
-              scoreAI: newScoreAI
-            }
-          };
-        }
-        return prev;
-      });
-    }
-  }, [matchTimer, gameState.mode, gameState.status]);
-
-  const shadowSize = gameState.settings.worldSize * 1.5;
-
   const showVirtualControls = gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.PREP;
 
   return (
     <div className="relative w-full h-screen bg-gray-950 select-none overflow-hidden">
-      <Canvas shadows gl={{ antialias: true }} onCreated={({ gl }) => {
-        const canvas = gl.domElement;
-        canvas.addEventListener('webglcontextlost', (e) => {
-          e.preventDefault();
-          console.warn('WebGL context lost. Attempting recovery...');
-        });
-        canvas.addEventListener('webglcontextrestored', () => {
-          console.log('WebGL context restored.');
-        });
-      }}>
-        <OrthographicCamera
-          makeDefault
-          position={[100, 100, 100]}
-          near={0.1}
-          far={5000}
-          zoom={gameState.settings.cameraZoom}
-        />
-        <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
-        <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
-        <ambientLight intensity={0.4} />
-        <directionalLight castShadow position={[60, 120, 40]} intensity={2.0} shadow-mapSize={[2048, 2048]} shadow-camera-left={-shadowSize} shadow-camera-right={shadowSize} shadow-camera-top={shadowSize} shadow-camera-bottom={-shadowSize} shadow-camera-near={0.1} shadow-camera-far={500} shadow-bias={-0.0005} />
-        <OrbitControls makeDefault enabled={true} />
-        <VoxelSeek
-          status={gameState.status}
-          mode={gameState.mode}
-          match={gameState.match}
-          settings={gameState.settings}
-          timer={gameState.match.phase === 'WAITING' ? matchTimer : 0}
-          onRoundEnd={handleRoundEnd}
-          onPrepComplete={handlePrepComplete}
-          debugMode={debugMode}
-          showGrid={showGrid}
-          showCollision={showCollision}
-          showWireframe={showWireframe}
-          isEditing={isEditing}
-          mapId={gameState.mapId}
-        />
-        <ContactShadows position={[0, -0.01, 0]} opacity={0.5} scale={150} blur={2.5} far={10} color="#000000" />
-      </Canvas>
-
-      <GameInterface
-        gameState={gameState}
-        matchTimer={matchTimer}
+      <GameLayout
+        status={gameState.status}
+        mode={gameState.mode}
+        match={gameState.match}
+        settings={gameState.settings}
         debugMode={debugMode}
-        setDebugMode={setDebugMode}
         showGrid={showGrid}
-        setShowGrid={setShowGrid}
         showCollision={showCollision}
-        setShowCollision={setShowCollision}
         showWireframe={showWireframe}
-        setShowWireframe={setShowWireframe}
-        togglePause={togglePause}
-        startGame={startGame}
-        playAgain={playAgain}
-        restartRound={restartRound}
-        nextRound={nextRound}
-        resetToMenu={resetToMenu}
-        updateSetting={updateSetting}
-        updateRatio={updateRatio}
-        resetRatios={resetRatios}
-        showMission={showMission}
-        setIsEditing={setIsEditing}
-        setGameMode={(mode) => setGameState(prev => ({ ...prev, mode }))}
+        isEditing={isEditing}
+        mapId={gameState.mapId}
+        handleRoundEnd={handleRoundEnd}
+        handlePrepComplete={handlePrepComplete}
+        onPhaseChange={handlePhaseChange}
+        gameInterfaceProps={{
+          gameState,
+          debugMode, setDebugMode,
+          showGrid, setShowGrid,
+          showCollision, setShowCollision,
+          showWireframe, setShowWireframe,
+          togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu,
+          updateSetting, updateRatio, resetRatios, showMission, setIsEditing,
+          setGameMode: (mode: GameMode) => setGameState(prev => ({ ...prev, mode }))
+        }}
       />
-
       <OnScreenControls visible={showVirtualControls} />
     </div>
   );

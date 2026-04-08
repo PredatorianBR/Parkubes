@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { GRID_SCALE, worldToIndex } from './physics';
 
+// Force rebuild
 export function computeAIPath(
     start: THREE.Vector3,
     goal: THREE.Vector3,
@@ -12,7 +13,8 @@ export function computeAIPath(
         wGrid: number[][],
         worldSize: number 
     },
-    settings: { worldSize: number }
+    settings: { worldSize: number },
+    threat?: THREE.Vector3
 ): THREE.Vector3[] {
     const halfSize = Math.floor(settings.worldSize / 2);
     const gridSize = settings.worldSize * GRID_SCALE;
@@ -34,27 +36,46 @@ export function computeAIPath(
 
     if (startIdx.x === goalIdx.x && startIdx.z === goalIdx.z) return [];
 
-    // Simple A* 
+    // Simple A* with Map-based openSet for O(1) lookup instead of O(n)
     const openSet: { x: number, z: number, g: number, f: number, parent?: any }[] = [];
+    const openSetMap = new Map<string, { x: number, z: number, g: number, f: number, parent?: any }>();
     const closedSet = new Set<string>();
 
     const startNode = { ...startIdx, g: 0, f: heuristic(startIdx, goalIdx) };
     openSet.push(startNode);
+    openSetMap.set(`${startIdx.x},${startIdx.z}`, startNode);
 
-    const maxIterations = 500; // Limit search for performance
+    const startTime = performance.now();
+    const maxIterations = 150; // Reduced from 250: prefer faster incomplete path over blocking
     let iterations = 0;
+    const THREAT_AVOIDANCE_RADIUS = threat ? 5.0 : 0; // Keep distance from threat
+    const threatGridPos = threat ? {
+        x: worldToIndex(threat.x, halfSize, settings.worldSize),
+        z: worldToIndex(threat.z, halfSize, settings.worldSize)
+    } : null;
 
     while (openSet.length > 0 && iterations < maxIterations) {
         iterations++;
-        // Sort by f score
-        openSet.sort((a, b) => a.f - b.f);
-        const current = openSet.shift()!;
+        
+        // Anti-stutter: Aggressive budget for dense maps (3ms per iteration check)
+        if (iterations % 20 === 0 && performance.now() - startTime > 3) {
+            break;
+        }
+        // Find node with lowest f score
+        let bestIdx = 0;
+        for (let i = 1; i < openSet.length; i++) {
+            if (openSet[i].f < openSet[bestIdx].f) {
+                bestIdx = i;
+            }
+        }
+        const current = openSet.splice(bestIdx, 1)[0];
+        const currentKey = `${current.x},${current.z}`;
+        openSetMap.delete(currentKey);
+        closedSet.add(currentKey);
 
         if (current.x === goalIdx.x && current.z === goalIdx.z) {
             return reconstructPath(current, halfSize, settings.worldSize, mapData);
         }
-
-        closedSet.add(`${current.x},${current.z}`);
 
         // Neighbors
         const neighbors = [
@@ -66,7 +87,8 @@ export function computeAIPath(
 
         for (let n of neighbors) {
             if (n.x < 0 || n.x >= gridSize || n.z < 0 || n.z >= gridSize) continue;
-            if (closedSet.has(`${n.x},${n.z}`)) continue;
+            const nKey = `${n.x},${n.z}`;
+            if (closedSet.has(nKey)) continue;
 
             const currentHeight = getNavHeight(current.x, current.z, mapData);
             const nHeight = getNavHeight(n.x, n.z, mapData);
@@ -75,23 +97,22 @@ export function computeAIPath(
             // 1. Check if water
             if (mapData.wGrid[n.x][n.z] === 1 && nHeight < 0.5) continue; 
             // 2. Check height difference (climb limit)
-            if (Math.abs(nHeight - currentHeight) > 2.0) continue; 
-            // 3. Collision check (placeholder, simplified since we have grids)
-            // If the difference between map-data-height and indexed-height is too large, it might be an obstacle
-            // But bGrid and tGrid already represent top surfaces.
+            if (Math.abs(nHeight - currentHeight) > 2.0) continue;
 
             const dist = (n.x !== current.x && n.z !== current.z) ? 1.414 : 1.0;
-            const gScore = current.g + dist;
+            let gScore = current.g + dist;
             
-            let neighborInOpen = openSet.find(o => o.x === n.x && o.z === n.z);
+            let neighborInOpen = openSetMap.get(nKey);
             if (!neighborInOpen) {
-                openSet.push({
+                const newNode = {
                     x: n.x,
                     z: n.z,
                     g: gScore,
                     f: gScore + heuristic(n, goalIdx),
                     parent: current
-                });
+                };
+                openSet.push(newNode);
+                openSetMap.set(nKey, newNode);
             } else if (gScore < neighborInOpen.g) {
                 neighborInOpen.g = gScore;
                 neighborInOpen.f = gScore + heuristic(n, goalIdx);

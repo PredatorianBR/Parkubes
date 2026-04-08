@@ -1,11 +1,17 @@
 import React from 'react';
 import * as THREE from 'three';
 
-export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHeight?: number; transparent?: boolean; opacity?: number; roughness?: number; metalness?: number }> = ({ color, showGrid = false, floorHeight = 6.0, transparent = false, opacity = 1.0, roughness = 1.0, metalness = 0.0 }) => {
+export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHeight?: number; transparent?: boolean; opacity?: number; roughness?: number; metalness?: number }> = ({ color, showGrid = false, floorHeight = 6.0, transparent, opacity, roughness = 1.0, metalness = 0.0 }) => {
     const materialRef = React.useRef<THREE.MeshStandardMaterial>(null!);
 
     if (!materialRef.current) {
-        materialRef.current = new THREE.MeshStandardMaterial({ color, transparent, opacity, roughness, metalness });
+        materialRef.current = new THREE.MeshStandardMaterial({ 
+            color, 
+            transparent: transparent ?? false, 
+            opacity: opacity ?? 1.0, 
+            roughness, 
+            metalness 
+        });
         materialRef.current.userData = {
             showGrid: { value: showGrid ? 1.0 : 0.0 },
             floorHeight: { value: floorHeight }
@@ -57,8 +63,8 @@ export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHe
         };
     } else {
         materialRef.current.color.set(new THREE.Color(color));
-        materialRef.current.transparent = transparent;
-        materialRef.current.opacity = opacity;
+        if (transparent !== undefined) materialRef.current.transparent = transparent;
+        if (opacity !== undefined) materialRef.current.opacity = opacity;
         materialRef.current.roughness = roughness;
         materialRef.current.metalness = metalness;
         materialRef.current.userData.showGrid.value = showGrid ? 1.0 : 0.0;

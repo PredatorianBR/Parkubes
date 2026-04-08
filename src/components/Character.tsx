@@ -1,8 +1,8 @@
-
-import React, { useRef } from 'react';
+import React, { useRef, useContext } from 'react';
 import { Html } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { MatchContext } from '../App';
 
 interface CharacterProps {
     groupRef: React.RefObject<THREE.Group>;
@@ -420,6 +420,11 @@ const ParticleEffects: React.FC<{
             <meshBasicMaterial transparent opacity={0.8} />
         </instancedMesh>
     );
+};
+
+export const MatchTimerOverlay: React.FC = () => {
+    const { timer } = useContext(MatchContext);
+    return <>{timer}</>;
 };
 
 export const Character: React.FC<CharacterProps> = ({

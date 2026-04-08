@@ -467,8 +467,8 @@ export const useAIController = (params: UseAIControllerParams) => {
             if (newPath.length > 0) {
                 aiPath.current = newPath;
                 lastPathPos.current.copy(targetPos);
-                // Reduce timer for fugitive when threat is close to allow more frequent path updates
-                pathTimer.current = (!isSeeker && distToThreat < 15.0) ? 0.3 : 1.0;
+                // Increase timer for smoother pathfinding: 0.5s for fugitive near threat, 1.5s otherwise
+                pathTimer.current = (!isSeeker && distToThreat < 15.0) ? 0.5 : 1.5;
             }
         }
 
