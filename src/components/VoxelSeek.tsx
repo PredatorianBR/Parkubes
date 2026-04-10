@@ -31,7 +31,6 @@ interface VoxelSeekProps {
     mode: GameMode;
     match: MatchState;
     settings: GameSettings;
-    timer: number;
     onRoundEnd: (playerWon: boolean) => void;
     onPrepComplete: () => void;
     debugMode?: boolean;
@@ -788,7 +787,6 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     mode,
     match,
     settings,
-    timer,
     onRoundEnd,
     onPrepComplete,
     debugMode,
@@ -873,7 +871,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     
     const pathLineRef = useRef<any>(null!);
     
-    const [aiVisualState, setAiVisualState] = useState({
+    const aiVisualStateRef = useRef({
         isCharging: false,
         isRolling: false,
         isGrounded: true,
@@ -905,7 +903,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     const [mapData, setMapData] = useState<{ objects: VoxelObject[], collisionGrid: SpatialHashGrid, bGrid: number[][], wGrid: number[][], sGrid: number[][], tGrid: number[][], spawnPos: THREE.Vector3, ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[], riverOrientation: number, riverFlow: number, worldSize: number } | null>(null);
 
     // Character Visual State (for animation props)
-    const [visualState, setVisualState] = useState({
+    const visualStateRef = useRef({
         isCharging: false,
         isRolling: false,
         isGrounded: true,
@@ -936,6 +934,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             const spawn = new THREE.Vector2(0, 0);
             const data = generateCityLevel(spawn, settings, mapId, debugMode);
             setMapData(data);
+            (window as any).__PARKUBES_MAP_DATA = data; // Export map data for debug/AI scripts
 
             // Reset Player to Initial Spawn
             playerPos.current.copy(data.spawnPos);
@@ -1020,6 +1019,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     useFrame((state, delta) => {
         if (!mapData) return;
         const dt = Math.min(delta, 0.1);
+        (window as any).__PARKUBES_PLAYER_POS = playerPos.current; // Export player pos
+        (window as any).__PARKUBES_AI_POS = mode === GameMode.HIDE_AND_SEEK ? aiPos.current : null; // Export AI pos
         let playerCanMove = status === GameStatus.PLAYING || status === GameStatus.PREP;
         let aiCanMove = status === GameStatus.PLAYING || status === GameStatus.PREP;
 
@@ -1411,7 +1412,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             aiSmoothedMoveSpeed.current = THREE.MathUtils.lerp(aiSmoothedMoveSpeed.current, aiRawMoveSpeed, dt * 10);
             prevAIPos.current.copy(aiPos.current);
             
-            setAiVisualState({
+            aiVisualStateRef.current = {
                 isCharging: aiPhysicsOutput.isCharging,
                 isRolling: aiPhysicsOutput.isRolling,
                 isGrounded: aiPhysicsOutput.isGrounded,
@@ -1432,7 +1433,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 ladderFaceAngle: aiPhysicsOutput.ladderFaceAngle,
                 isWallClimbing: aiPhysicsOutput.isWallClimbing,
                 wallClimbProgress: aiPhysicsOutput.wallClimbProgress
-            });
+            };
             
             if (aiCatchTriggered) {
                 // If the player was the SEEKER, they caught the AI. True = Player Won
@@ -1502,6 +1503,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         };
 
         // Simple shallow compare
+        const visualState = visualStateRef.current;
         let changed = false;
         if (newVisualState.isCharging !== visualState.isCharging) changed = true;
         else if (newVisualState.isRolling !== visualState.isRolling) changed = true;
@@ -1525,7 +1527,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         else if (Math.abs(newVisualState.wallClimbProgress - visualState.wallClimbProgress) > 0.05) changed = true;
 
         if (changed) {
-            setVisualState(newVisualState);
+            visualStateRef.current = newVisualState;
         }
 
         // Camera Handling
@@ -1645,29 +1647,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                         groupRef={characterGroup}
                         staminaFillRef={staminaFill}
                         staminaGroupRef={staminaGroup}
-                        stunned={visualState.stunned}
-                        isCharging={visualState.isCharging}
-                        isRolling={visualState.isRolling}
-                        isStumbling={visualState.isStumbling}
-                        isRunning={visualState.isRunning}
-                        isMoving={visualState.isMoving}
-                        moveSpeed={visualState.moveSpeed}
-                        isGrounded={visualState.isGrounded}
-                        landingFactor={visualState.landingFactor}
+                        visualStateRef={visualStateRef}
                         stunTimerRef={stunTimer}
                         rollTimerRef={rollTimer}
                         staminaRef={stamina}
-                        currentSurface={visualState.currentSurface}
-                        fallDistance={visualState.fallDistance}
-                        justLanded={visualState.justLanded}
-                        isHiding={visualState.isHiding}
-                        isClimbing={visualState.isClimbing}
-                        isLadderSliding={visualState.isLadderSliding}
-                        isNearLadder={visualState.isNearLadder}
-                        isLadderHanging={visualState.isLadderHanging}
-                        isLadderMounting={visualState.isLadderMounting}
-                        ladderFaceAngle={visualState.ladderFaceAngle}
-                        isWallClimbing={visualState.isWallClimbing}
                         color="#3b82f6"
                         overlayContent={
                             mode === GameMode.HIDE_AND_SEEK && match.phase === 'WAITING' && (
@@ -1687,32 +1670,12 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                         <>
                             <Character
                                 groupRef={aiGroup}
-                                stunned={aiVisualState.stunned}
-                                isCharging={aiVisualState.isCharging}
-                                isRolling={aiVisualState.isRolling}
-                                isStumbling={aiVisualState.isStumbling}
-                                isRunning={aiVisualState.isRunning}
-                                isMoving={aiVisualState.isMoving}
-                                moveSpeed={aiVisualState.moveSpeed}
-                                isGrounded={aiVisualState.isGrounded}
-                                landingFactor={aiVisualState.landingFactor}
+                                visualStateRef={aiVisualStateRef}
                                 stunTimerRef={aiStunTimer}
                                 rollTimerRef={aiRollTimer}
                                 staminaRef={aiStamina}
-                                currentSurface={aiVisualState.currentSurface}
-                                fallDistance={aiVisualState.fallDistance}
-                                justLanded={aiVisualState.justLanded}
-                                isHiding={false}
-                                isClimbing={aiVisualState.isClimbing}
-                                isLadderSliding={aiVisualState.isLadderSliding}
-                                isNearLadder={aiVisualState.isNearLadder}
-                                isLadderHanging={aiVisualState.isLadderHanging}
-                                isLadderMounting={aiVisualState.isLadderMounting}
-                                ladderFaceAngle={aiVisualState.ladderFaceAngle}
-                                isWallClimbing={aiVisualState.isWallClimbing}
-                                wallClimbProgress={aiVisualState.wallClimbProgress}
+                                color="#ef4444"
                                 overlayContent={null}
-                                color="#ef4444" // AI Color
                             />
                             {/* AI Path Visualizer */}
                             <Line

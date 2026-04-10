@@ -1,14 +1,14 @@
 
 import { useRef, useState, useMemo } from 'react';
 import * as THREE from 'three';
-import { GameStatus, GameMode, GameSettings, MatchState } from '../types';
+import { GameStatus, GameMode, GameSettings, MatchState, AIMode } from '../types';
 import { checkLineOfSight, SpatialHashGrid } from '../utils/physics';
 import { computeAIPath } from '../utils/navigation';
 import { updatePlayerPhysics } from '../utils/player';
 
 // --- Interfaces ---
 
-export interface AIVisualState {
+interface AIVisualState {
     isCharging: boolean;
     isRolling: boolean;
     isGrounded: boolean;
@@ -32,7 +32,7 @@ export interface AIVisualState {
     isHiding: boolean;
     isSearching: boolean;
     stamina: number;
-    aiMode: string;
+    aiMode: AIMode;
 }
 
 interface MapData {
@@ -80,7 +80,7 @@ const DEFAULT_AI_VISUAL_STATE: AIVisualState = {
     isHiding: false,
     isSearching: false,
     stamina: 100,
-    aiMode: 'AGUARDANDO'
+    aiMode: AIMode.AGUARDANDO
 };
 
 export const useAIController = (params: UseAIControllerParams) => {
@@ -130,6 +130,7 @@ export const useAIController = (params: UseAIControllerParams) => {
     const aiSearchTarget = useRef<THREE.Vector3 | null>(null);
     const aiSearchTimer = useRef(0);
     const aiWasVisible = useRef(false);
+    const aiSearchWaypoints = useRef<THREE.Vector3[]>([]);
 
     // --- Spawn ---
     const aiStartPos = useRef(new THREE.Vector3(0, 0, 0));
@@ -262,8 +263,11 @@ export const useAIController = (params: UseAIControllerParams) => {
             lastKnownMarkerRef.current.visible = false;
         }
 
-        // --- AI PATHFINDING LOGIC ---
+        // --- TIMERS ---
         pathTimer.current -= dt;
+        if (aiNudgeTimer.current > 0) aiNudgeTimer.current -= dt;
+
+        // --- AI PATHFINDING LOGIC ---
         let targetPos: THREE.Vector3 | null = null;
         let distToThreat = 0;
 
@@ -284,47 +288,44 @@ export const useAIController = (params: UseAIControllerParams) => {
         if (isSeeker) {
             if (isVisible) {
                 targetPos = playerPos.current;
-                currentMode = 'PERSEGUIÇÃO';
+                currentMode = AIMode.PERSEGUIÇÃO;
             } else if (isAISearching.current) {
-                currentMode = 'BUSCA';
-                if (!aiSearchTarget.current) {
+                currentMode = AIMode.BUSCA;
+                
+                // --- IMPROVED SEARCH LOGIC ---
+                // If we don't have waypoints, generate them in a pattern
+                if (aiSearchWaypoints.current.length === 0) {
                     const anchor = lastKnownPlayerPos.current || aiPos.current;
-                    const baseAngle = Math.atan2(aiLastDir.current.x, aiLastDir.current.y);
-                    const angleOffset = (Math.random() - 0.5) * Math.PI;
-                    const angle = baseAngle + angleOffset;
-                    const radius = 8 + Math.random() * 15;
                     const halfSize = Math.floor(settings.worldSize / 2);
-                    const rawTarget = _v1.current.set(
-                        THREE.MathUtils.clamp(anchor.x + Math.sin(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN),
-                        0,
-                        THREE.MathUtils.clamp(anchor.z + Math.cos(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN)
-                    );
-                    aiSearchTarget.current = rawTarget.clone();
-                }
-                targetPos = aiSearchTarget.current;
-
-                aiSearchTimer.current += dt;
-                const distToSearch = aiPos.current.distanceTo(targetPos);
-                if (distToSearch < 2.0 || aiSearchTimer.current > 10.0) {
-                    const currentVel = aiVel.current.lengthSq();
-                    const baseAngle = Math.atan2(aiLastDir.current.x, aiLastDir.current.y);
-                    const angleSpread = currentVel > 0.5 ? Math.PI : Math.PI * 2;
-                    const angleOffset = (Math.random() - 0.5) * angleSpread;
-                    const angle = baseAngle + angleOffset;
                     
-                    const radius = 10 + Math.random() * 15;
-                    const halfSize = Math.floor(settings.worldSize / 2);
-                    aiSearchTarget.current.set(
-                        THREE.MathUtils.clamp(aiPos.current.x + Math.sin(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN),
-                        0,
-                        THREE.MathUtils.clamp(aiPos.current.z + Math.cos(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN)
-                    );
-                    aiSearchTimer.current = 0;
-                    aiPath.current = [];
+                    // Create 5 random points in a search radius
+                    for (let i = 0; i < 5; i++) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const radius = 5 + Math.random() * 15;
+                        const target = new THREE.Vector3(
+                            THREE.MathUtils.clamp(anchor.x + Math.sin(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN),
+                            0,
+                            THREE.MathUtils.clamp(anchor.z + Math.cos(angle) * radius, -halfSize + SAFE_MARGIN, halfSize - SAFE_MARGIN)
+                        );
+                        aiSearchWaypoints.current.push(target);
+                    }
+                }
+                
+                // Pick the next waypoint
+                if (aiSearchWaypoints.current.length > 0) {
+                    targetPos = aiSearchWaypoints.current[0];
+                    if (aiPos.current.distanceTo(targetPos) < 3.0) {
+                        aiSearchWaypoints.current.shift();
+                        aiPath.current = []; // Force re-path to new target
+                    }
+                } else {
+                    // Waypoints exhausted, just wander
+                    isAISearching.current = true;
+                    aiSearchWaypoints.current = [];
                 }
             } else {
                 targetPos = lastKnownPlayerPos.current;
-                currentMode = 'RUMO À ÚLTIMA POSIÇÃO';
+                currentMode = AIMode.BUSCA; // Simplified mode for "Going to last known position"
                 
                 if (targetPos) {
                     const distToLastSeen = aiPos.current.distanceTo(targetPos);
@@ -363,16 +364,16 @@ export const useAIController = (params: UseAIControllerParams) => {
             const canTransitionState = aiStateLockTimer.current <= 0;
 
             // Force RUN mode immediately if in game and fugitive
-            if (match.phase === 'WAITING' && !isSeeker && currentMode === 'AGUARDANDO') {
-                currentMode = 'RUN';
+            if (match.phase === 'WAITING' && !isSeeker && currentMode === AIMode.AGUARDANDO) {
+                currentMode = AIMode.RUN;
             }
 
             const shouldRun = isVisible || distToThreat < 18.0;
 
             // Modes: RUN if visible OR near threat, HIDE if far enough AND not seen
             if (shouldRun) {
-                if (canTransitionState || currentMode === 'RUN') {
-                    currentMode = 'RUN';
+                if (canTransitionState || currentMode === AIMode.RUN) {
+                    currentMode = AIMode.RUN;
                     if (aiIsHiding.current) aiStateLockTimer.current = 0.8;
                     aiIsHiding.current = false;
                 }
@@ -385,13 +386,31 @@ export const useAIController = (params: UseAIControllerParams) => {
                 corners[2].set(cornerDist, 0, -cornerDist);
                 corners[3].set(cornerDist, 0, cornerDist);
                 
-                // Sort corners by distance to threat
-                corners.sort((a, b) => b.distanceTo(threatCenter) - a.distanceTo(threatCenter));
+                // Sort corners by a combination of target distance from threat 
+                // AND how far the direct path is from the threat
+                corners.sort((a, b) => {
+                    const distA = a.distanceTo(threatCenter);
+                    const distB = b.distanceTo(threatCenter);
+                    
+                    // Simple distance-to-segment (aiPos -> corner) check for threat avoidance
+                    const getPathClearance = (corner: THREE.Vector3) => {
+                        const line = _v1.current.subVectors(corner, aiPos.current);
+                        const lenSq = line.lengthSq();
+                        if (lenSq === 0) return aiPos.current.distanceTo(threatCenter);
+                        
+                        const t = Math.max(0, Math.min(1, _v2.current.subVectors(threatCenter, aiPos.current).dot(line) / lenSq));
+                        const projection = _v3.current.copy(aiPos.current).addScaledVector(line, t);
+                        return threatCenter.distanceTo(projection);
+                    };
+
+                    const scoreA = distA + getPathClearance(a) * 2.0;
+                    const scoreB = distB + getPathClearance(b) * 2.0;
+                    return scoreB - scoreA;
+                });
                 
-                // If we are already very close to the furthest corner but the threat is still near, 
-                // pick the second furthest corner to keep moving
+                // If the best corner is still somehow bad or we are close to it, try to maintain movement
                 const distToPrimary = aiPos.current.distanceTo(corners[0]);
-                if (distToPrimary < 5.0 && distToThreat < 15.0) {
+                if (distToPrimary < 5.0 && distToThreat < 20.0) {
                     targetPos = corners[1];
                 } else {
                     targetPos = corners[0];
@@ -400,8 +419,8 @@ export const useAIController = (params: UseAIControllerParams) => {
                 // Manage Run Input based on Hysteresis
                 aiInput.run = aiStaminaHysteresisActive.current;
             } else {
-                if (canTransitionState || currentMode === 'HIDE') {
-                    currentMode = 'HIDE';
+                if (canTransitionState || currentMode === AIMode.HIDE) {
+                    currentMode = AIMode.HIDE;
                     if (!aiIsHiding.current) aiStateLockTimer.current = 0.5;
                 }
                 
@@ -418,9 +437,20 @@ export const useAIController = (params: UseAIControllerParams) => {
                         const size = Math.max(coverObj.maxX - coverObj.minX, coverObj.maxZ - coverObj.minZ);
                         
                         const hideSpot = _v3.current.copy(coverCenter).addScaledVector(dirFromThreat, size / 2 + 2.0);
-                        targetPos = hideSpot;
+                        
+                        // --- IMPROVED HIDING LOGIC: LOS CHECK ---
+                        const hideSpotEye = _v4.current.set(hideSpot.x, aiPos.current.y + 1.5, hideSpot.z);
+                        const threatEye = _v5.current.set(threatCenter.x, threatCenter.y + 1.5, threatCenter.z);
+                        const isSafe = !checkLineOfSight(hideSpotEye, threatEye, mapData.collisionGrid);
+                        
+                        if (isSafe) {
+                            targetPos = hideSpot;
+                        } else {
+                            // If not safe, look for another spot or move further away
+                            targetPos = null;
+                        }
 
-                        if (aiPos.current.distanceTo(hideSpot) < 2.0) {
+                        if (targetPos && aiPos.current.distanceTo(targetPos) < 2.0) {
                             aiIsHiding.current = true;
                             aiInput.moveDir.set(0, 0, 0);
                             aiInput.run = false;
@@ -448,6 +478,22 @@ export const useAIController = (params: UseAIControllerParams) => {
         // --- PATHFINDING TRIGGER ---
         // Se temos um alvo mas não temos um caminho, ou o alvo mudou demais, recalcula.
         let needsNewPath = aiPath.current.length === 0 || pathTimer.current <= 0;
+
+        // PATH INTERCEPTION CHECK: Se o buscador entrar no caminho planejado, recalcula IMEDIATAMENTE
+        if (!isSeeker && aiPath.current.length > 0) {
+            const INTERCEPTION_RADIUS = 5.0; // Desvio proativo
+            const seekerPos = playerPos.current;
+            
+            // Verifica apenas os próximos waypoints para evitar oscilação excessiva
+            const waypointsToCheck = Math.min(aiPath.current.length, 12);
+            for (let i = 0; i < waypointsToCheck; i++) {
+                if (aiPath.current[i].distanceTo(seekerPos) < INTERCEPTION_RADIUS) {
+                    needsNewPath = true;
+                    pathTimer.current = 0; // Força recálculo no próximo passo
+                    break;
+                }
+            }
+        }
         if (targetPos) {
             const distToLastPathTarget = lastPathPos.current.distanceTo(targetPos);
             // Reduzi a tolerância de mudança de alvo para 1.5 para IA ser mais responsiva
@@ -525,6 +571,7 @@ export const useAIController = (params: UseAIControllerParams) => {
                 // Se a IA é caçadora, ela espera imóvel
                 aiInput.moveDir.set(0, 0, 0);
                 aiInput.run = false;
+                currentMode = AIMode.AGUARDANDO;
             }
         }
 
@@ -533,7 +580,10 @@ export const useAIController = (params: UseAIControllerParams) => {
             aiCatchTriggered = true;
         }
 
-        if (!isSeeker && match.phase === 'HUNTING' && aiInput.moveDir.lengthSq() > 0 && aiPath.current.length === 0) {
+        // Lógica de cobertura oportunista: SÓ se aplica quando a ameaça está longe E a IA NÃO está visível.
+        // Quando está sendo perseguida, a prioridade absoluta é fugir, não se esconder.
+        const threatIsFar = !isSeeker && aiPos.current.distanceTo(playerPos.current) > 12.0;
+        if (!isSeeker && match.phase === 'HUNTING' && aiInput.moveDir.lengthSq() > 0 && aiPath.current.length === 0 && threatIsFar && !isVisible) {
             const nearbyObjects = mapData.collisionGrid.query(aiPos.current.x, aiPos.current.z, 8.0);
             if (nearbyObjects.length > 0) {
                 const cover = nearbyObjects.find((b: any) => b.maxY > Math.max(aiPos.current.y, 1.0) + 2.0 && b.minY <= aiPos.current.y + 0.5);
@@ -606,7 +656,9 @@ export const useAIController = (params: UseAIControllerParams) => {
         const halfSize = Math.floor(settings.worldSize / 2);
         const nearEdge = Math.abs(aiPos.current.x) >= halfSize - 4.0 || Math.abs(aiPos.current.z) >= halfSize - 4.0;
         
-        const stuckThreshold = nearEdge ? 1.0 : 1.5;
+        // Stuck threshold dinâmico: reage muito mais rápido quando em perigo
+        const isUnderPressure = !isSeeker && (isVisible || aiPos.current.distanceTo(playerPos.current) < 15.0);
+        const stuckThreshold = isUnderPressure ? 0.4 : (nearEdge ? 0.8 : 1.2);
 
         if (aiInput.moveDir.lengthSq() > 0 && aiVelocitySq < 0.25) {
             aiStuckTimer.current += dt;
@@ -614,18 +666,47 @@ export const useAIController = (params: UseAIControllerParams) => {
                 if (nearEdge) {
                     aiInput.moveDir.set(-aiPos.current.x, 0, -aiPos.current.z).normalize();
                     aiInput.jump = true;
-                    aiNudgeTimer.current = 1.0;
+                    aiNudgeTimer.current = 0.6;
                 } else {
-                    const angle = Math.random() * Math.PI * 2;
-                    aiInput.moveDir.set(Math.cos(angle), 0, Math.sin(angle));
+                    // Nudge inteligente: foge PARA LONGE do buscador, não em direção aleatória
+                    const escapeDir = _v1.current.subVectors(aiPos.current, playerPos.current);
+                    escapeDir.y = 0;
+                    if (escapeDir.lengthSq() > 0.01) {
+                        escapeDir.normalize();
+                        // Adiciona variação lateral (±45°) para não ficar em linha reta
+                        const lateralAngle = (Math.random() - 0.5) * Math.PI * 0.5;
+                        const cos = Math.cos(lateralAngle);
+                        const sin = Math.sin(lateralAngle);
+                        const rx = escapeDir.x * cos - escapeDir.z * sin;
+                        const rz = escapeDir.x * sin + escapeDir.z * cos;
+                        aiInput.moveDir.set(rx, 0, rz).normalize();
+                    } else {
+                        const angle = Math.random() * Math.PI * 2;
+                        aiInput.moveDir.set(Math.cos(angle), 0, Math.sin(angle));
+                    }
                     aiInput.jump = true;
-                    aiNudgeTimer.current = 0.5;
+                    aiNudgeTimer.current = 0.4;
                 }
                 aiStuckTimer.current = 0;
                 aiPath.current = [];
             }
         } else {
             aiStuckTimer.current = 0;
+        }
+        // --- ANTI-PARALISIA: Forçar liberação de escada quando em modo de fuga ---
+        // A IA fugitiva não deve ficar presa em escadas. Se estiver em estado de ladder
+        // e precisar fugir, forçar a liberação do estado.
+        const isOnLadder = aiLadderState.current.isClimbing || aiLadderState.current.isLadderSliding || 
+                           aiLadderState.current.isLadderHanging || aiLadderState.current.isLadderMounting;
+        if (!isSeeker && isOnLadder && (currentMode === AIMode.RUN || isVisible)) {
+            // Forçar liberação da escada
+            aiLadderState.current.isClimbing = false;
+            aiLadderState.current.isLadderSliding = false;
+            aiLadderState.current.isLadderHanging = false;
+            aiLadderState.current.isLadderMounting = false;
+            aiLadderState.current.ladderMountTimer = 0;
+            // Saltar para longe da escada em direção oposta ao buscador
+            aiInput.jump = true;
         }
 
         const aiPhysicsOutput = updatePlayerPhysics(
@@ -642,6 +723,47 @@ export const useAIController = (params: UseAIControllerParams) => {
 
         if (aiGroup.current) {
             aiGroup.current.position.copy(aiPos.current);
+
+            // --- ANTI-PARALISIA PÓS-FÍSICA: Detecção de velocidade zero absoluta ---
+            // Se a IA está tentando se mover mas está completamente parada (velocidade ~0),
+            // e o buscador está perto, forçar salto de emergência para longe.
+            const postPhysicsVelSq = aiVel.current.x * aiVel.current.x + aiVel.current.z * aiVel.current.z;
+            const aiWantsToMove = aiInput.moveDir.lengthSq() > 0.01;
+            const isParalyzed = aiWantsToMove && postPhysicsVelSq < 0.1 && isAIGrounded.current;
+            
+            if (!isSeeker && isParalyzed) {
+                aiStuckTimer.current += dt;
+                // Limiar ultra-agressivo: 0.3s de paralisia total = emergência
+                if (aiStuckTimer.current > 0.3 && aiPos.current.distanceTo(playerPos.current) < 20.0) {
+                    // Forçar liberação de QUALQUER estado que possa prender
+                    aiLadderState.current.isClimbing = false;
+                    aiLadderState.current.isLadderSliding = false;
+                    aiLadderState.current.isLadderHanging = false;
+                    aiLadderState.current.isLadderMounting = false;
+                    aiLadderState.current.ladderMountTimer = 0;
+                    
+                    // Salto de emergência para longe do buscador
+                    const emergencyDir = _v1.current.subVectors(aiPos.current, playerPos.current);
+                    emergencyDir.y = 0;
+                    if (emergencyDir.lengthSq() > 0.01) {
+                        emergencyDir.normalize();
+                        // Variação lateral para evitar loop
+                        const lat = (Math.random() - 0.5) * Math.PI * 0.6;
+                        const c = Math.cos(lat), s = Math.sin(lat);
+                        aiVel.current.set(
+                            (emergencyDir.x * c - emergencyDir.z * s) * 8.0,
+                            12.0, // Salto vertical forte
+                            (emergencyDir.x * s + emergencyDir.z * c) * 8.0
+                        );
+                    } else {
+                        aiVel.current.set(0, 12.0, 0);
+                    }
+                    isAIGrounded.current = false;
+                    aiStuckTimer.current = 0;
+                    aiPath.current = [];
+                    aiNudgeTimer.current = 0.5;
+                }
+            }
 
             const isAIOtherLadder = aiPhysicsOutput.isClimbing || aiPhysicsOutput.isLadderSliding || aiPhysicsOutput.isLadderHanging || aiPhysicsOutput.isLadderMounting;
             if (isAIOtherLadder) {
@@ -668,7 +790,7 @@ export const useAIController = (params: UseAIControllerParams) => {
         prevAIPos.current.copy(aiPos.current);
 
         if (aiStunTimer.current > 0) {
-            currentMode = 'ATORDUADO';
+            currentMode = AIMode.ATORDUADO;
         }
 
         setAiVisualState({

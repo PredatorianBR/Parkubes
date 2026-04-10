@@ -9,6 +9,7 @@ interface CharacterProps {
     staminaFillRef?: React.RefObject<HTMLDivElement>;
     staminaGroupRef?: React.RefObject<HTMLDivElement>;
     overlayContent?: React.ReactNode;
+    visualStateRef?: React.MutableRefObject<any>;
     stunned?: boolean;
     isCharging?: boolean;
     isRolling?: boolean;
@@ -51,7 +52,8 @@ const ParticleEffects: React.FC<{
     isTiredBreathingRef?: React.MutableRefObject<boolean>;
     isRolling: boolean;
     moveSpeed: number;
-}> = ({ isRunning, isMoving, isGrounded, currentSurface, staminaRef, landingFactor, playerGroup, stunned, fallDistance, justLanded, isTiredBreathingRef, isRolling, moveSpeed }) => {
+    visualStateRef?: React.MutableRefObject<any>;
+}> = ({ isRunning: _isRunning, isMoving: _isMoving, isGrounded: _isGrounded, currentSurface: _currentSurface, staminaRef, landingFactor: _landingFactor, playerGroup, stunned: _stunned, fallDistance: _fallDistance, justLanded: _justLanded, isTiredBreathingRef, isRolling: _isRolling, moveSpeed: _moveSpeed, visualStateRef }) => {
     const meshRef = useRef<THREE.InstancedMesh>(null!);
     const particles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; color: THREE.Color; scale: number; active: boolean }[]>([]);
     const dummy = React.useMemo(() => new THREE.Object3D(), []);
@@ -89,6 +91,18 @@ const ParticleEffects: React.FC<{
 
     useFrame((state, delta) => {
         if (!meshRef.current || !playerGroup.current) return;
+        
+        const vs = visualStateRef?.current || {};
+        const isRunning = vs.isRunning ?? _isRunning;
+        const isMoving = vs.isMoving ?? _isMoving;
+        const isGrounded = vs.isGrounded ?? _isGrounded;
+        const currentSurface = vs.currentSurface ?? _currentSurface;
+        const landingFactor = vs.landingFactor ?? _landingFactor;
+        const stunned = vs.stunned ?? _stunned;
+        const fallDistance = vs.fallDistance ?? _fallDistance;
+        const justLanded = vs.justLanded ?? _justLanded;
+        const isRolling = vs.isRolling ?? _isRolling;
+        const moveSpeed = vs.moveSpeed ?? _moveSpeed;
 
         // SPAWN LOGIC
 
@@ -432,35 +446,38 @@ export const Character: React.FC<CharacterProps> = ({
     staminaFillRef,
     staminaGroupRef,
     overlayContent,
-    stunned = false,
-    isCharging = false,
-    isRolling = false,
-    isStumbling = false,
-    isRunning = false,
-    isMoving = false,
-    moveSpeed = 0,
-    isGrounded = true,
-    landingFactor = 0,
+    visualStateRef,
+    stunned: _stunned = false,
+    isCharging: _isCharging = false,
+    isRolling: _isRolling = false,
+    isStumbling: _isStumbling = false,
+    isRunning: _isRunning = false,
+    isMoving: _isMoving = false,
+    moveSpeed: _moveSpeed = 0,
+    isGrounded: _isGrounded = true,
+    landingFactor: _landingFactor = 0,
     stunTimerRef,
     rollTimerRef,
-    isHiding = false,
+    isHiding: _isHiding = false,
     staminaRef,
-    currentSurface = 0,
-    fallDistance = 0,
-    justLanded = false,
-    isClimbing = false,
-    isLadderSliding = false,
-    isNearLadder = false,
-    isLadderHanging = false,
-    isLadderMounting = false,
-    ladderFaceAngle = 0,
-    isWallClimbing = false,
-    wallClimbProgress = 0,
+    currentSurface: _currentSurface = 0,
+    fallDistance: _fallDistance = 0,
+    justLanded: _justLanded = false,
+    isClimbing: _isClimbing = false,
+    isLadderSliding: _isLadderSliding = false,
+    isNearLadder: _isNearLadder = false,
+    isLadderHanging: _isLadderHanging = false,
+    isLadderMounting: _isLadderMounting = false,
+    ladderFaceAngle: _ladderFaceAngle = 0,
+    isWallClimbing: _isWallClimbing = false,
+    wallClimbProgress: _wallClimbProgress = 0,
     waterExitTimerRef,
     color = '#1f91db' // Default character color (blue)
 }) => {
-    const headColor = stunned ? '#9ca3af' : color;
-    const bodyColor = stunned ? '#4b5563' : new THREE.Color(color).clone().multiplyScalar(0.8).getStyle();
+    const stunIndicatorRef = useRef<HTMLDivElement>(null!);
+    const bodyColorNormal = new THREE.Color(color).clone().multiplyScalar(0.8).getStyle();
+    const headColor = color;
+    const bodyColor = bodyColorNormal;
 
     // Internal refs for animation parts
     const modelGroup = useRef<THREE.Group>(null!);
@@ -516,6 +533,29 @@ export const Character: React.FC<CharacterProps> = ({
     const wallClimbRecoveryTimer = useRef(0);
 
     useFrame((state, delta) => {
+        const vs = visualStateRef?.current || {};
+        const stunned = vs.stunned ?? _stunned;
+        const isCharging = vs.isCharging ?? _isCharging;
+        const isRolling = vs.isRolling ?? _isRolling;
+        const isStumbling = vs.isStumbling ?? _isStumbling;
+        const isRunning = vs.isRunning ?? _isRunning;
+        const isMoving = vs.isMoving ?? _isMoving;
+        const moveSpeed = vs.moveSpeed ?? _moveSpeed;
+        const isGrounded = vs.isGrounded ?? _isGrounded;
+        const landingFactor = vs.landingFactor ?? _landingFactor;
+        const isHiding = vs.isHiding ?? _isHiding;
+        const currentSurface = vs.currentSurface ?? _currentSurface;
+        const fallDistance = vs.fallDistance ?? _fallDistance;
+        const justLanded = vs.justLanded ?? _justLanded;
+        const isClimbing = vs.isClimbing ?? _isClimbing;
+        const isLadderSliding = vs.isLadderSliding ?? _isLadderSliding;
+        const isNearLadder = vs.isNearLadder ?? _isNearLadder;
+        const isLadderHanging = vs.isLadderHanging ?? _isLadderHanging;
+        const isLadderMounting = vs.isLadderMounting ?? _isLadderMounting;
+        const ladderFaceAngle = vs.ladderFaceAngle ?? _ladderFaceAngle;
+        const isWallClimbing = vs.isWallClimbing ?? _isWallClimbing;
+        const wallClimbProgress = vs.wallClimbProgress ?? _wallClimbProgress;
+
         const stunTimeLeft = stunTimerRef?.current || 0;
         const time = state.clock.getElapsedTime();
 
@@ -1269,25 +1309,38 @@ export const Character: React.FC<CharacterProps> = ({
             // Eye blink: scale Y of the eyes group
             eyesMesh.current.scale.y = THREE.MathUtils.lerp(eyesMesh.current.scale.y, eyeBlinkScale, delta * 40);
         }
+
+        if (headMesh.current) {
+            const hMat = headMesh.current.material as THREE.MeshStandardMaterial;
+            if (hMat) hMat.color.set(stunned ? '#9ca3af' : color);
+        }
+        if (bodyMesh.current) {
+            const bMat = bodyMesh.current.material as THREE.MeshStandardMaterial;
+            if (bMat) bMat.color.set(stunned ? '#4b5563' : bodyColorNormal);
+        }
+        if (stunIndicatorRef.current) {
+            stunIndicatorRef.current.style.display = stunned ? 'block' : 'none';
+        }
     });
 
 
     return (
         <>
             <ParticleEffects
-                isRunning={isRunning}
-                isMoving={isMoving}
-                isGrounded={isGrounded}
-                currentSurface={currentSurface}
+                visualStateRef={visualStateRef}
+                isRunning={_isRunning}
+                isMoving={_isMoving}
+                isGrounded={_isGrounded}
+                currentSurface={_currentSurface}
                 staminaRef={staminaRef}
-                landingFactor={landingFactor}
+                landingFactor={_landingFactor}
                 playerGroup={groupRef}
-                stunned={stunned}
-                fallDistance={fallDistance}
-                justLanded={justLanded}
+                stunned={_stunned}
+                fallDistance={_fallDistance}
+                justLanded={_justLanded}
                 isTiredBreathingRef={isTiredBreathing}
-                isRolling={isRolling}
-                moveSpeed={moveSpeed}
+                isRolling={_isRolling}
+                moveSpeed={_moveSpeed}
             />
             <group ref={groupRef}>
                 {/* UI Elements */}
@@ -1298,11 +1351,9 @@ export const Character: React.FC<CharacterProps> = ({
                 )}
 
                 {/* Stun Indicator - Show during the entire stun sequence */}
-                {stunned && (
-                    <Html position={[0, 4.6, 0]} center style={{ pointerEvents: 'none', zIndex: 100 }}>
-                        <div className="text-xl animate-spin">💫</div>
-                    </Html>
-                )}
+                <Html position={[0, 4.6, 0]} center style={{ pointerEvents: 'none', zIndex: 100 }}>
+                    <div ref={stunIndicatorRef} style={{ display: 'none' }} className="text-xl animate-spin">💫</div>
+                </Html>
 
                 {/* Stamina Bar */}
                 {staminaGroupRef && staminaFillRef && (
@@ -1324,7 +1375,7 @@ export const Character: React.FC<CharacterProps> = ({
                                 style={{
                                     width: '100%',
                                     height: '100%',
-                                    background: stunned ? '#9ca3af' : '#fbbf24',
+                                    background: _stunned ? '#9ca3af' : '#fbbf24',
                                     transition: 'width 0.1s linear, background-color 0.2s'
                                 }}
                             />

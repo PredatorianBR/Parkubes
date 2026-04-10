@@ -18,6 +18,15 @@ export enum GameMode {
   HIDE_AND_SEEK = 'HIDE_AND_SEEK'
 }
 
+export enum AIMode {
+    AGUARDANDO = 'AGUARDANDO',
+    PERSEGUIÇÃO = 'PERSEGUIÇÃO',
+    BUSCA = 'BUSCA',
+    RUN = 'RUN',
+    HIDE = 'HIDE',
+    ATORDUADO = 'ATORDUADO'
+}
+
 export interface PhysicsState {
   pos: THREE.Vector3;
   vel: THREE.Vector3;

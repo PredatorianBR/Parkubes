@@ -111,6 +111,22 @@ export function computeAIPath(
                     f: gScore + heuristic(n, goalIdx),
                     parent: current
                 };
+
+                // Apply Threat Avoidance Penalty
+                if (threatGridPos) {
+                    const dx = n.x - threatGridPos.x;
+                    const dz = n.z - threatGridPos.z;
+                    const distToThreat = Math.sqrt(dx * dx + dz * dz);
+                    const safeRadius = 10.0; // Avoidance radius in grid units
+                    
+                    if (distToThreat < safeRadius) {
+                        // Exponential penalty the closer it is
+                        const penalty = Math.pow((safeRadius - distToThreat) / safeRadius, 2) * 200.0;
+                        newNode.g += penalty;
+                        newNode.f += penalty;
+                    }
+                }
+
                 openSet.push(newNode);
                 openSetMap.set(nKey, newNode);
             } else if (gScore < neighborInOpen.g) {

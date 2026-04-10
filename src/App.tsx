@@ -126,7 +126,6 @@ const GameLayout: React.FC<{
             mode={mode}
             match={match}
             settings={settings}
-            timer={match.phase === 'WAITING' ? matchTimer : 0}
             onRoundEnd={handleRoundEnd}
             onPrepComplete={handlePrepComplete}
             debugMode={debugMode}
