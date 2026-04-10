@@ -18,14 +18,7 @@ export enum GameMode {
   HIDE_AND_SEEK = 'HIDE_AND_SEEK'
 }
 
-export enum AIMode {
-    AGUARDANDO = 'AGUARDANDO',
-    PERSEGUIÇÃO = 'PERSEGUIÇÃO',
-    BUSCA = 'BUSCA',
-    RUN = 'RUN',
-    HIDE = 'HIDE',
-    ATORDUADO = 'ATORDUADO'
-}
+
 
 export interface PhysicsState {
   pos: THREE.Vector3;
@@ -131,9 +124,6 @@ export interface MatchState {
   currentRound: number;
   maxRounds: number;
   scorePlayer: number;
-  scoreAI?: number;
-  playerRole?: 'SEEKER' | 'HIDER';
-  phase?: 'WAITING' | 'HUNTING';
   timer: number;
 }
 

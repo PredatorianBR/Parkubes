@@ -52,22 +52,18 @@ const GameLayout: React.FC<{
   mapId: number;
   handleRoundEnd: (playerWon: boolean) => void;
   handlePrepComplete: () => void;
-  onPhaseChange: (newPhase: 'HUNTING' | 'OVER', scoreUpdates?: { player: number, ai: number }) => void;
   gameInterfaceProps: any;
 }> = React.memo(({ 
   status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, isEditing, mapId,
-  handleRoundEnd, handlePrepComplete, onPhaseChange, gameInterfaceProps
+  handleRoundEnd, handlePrepComplete, gameInterfaceProps
 }) => {
   const [matchTimer, setMatchTimer] = useState(0);
 
-  // Sync initial timer when phase/status changes at App level
   useEffect(() => {
-    if (status === GameStatus.PREP || match.phase === 'WAITING') {
+    if (status === GameStatus.PREP) {
       setMatchTimer(3);
-    } else if (match.phase === 'HUNTING') {
-      setMatchTimer(30);
     }
-  }, [status, match.phase, match.currentRound]);
+  }, [status, match.currentRound]);
 
   // Timer decrement: simple interval that only updates local matchTimer
   useEffect(() => {
@@ -76,15 +72,7 @@ const GameLayout: React.FC<{
     const interval = setInterval(() => {
       setMatchTimer(t => {
         if (t <= 1) {
-          // Trigger phase transition logic in parent only when timer hits 0
-          if (match.phase === 'WAITING') {
-             onPhaseChange('HUNTING');
-          } else if (match.phase === 'HUNTING') {
-             const playerIsHider = match.playerRole === 'HIDER';
-             const newScorePlayer = playerIsHider ? 1 : 0;
-             const newScoreAI = !playerIsHider ? 1 : 0;
-             onPhaseChange('OVER', { player: newScorePlayer, ai: newScoreAI });
-          }
+          handleRoundEnd(true);
           return 0;
         }
         return t - 1;
@@ -92,7 +80,7 @@ const GameLayout: React.FC<{
     }, 1000);
     
     return () => clearInterval(interval);
-  }, [status, mode, match.phase, onPhaseChange, match.playerRole]);
+  }, [status, mode, handleRoundEnd]);
 
   const shadowSize = settings.worldSize * 1.5;
 
@@ -159,9 +147,6 @@ const App: React.FC = () => {
       currentRound: 1,
       maxRounds: 4,
       scorePlayer: 0,
-      scoreAI: 0,
-      playerRole: 'SEEKER',
-      phase: 'WAITING',
       timer: 0 
     },
     taunt: "Pratique seu parkour!",
@@ -201,9 +186,6 @@ const App: React.FC = () => {
         ...prev.match, 
         currentRound: 1, 
         scorePlayer: 0, 
-        scoreAI: 0, 
-        playerRole: 'SEEKER',
-        phase: 'WAITING',
         timer: 3 
       }
     }));
@@ -217,9 +199,6 @@ const App: React.FC = () => {
         ...prev.match, 
         currentRound: 1, 
         scorePlayer: 0, 
-        scoreAI: 0, 
-        playerRole: 'SEEKER',
-        phase: 'WAITING',
         timer: 3
       },
       mapId: prev.mapId + 1
@@ -240,7 +219,6 @@ const App: React.FC = () => {
       status: GameStatus.PREP,
       match: {
         ...prev.match,
-        phase: 'WAITING',
         timer: 3
       }
     }));
@@ -297,8 +275,6 @@ const App: React.FC = () => {
         match: { 
           ...prev.match, 
           currentRound: nextRound,
-          playerRole: nextRound % 2 === 0 ? 'HIDER' : 'SEEKER',
-          phase: 'WAITING',
           timer: 3
         }
       };
@@ -308,46 +284,16 @@ const App: React.FC = () => {
   const handleRoundEnd = useCallback((playerWon: boolean) => {
     setGameState(prev => {
       const newScorePlayer = playerWon ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
-      const newScoreAI = !playerWon ? (prev.match.scoreAI ?? 0) + 1 : prev.match.scoreAI;
       const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
       return {
         ...prev, 
         status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
         match: { 
           ...prev.match, 
-          scorePlayer: newScorePlayer,
-          scoreAI: newScoreAI
+          scorePlayer: newScorePlayer
         }
       };
     });
-  }, []);
-
-  const handlePhaseChange = useCallback((newPhase: 'HUNTING' | 'OVER', scoreUpdates?: { player: number, ai: number }) => {
-      setGameState(prev => {
-          if (newPhase === 'HUNTING') {
-              return {
-                  ...prev,
-                  match: { ...prev.match, phase: 'HUNTING', timer: 30 }
-              };
-          } else {
-              // Finish hunting (time is up) -> Round Over
-              const playerWon = scoreUpdates?.player === 1;
-              const newScorePlayer = prev.match.scorePlayer + (scoreUpdates?.player ?? 0);
-              const newScoreAI = (prev.match.scoreAI ?? 0) + (scoreUpdates?.ai ?? 0);
-              const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
-              
-              return {
-                ...prev,
-                status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
-                match: {
-                  ...prev.match,
-                  timer: 0,
-                  scorePlayer: newScorePlayer,
-                  scoreAI: newScoreAI
-                }
-              };
-          }
-      });
   }, []);
 
   const handlePrepComplete = useCallback(() => {
@@ -396,7 +342,6 @@ const App: React.FC = () => {
         mapId={gameState.mapId}
         handleRoundEnd={handleRoundEnd}
         handlePrepComplete={handlePrepComplete}
-        onPhaseChange={handlePhaseChange}
         gameInterfaceProps={{
           gameState,
           debugMode, setDebugMode,
