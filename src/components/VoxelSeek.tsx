@@ -904,6 +904,49 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         }
     }, [status, mapData]); // Triggers on status change (Respawn/Iniciar) or Map change
 
+    // Handle Camera Free-Mode Zoom to Fit
+    useEffect(() => {
+
+        const updateFreeCamera = () => {
+            if (!settings.cameraFollow) {
+                // O mapa é diagonal, logo seu tamanho visível bounding box é (worldSize * sqrt(2)) unidades 3D.
+                // Usamos 1.5 para adicionar um pequeno fôlego/padding para que não fique cortando a borda extrema.
+                const mapVisualSize = settings.worldSize * 1.5; 
+                // Assumindo que a altura de renderização de um Voxel é 1 unidade.
+                // Calculando o zoom necessário tanto para a largura quanto para a altura.
+                const zoomX = window.innerWidth / mapVisualSize;
+                const zoomY = window.innerHeight / mapVisualSize;
+                
+                // Pega o menor zoom para encaixar o mapa totalmente
+                camera.zoom = Math.min(zoomX, zoomY);
+                camera.position.set(100, 100, 100);
+                
+                if (controls) {
+                    const ctrl = controls as unknown as { target: THREE.Vector3, update: () => void };
+                    ctrl.target.set(0, 0, 0);
+                    ctrl.update();
+                }
+                camera.updateProjectionMatrix();
+            } else {
+                camera.zoom = settings.cameraZoom;
+                camera.updateProjectionMatrix();
+            }
+        };
+
+        // Aplica o ajuste inicialmente sempre que o settings.cameraFollow ou worldSize mudam
+        updateFreeCamera();
+
+        // Faz o re-planejamento sempre que a janela sofrer o resize
+        const handleResize = () => {
+            if (!settings.cameraFollow) {
+                updateFreeCamera();
+            }
+        };
+        
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [settings.cameraFollow, settings.worldSize, settings.cameraZoom, status, camera, controls]);
+
     useFrame((state, delta) => {
         if (!mapData) return;
         const dt = Math.min(delta, 0.1);

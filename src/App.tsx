@@ -102,7 +102,6 @@ const GameLayout: React.FC<{
             position={[100, 100, 100]}
             near={0.1}
             far={5000}
-            zoom={settings.cameraZoom}
           />
           <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
           <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />

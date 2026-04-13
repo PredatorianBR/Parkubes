@@ -149,8 +149,8 @@ export const generateCityLevel = (
     const getPosKey = (x: number, y: number, z: number) => `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
 
     const baseStreetWidth = 3; // Minimum street width requested by user
-    const minBlockSize = 2; // Allow tiny 2x2 filler blocks
-    const maxBlockSize = 30;
+    const minBlockSize = 6; // Allow tiny 6x6 filler blocks
+    const maxBlockSize = 18;
 
     let acClusterHeat = 0.0;
 
@@ -494,7 +494,7 @@ export const generateCityLevel = (
         if (fillW % 2 !== 0) fillW -= 1;
         if (fillD % 2 !== 0) fillD -= 1;
 
-        if ((fillW < 4 || fillD < 6) && (fillW < 6 || fillD < 4)) return null;
+        if (fillW < 6 || fillD < 6) return null;
 
         const alignX = Math.random();
         const alignZ = Math.random();
@@ -545,9 +545,10 @@ export const generateCityLevel = (
         if (type === 'house') {
             height = (Math.floor(Math.random() * 2) + 1) * floorH; // 1-2 floors
         } else if (type === 'factory') {
-            height = (Math.floor(Math.random() * 2) + 1) * floorH; // 1-2 floors
+            height = (Math.floor(Math.random() * 3) + 1) * floorH; // 1-3 floors
         } else {
-            height = (Math.floor(Math.random() * 5) + 2) * floorH; // 2-6 floors
+            // Highrise: 2-3 floors
+            height = (Math.floor(Math.random() * 2) + 2) * floorH;
             if (height > 3 * floorH && (fillW < 4 || fillD < 4)) height = 3 * floorH;
         }
 
@@ -1603,7 +1604,7 @@ export const generateCityLevel = (
         if (p.w <= maxBlockSize && p.d <= maxBlockSize) {
             // Plot is small enough, but check if we want to randomly slice it anyway for variation
             if (p.w >= minBlockSize * 2 + baseStreetWidth || p.d >= minBlockSize * 2 + baseStreetWidth) {
-                if (Math.random() > 0.4) { 
+                if (Math.random() > 0.15) { 
                      // Force continue to slice
                 } else {
                      finalPlots.push(p);
