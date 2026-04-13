@@ -613,11 +613,8 @@ const Building: React.FC<{
 
         let targetOpacity = 1.0;
         if (isBlocking) {
-            // Simple distance based fade for smoother look
-            const camDist = camera.position.distanceTo(playerPos.current);
-            const bldgDist = position.distanceTo(playerPos.current);
-            const t = Math.min(bldgDist / camDist, 1.0);
-            targetOpacity = THREE.MathUtils.lerp(0.6, 0.15, t);
+            // Alta transparência quando o prédio está bloqueando a visão
+            targetOpacity = 0.15;
         }
 
         // Calculate if player is standing on TOP of this specific building
