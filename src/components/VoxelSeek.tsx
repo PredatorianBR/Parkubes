@@ -1,8 +1,7 @@
-
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GameStatus, VoxelObject, GameSettings, Position, GameMode, MatchState } from '../types';
 import { Character, MatchTimerOverlay } from './Character';
 import { useControls } from '../hooks/useControls';
@@ -36,6 +35,7 @@ interface VoxelSeekProps {
     showGrid?: boolean;
     showCollision?: boolean;
     showWireframe?: boolean; // NEW PROP
+    showOcclusion?: boolean;
     isEditing?: boolean;
     mapId: number;
 }
@@ -120,6 +120,27 @@ const CollisionDebug: React.FC<{ collisionGrid: SpatialHashGrid; bGrid: number[]
                 <planeGeometry args={[1, 1]} />
                 <meshBasicMaterial color="#00ffff" transparent opacity={0.4} side={THREE.DoubleSide} />
             </instancedMesh>
+        </group>
+    );
+});
+
+const OcclusionCylinderDebug: React.FC<{ playerPos: React.MutableRefObject<THREE.Vector3>, playerLastDir: React.MutableRefObject<THREE.Vector2>, visible: boolean }> = React.memo(({ playerPos, playerLastDir, visible }) => {
+    const meshRef = useRef<THREE.Group>(null!);
+    
+    useFrame(() => {
+        if (!meshRef.current || !visible) return;
+        meshRef.current.position.copy(playerPos.current);
+        
+        const angle = Math.atan2(playerLastDir.current.x, playerLastDir.current.y);
+        meshRef.current.rotation.y = angle;
+    });
+
+    return (
+        <group ref={meshRef} visible={visible}>
+            <mesh position={[0, 2.8, 6.0]} rotation={[-Math.PI / 2, 0, 0]}>
+                <coneGeometry args={[2.0, 12.0, 32]} />
+                <meshBasicMaterial color="#eab308" wireframe transparent opacity={0.4} depthTest={false} />
+            </mesh>
         </group>
     );
 });
@@ -390,6 +411,7 @@ const Building: React.FC<{
     type: 'box' | 'factory' | 'highrise';
     playerPos: React.MutableRefObject<THREE.Vector3>;
     playerVel: React.MutableRefObject<THREE.Vector3>;
+    playerLastDir: React.MutableRefObject<THREE.Vector2>;
     chimney?: { position: [number, number, number], scale: [number, number, number], color: string };
     attachedChimneys?: { pos: Position, scale: Position, color: string, smoke?: boolean, rotation?: number }[];
     acs?: { pos: Position, scale: Position, color: string, rotation: number, type: 'wall' | 'roof' }[];
@@ -404,7 +426,7 @@ const Building: React.FC<{
     showGrid?: boolean;
     status: GameStatus;
     debugMode?: boolean;
-}> = React.memo(({ position, scale, color, type, playerPos, playerVel, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
+}> = React.memo(({ position, scale, color, type, playerPos, playerVel, playerLastDir, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
     const groupRef = useRef<THREE.Group>(null!);
     const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
@@ -448,36 +470,122 @@ const Building: React.FC<{
         return p;
     }, [w, h, d, shape]);
 
-    // GEOMETRY GENERATION
-    // Use ExtrudeGeometry for procedural shapes to prevent internal faces
-    const hullGeometry = useMemo(() => {
-        if (shape?.active && shape.points && shape.points.length > 0) {
-            const shapeObj = new THREE.Shape();
+    const { hullGeometry, fillGeometry, wireframeEdges } = useMemo(() => {
+        let hGeom: THREE.BufferGeometry;
+        const hw = (w || 1) / 2, hd = (d || 1) / 2;
 
-            const startPt = shape.points[0];
-            shapeObj.moveTo(startPt[0], startPt[1]);
-            
-            for(let i=1; i<shape.points.length; i++) {
-                shapeObj.lineTo(shape.points[i][0], shape.points[i][1]);
+        // --- Build the union footprint shape (building + wall attachments) ---
+        const allAtts = [...(attachedChimneys || []), ...(acs || [])];
+        
+        // Classify attachments by which wall they protrude from
+        interface WallBump { min: number; max: number; depth: number; }
+        const rightBumps: WallBump[] = [];
+        const leftBumps: WallBump[] = [];
+        const backBumps: WallBump[] = [];  // z = -hd
+        const frontBumps: WallBump[] = []; // z = +hd
+
+        allAtts.forEach(att => {
+            if (!att?.pos || !att?.scale) return;
+            const [ax, , az] = att.pos as [number, number, number];
+            const [rawW, , rawD] = att.scale as [number, number, number];
+            if (rawW <= 0 || rawD <= 0) return;
+
+            // Account for rotation: swap width/depth when rotated ~90 degrees
+            const rot = (att as any).rotation || 0;
+            const isRotated = Math.abs(Math.sin(rot)) > 0.5;
+            const aw = isRotated ? rawD : rawW;
+            const ad = isRotated ? rawW : rawD;
+
+            const WALL_THRESHOLD = 2.0;
+
+            if (ax > hw - WALL_THRESHOLD && (ax + aw / 2) > hw) {
+                rightBumps.push({ min: az - ad / 2, max: az + ad / 2, depth: (ax + aw / 2) - hw });
+            } else if (ax < -hw + WALL_THRESHOLD && (ax - aw / 2) < -hw) {
+                leftBumps.push({ min: az - ad / 2, max: az + ad / 2, depth: -hw - (ax - aw / 2) });
+            } else if (az < -hd + WALL_THRESHOLD && (az - ad / 2) < -hd) {
+                backBumps.push({ min: ax - aw / 2, max: ax + aw / 2, depth: -hd - (az - ad / 2) });
+            } else if (az > hd - WALL_THRESHOLD && (az + ad / 2) > hd) {
+                frontBumps.push({ min: ax - aw / 2, max: ax + aw / 2, depth: (az + ad / 2) - hd });
             }
-            shapeObj.closePath();
+        });
 
-            const geom = new THREE.ExtrudeGeometry(shapeObj, {
-                depth: h,
-                bevelEnabled: false
-            });
+        // Sort bumps along each wall's travel direction
+        backBumps.sort((a, b) => a.min - b.min);
+        rightBumps.sort((a, b) => a.min - b.min);
+        frontBumps.sort((a, b) => b.max - a.max);
+        leftBumps.sort((a, b) => b.max - a.max);
 
-            geom.rotateX(Math.PI / 2);
-            geom.translate(-w / 2, h / 2, -d / 2);
+        // --- Base footprint shape ---
+        const fillGeoms: THREE.BufferGeometry[] = [];
 
-            return geom;
+        if (shape?.active && shape.points && shape.points.length >= 3) {
+            // Always use shape.points as the base footprint
+            const baseShape = new THREE.Shape();
+            const startPt = shape.points[0];
+            baseShape.moveTo(startPt[0] - hw, startPt[1] - hd);
+            for (let i = 1; i < shape.points.length; i++) {
+                baseShape.lineTo(shape.points[i][0] - hw, shape.points[i][1] - hd);
+            }
+            baseShape.closePath();
+            const baseGeom = new THREE.ShapeGeometry(baseShape);
+            baseGeom.rotateX(Math.PI / 2);
+            fillGeoms.push(baseGeom);
+        } else {
+            const baseGeom = new THREE.PlaneGeometry(w || 1, d || 1);
+            baseGeom.rotateX(-Math.PI / 2);
+            fillGeoms.push(baseGeom);
         }
 
-        // Standard Box Fallback
-        return new THREE.BoxGeometry(w, h, d);
-    }, [w, h, d, shape]);
+        // Add chimney/AC protruding footprints as separate planes
+        allAtts.forEach(att => {
+            if (!att?.pos || !att?.scale) return;
+            const [ax, , az] = att.pos as [number, number, number];
+            const [rawW, , rawD] = att.scale as [number, number, number];
+            if (rawW <= 0 || rawD <= 0) return;
+            const rot = (att as any).rotation || 0;
+            const isRotated = Math.abs(Math.sin(rot)) > 0.5;
+            const aw = isRotated ? rawD : rawW;
+            const ad = isRotated ? rawW : rawD;
 
-    const edges = useMemo(() => new THREE.EdgesGeometry(hullGeometry), [hullGeometry]);
+            const g = new THREE.PlaneGeometry(aw, ad);
+            g.rotateX(-Math.PI / 2);
+            g.translate(ax, 0, az);
+            fillGeoms.push(g);
+        });
+
+        // --- Hull (3D building body) ---
+        if (shape?.active && shape.points && shape.points.length >= 3) {
+            try {
+                const shapeObj = new THREE.Shape();
+                const startPt = shape.points[0];
+                shapeObj.moveTo(startPt[0], startPt[1]);
+                for (let i = 1; i < shape.points.length; i++) shapeObj.lineTo(shape.points[i][0], shape.points[i][1]);
+                shapeObj.closePath();
+
+                hGeom = new THREE.ExtrudeGeometry(shapeObj, { depth: h || 1, bevelEnabled: false });
+                hGeom.rotateX(Math.PI / 2);
+                hGeom.translate(-hw, h / 2, -hd);
+            } catch (e) {
+                hGeom = new THREE.BoxGeometry(w || 1, h || 1, d || 1);
+            }
+        } else {
+            hGeom = new THREE.BoxGeometry(w || 1, h || 1, d || 1);
+        }
+
+        // --- Fill + Wireframe ---
+        const mergedFill = fillGeoms.length > 1 ? mergeGeometries(fillGeoms) : fillGeoms[0];
+        const fillGeom = mergedFill || fillGeoms[0];
+
+        const edgesGeom = new THREE.EdgesGeometry(fillGeom, 1);
+
+        return { 
+            hullGeometry: hGeom, 
+            fillGeometry: fillGeom,
+            wireframeEdges: edgesGeom
+        };
+    }, [w, h, d, shape, attachedChimneys, acs]);
+
+
 
     // Refs for Physics Raycasting
     const box = useMemo(() => new THREE.Box3(), []);
@@ -487,15 +595,16 @@ const Building: React.FC<{
     const worldCenter = useMemo(() => new THREE.Vector3(), []); // Pre-allocated vector to prevent GC spikes in loops
     const playerPartPos = useMemo(() => new THREE.Vector3(), []); // NEW: Pre-allocated for multi-point occlusion
 
-    // Offsets to cover the character's volume (approx 0.7 radius, 3.8 height)
-    const occlusionOffsets = useMemo(() => [
+    // Offsets to cover the character's volume (approx 0.7 radius, 3.8 height) plus expanded volume for alleyway clearance
+    const dynamicOffsets = useMemo(() => [
         new THREE.Vector3(0, 0.5, 0),    // Feet level
         new THREE.Vector3(0, 1.8, 0),    // Mid level
         new THREE.Vector3(0, 3.4, 0),    // Head level
-        new THREE.Vector3(0.6, 1.8, 0),  // Right side
-        new THREE.Vector3(-0.6, 1.8, 0), // Left side
-        new THREE.Vector3(0, 1.8, 0.6),  // Front side
-        new THREE.Vector3(0, 1.8, -0.6), // Back side
+        // Dynamic Cone Points (Pre-allocated, updated in useFrame)
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, 0)
     ], []);
 
     // OCCLUSION FADING LOGIC
@@ -508,6 +617,20 @@ const Building: React.FC<{
         frameCount.current++;
         const shouldUpdateOcclusion = frameCount.current % 6 === 0;
 
+        if (shouldUpdateOcclusion && playerLastDir?.current) {
+            const dirX = playerLastDir.current.x;
+            const dirZ = playerLastDir.current.y;
+            const perpX = -dirZ;
+            const perpZ = dirX;
+            const len = dynamicOffsets.length;
+            // Flare at mid-distance (thinner, longer)
+            dynamicOffsets[len - 4].set(dirX * 6.0 + perpX * 1.0, 2.8, dirZ * 6.0 + perpZ * 1.0);
+            dynamicOffsets[len - 3].set(dirX * 6.0 - perpX * 1.0, 2.8, dirZ * 6.0 - perpZ * 1.0);
+            // Flare at far-distance
+            dynamicOffsets[len - 2].set(dirX * 12.0 + perpX * 2.0, 2.8, dirZ * 12.0 + perpZ * 2.0);
+            dynamicOffsets[len - 1].set(dirX * 12.0 - perpX * 2.0, 2.8, dirZ * 12.0 - perpZ * 2.0);
+        }
+
         // Update Grid Uniform
         if (gridShaderRef.current) {
             gridShaderRef.current.uniforms.showGrid.value = showGrid ? 1.0 : 0.0;
@@ -519,23 +642,38 @@ const Building: React.FC<{
         const isGameActive = status !== GameStatus.IDLE;
 
         if (!isGameActive) {
-            // Reset everything to default (fully visible, no wireframe)
-            groupRef.current.traverse((child) => {
-                if ((child as THREE.Mesh).isMesh && (child.userData.type === 'hull' || child.userData.type === 'detail-fade')) {
-                    const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-                    if (mat) {
-                        mat.opacity = 1.0;
-                        mat.transparent = false;
-                        mat.depthWrite = true;
+            const resetObj = (obj: THREE.Object3D, inheritedFade: boolean) => {
+                const anyObj = obj as any;
+                const isFadeRoot = obj.userData.type === 'hull' || obj.userData.type === 'detail-fade';
+                const shouldFade = inheritedFade || isFadeRoot;
+
+                if ((anyObj.isMesh || anyObj.isLine || anyObj.isPoints) && shouldFade) {
+                    const materials = Array.isArray(anyObj.material) ? anyObj.material : [anyObj.material];
+                    materials.forEach((mat: any) => {
+                        if (mat) {
+                            mat.opacity = 1.0;
+                            mat.transparent = false;
+                            mat.depthWrite = true;
+                        }
+                    });
+                    
+                    if (anyObj.isMesh) {
+                        obj.visible = true;
+                        anyObj.castShadow = true;
+                        anyObj.receiveShadow = true;
                     }
                 }
-                if (child.userData.type === 'detail-hide' || child.userData.type === 'roof') {
-                    child.visible = true;
+
+                if (obj.userData.type === 'detail-hide' || obj.userData.type === 'roof' || obj.userData.type === 'detail-fade') {
+                    obj.visible = true;
                 }
-                if (child.userData.type === 'wireframe') {
-                    child.visible = false;
+                if (obj.userData.type === 'wireframe' || obj.userData.type === 'wireframe-fill') {
+                    obj.visible = false;
                 }
-            });
+
+                obj.children.forEach(child => resetObj(child, shouldFade));
+            };
+            resetObj(groupRef.current, false);
             return;
         }
 
@@ -558,54 +696,97 @@ const Building: React.FC<{
         }
 
         // Setup Ray Direction: Player -> Camera
-        // For orthographic camera, the direction to camera is actually constant
-        // but we'll use this for simplicity and compatibility with perspective
         vecToCam.subVectors(camera.position, playerPos.current);
-        const distToCam = vecToCam.length();
         ray.direction.copy(vecToCam).normalize();
+        
+        // XZ-only distance for depth comparison (ignores height, critical for isometric camera)
+        const playerDepthXZ = Math.sqrt(
+            (playerPos.current.x - camera.position.x) ** 2 + 
+            (playerPos.current.z - camera.position.z) ** 2
+        );
 
         if (shouldUpdateOcclusion) {
             let isBlocking = false;
-            // Check against all physical parts of the building
-            for (const part of parts) {
-                worldCenter.set(
-                    position.x + part.pos[0],
-                    position.y, // part.pos[1] is 0 relative to center
-                    position.z + part.pos[2]
-                );
 
-                const pW = part.size[0];
-                const pH = part.size[1];
-                const pD = part.size[2];
+            // Quick reject: only allow occlusion for buildings BETWEEN camera and player
+            // Uses XZ plane only to prevent tall buildings behind player from false-triggering
+            const cpX = playerPos.current.x - camera.position.x;
+            const cpZ = playerPos.current.z - camera.position.z;
+            const cpLenSq = cpX * cpX + cpZ * cpZ;
 
-                box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
-                box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
+            const cbX = position.x - camera.position.x;
+            const cbZ = position.z - camera.position.z;
 
-                // 1. Is ANY part of the Player INSIDE this building part?
-                for (const offset of occlusionOffsets) {
-                    playerPartPos.copy(playerPos.current).add(offset);
-                    if (box.containsPoint(playerPartPos)) {
+            const t = (cbX * cpX + cbZ * cpZ) / cpLenSq;
+
+            // Quick reject: only allow occlusion for buildings in front of camera
+            if (t > 0) {
+                for (const part of parts) {
+                    worldCenter.set(
+                        position.x + part.pos[0],
+                        position.y,
+                        position.z + part.pos[2]
+                    );
+
+                    const pW = part.size[0];
+                    const pH = part.size[1];
+                    const pD = part.size[2];
+
+                    box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
+                    box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
+
+                    // 1. Check if building is in the vision cone (looking ahead)
+                    let inVisionCone = false;
+                    if (playerLastDir?.current) {
+                        const lookDir = new THREE.Vector3(playerLastDir.current.x, 0, playerLastDir.current.y).normalize();
+                        ray.origin.copy(playerPos.current);
+                        ray.origin.y += 1.0; // Check from chest height
+                        ray.direction.copy(lookDir);
+                        
+                        const hitCone = ray.intersectBox(box, intersectionPoint);
+                        if (hitCone && ray.origin.distanceTo(intersectionPoint) < 12.0) {
+                            inVisionCone = true;
+                        }
+                    }
+
+                    if (inVisionCone) {
                         isBlocking = true;
                         break;
                     }
-                }
-                if (isBlocking) break;
 
-                // 2. Does Ray from ANY part of the player intersect?
-                for (const offset of occlusionOffsets) {
-                    ray.origin.copy(playerPos.current).add(offset);
-                    
-                    const hit = ray.intersectBox(box, intersectionPoint);
-                    if (hit) {
-                        // Ensure hit is actually between player part and camera
-                        if (hit.distanceTo(ray.origin) < distToCam) {
+                    // 2. Check if building obstructs camera view
+                    ray.direction.copy(vecToCam).normalize(); // Use parallel camera ray for orthographic view
+                    for (const offset of dynamicOffsets) {
+                        ray.origin.copy(playerPos.current).add(offset);
+                        
+                        // Check if the vision point is already inside the building
+                        if (box.containsPoint(ray.origin)) {
                             isBlocking = true;
                             break;
                         }
+
+                        const hit = ray.intersectBox(box, intersectionPoint);
+                        if (hit) {
+                            // Depth comparison: is the hit point closer to camera than the specific vision point?
+                            const originDepthXZ = Math.sqrt(
+                                (ray.origin.x - camera.position.x) ** 2 + 
+                                (ray.origin.z - camera.position.z) ** 2
+                            );
+                            const hitDepthXZ = Math.sqrt(
+                                (intersectionPoint.x - camera.position.x) ** 2 + 
+                                (intersectionPoint.z - camera.position.z) ** 2
+                            );
+                            
+                            if (hitDepthXZ < originDepthXZ - 0.2) { 
+                                isBlocking = true;
+                                break;
+                            }
+                        }
                     }
+                    if (isBlocking) break;
                 }
-                if (isBlocking) break;
             }
+
             isBlockingRef.current = isBlocking;
         }
 
@@ -613,8 +794,7 @@ const Building: React.FC<{
 
         let targetOpacity = 1.0;
         if (isBlocking) {
-            // Alta transparência quando o prédio está bloqueando a visão
-            targetOpacity = 0.15;
+            targetOpacity = 0.0;
         }
 
         // Calculate if player is standing on TOP of this specific building
@@ -622,52 +802,55 @@ const Building: React.FC<{
         // We use a margin of -1.0 so if feet are slightly inside roof, it still counts as "on top"
         const isAbove = playerPos.current.y >= position.y + h / 2 - 1.0;
 
-        groupRef.current.traverse((child) => {
-            // Hide Details logic
-            if (child.userData.type === 'detail-hide') {
-                child.visible = !isBlocking;
-            } else if (child.userData.type === 'roof') {
-                child.visible = !isBlocking || isAbove;
-            } else if (child.userData.type === 'detail-fade' || child.userData.type === 'hull') {
-                // Ensure visibility is reset if not blocking, or handle fading
-                child.visible = true;
-            } else if (child.userData.type === 'wireframe') {
-                // Wireframe logic
+        const updateObj = (obj: THREE.Object3D, inheritedFade: boolean) => {
+            const anyObj = obj as any;
+            const isFadeRoot = obj.userData.type === 'hull' || obj.userData.type === 'detail-fade';
+            const shouldFade = inheritedFade || isFadeRoot;
+            const isMeshLike = anyObj.isMesh || anyObj.isLine || anyObj.isPoints;
+
+            // Visibility Logic
+            if (obj.userData.type === 'detail-hide') {
+                obj.visible = !isBlocking;
+            } else if (obj.userData.type === 'roof') {
+                obj.visible = !isBlocking || isAbove;
+            } else if (isFadeRoot) {
+                obj.visible = true;
+            } else if (obj.userData.type === 'wireframe') {
                 if (!showWireframe) {
-                    child.visible = false;
+                    obj.visible = false;
                 } else {
-                    // Fade in wireframe as building fades out
-                    // Opacity logic: if targetOpacity is < 0.9, we start showing it.
                     const wireOpacity = 1.0 - targetOpacity;
-                    child.visible = wireOpacity > 0.1;
-                    if (child.visible) {
-                        const mat = (child as THREE.LineSegments).material as THREE.LineBasicMaterial;
-                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, wireOpacity * 0.4, delta * 10);
+                    obj.visible = wireOpacity > 0.1;
+                    if (obj.visible && anyObj.material) {
+                        const mat = anyObj.material;
+                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, wireOpacity * 0.8, delta * 12);
                         mat.transparent = true;
                     }
                 }
+            } else if (obj.userData.type === 'wireframe-fill') {
+                const wireOpacity = 1.0 - targetOpacity;
+                obj.visible = !!showWireframe && wireOpacity > 0.1;
+                if (obj.visible && anyObj.material) {
+                    const mat = anyObj.material;
+                    mat.opacity = THREE.MathUtils.lerp(mat.opacity, wireOpacity * 0.45, delta * 12);
+                    mat.transparent = true;
+                }
             }
 
-            if ((child as THREE.Mesh).isMesh) {
-                const mesh = child as THREE.Mesh;
-                const mat = mesh.material as THREE.MeshStandardMaterial;
-                // Fade both Hull and Detail-Fade meshes together
-                if (mat && (mesh.userData.type === 'hull' || mesh.userData.type === 'detail-fade')) {
+            // Fading Logic
+            if (isMeshLike && shouldFade && anyObj.material) {
+                const materials = Array.isArray(anyObj.material) ? anyObj.material : [anyObj.material];
+                materials.forEach((mat: any) => {
                     if (Math.abs(mat.opacity - targetOpacity) > 0.001) {
                         const fadeSpeed = delta * 8;
                         mat.opacity = THREE.MathUtils.lerp(mat.opacity, targetOpacity, fadeSpeed);
                         
-                        // STABLE MATERIAL STATE:
-                        // We keep transparent=true if opacity < 1.0 to avoid jumping between render passes.
-                        // We avoid setting needsUpdate=true as it's not needed for opacity changes and causes flickering.
                         const isFading = mat.opacity < 0.99;
                         if (mat.transparent !== isFading) {
                             mat.transparent = isFading;
-                            // Only update these when transparency state changes, not every frame
                             mat.depthWrite = !isFading || mat.opacity > 0.8;
-                            mat.needsUpdate = true; // IMPORTANT for pass switching
+                            mat.needsUpdate = true;
                         } else if (isFading) {
-                            // Update depthWrite based on threshold but only if fading
                             const shouldWriteDepth = mat.opacity > 0.8;
                             if (mat.depthWrite !== shouldWriteDepth) {
                                 mat.depthWrite = shouldWriteDepth;
@@ -675,15 +858,33 @@ const Building: React.FC<{
                             }
                         }
                     } else if (targetOpacity >= 0.99 && mat.transparent) {
-                        // Ensure it's fully opaque if the lerp is done and target is 1.0
                         mat.opacity = 1.0;
                         mat.transparent = false;
                         mat.depthWrite = true;
                         mat.needsUpdate = true;
                     }
-                }
+
+                    // Shadow & Visibility Logic
+                    // We hide the mesh entirely when opacity is near zero to ensure shadows are removed.
+                    // This is more reliable than just toggling castShadow.
+                    if (anyObj.isMesh) {
+                        const isFullyTransparent = mat.opacity < 0.01 && targetOpacity === 0;
+                        obj.visible = !isFullyTransparent;
+                        
+                        // Also toggle shadow properties as an extra measure
+                        const shouldShadow = mat.opacity > 0.2; 
+                        if (anyObj.castShadow !== shouldShadow) {
+                            anyObj.castShadow = shouldShadow;
+                            anyObj.receiveShadow = shouldShadow;
+                        }
+                    }
+                });
             }
-        });
+
+            obj.children.forEach(child => updateObj(child, shouldFade));
+        };
+
+        updateObj(groupRef.current, false);
     });
 
     let roofColor = "#334155";
@@ -702,9 +903,26 @@ const Building: React.FC<{
                 <GridMaterial color={color} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </mesh>
 
-            {/* Wireframe for Transparency Mode */}
-            <lineSegments geometry={edges} userData={{ type: 'wireframe' }}>
-                <lineBasicMaterial color="#ffffff" transparent opacity={0} depthTest={false} />
+            {/* Solid Fill for Footprint (Including attachments) */}
+            <mesh 
+                geometry={fillGeometry} 
+                position={[0, -position.y + 0.15, 0]}
+                userData={{ type: 'wireframe-fill' }}
+                renderOrder={10}
+                castShadow={false}
+                receiveShadow={false}
+            >
+                <meshBasicMaterial color="#1e40af" transparent opacity={0} depthTest={false} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
+            </mesh>
+
+            {/* Wireframe for Transparency Mode (Boolean Union Perimeter) */}
+            <lineSegments
+                geometry={wireframeEdges}
+                position={[0, -position.y + 0.12, 0]}
+                renderOrder={6}
+                userData={{ type: 'wireframe' }}
+            >
+                <lineBasicMaterial color="#ffffff" transparent opacity={0} depthTest={true} depthWrite={false} />
             </lineSegments>
 
             {/* Roofs must still be positioned per part, as they are separate visual toppers */}
@@ -716,13 +934,13 @@ const Building: React.FC<{
                 </group>
             ))}
 
-            <group userData={{ type: 'detail' }}>
+            <group userData={{ type: 'detail-fade' }}>
                 {windows.map((item, i) => {
                     return <BlinkingWindow key={i} position={item.pos} rotation={item.rot} size={1.0} color="white" type={isFactory ? 'industrial' : 'residential'} forceOn={isFactory ? true : false} />
                 })}
             </group>
 
-            <group userData={{ type: 'detail' }}>
+            <group userData={{ type: 'detail-fade' }}>
                 {doors.map((item, i) => {
                     if (item.type === 'industrial') {
                         return <IndustrialDoorBlock key={`door-${i}`} position={item.pos} rotation={item.rot} />
@@ -731,7 +949,7 @@ const Building: React.FC<{
                 })}
             </group>
 
-            <group userData={{ type: 'detail' }}>
+            <group userData={{ type: 'detail-fade' }}>
                 {attachedChimneys.map((item, i) => (
                     <Chimney
                         key={`chim-${i}`}
@@ -746,7 +964,7 @@ const Building: React.FC<{
                 ))}
             </group>
 
-            <group userData={{ type: 'detail' }}>
+            <group userData={{ type: 'detail-fade' }}>
                 {acs.map((item, i) => {
                     if (item.type === 'wall') {
                         return <WallAC key={`ac-${i}`} position={new THREE.Vector3(...item.pos)} scale={item.scale} color={item.color} rotation={item.rotation} showGrid={showGrid} />
@@ -756,7 +974,7 @@ const Building: React.FC<{
                 })}
             </group>
 
-            <group userData={{ type: 'detail' }}>
+            <group userData={{ type: 'detail-fade' }}>
                 {ladders.map((item, i) => (
                     <Ladder
                         key={`ladder-${i}`}
@@ -769,7 +987,7 @@ const Building: React.FC<{
 
             {
                 chimney && (
-                    <group position={[chimney.position[0] - position.x, 0, chimney.position[2] - position.z]} userData={{ type: 'detail' }}>
+                    <group position={[chimney.position[0] - position.x, 0, chimney.position[2] - position.z]} userData={{ type: 'detail-fade' }}>
                         <Chimney position={new THREE.Vector3(0, chimney.position[1] - position.y, 0)} scale={chimney.scale} color={chimney.color} smoke={isFactory ? true : isCooking} isIndustrial={isFactory} showGrid={showGrid} />
                     </group>
                 )
@@ -789,6 +1007,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     showGrid,
     showCollision,
     showWireframe,
+    showOcclusion,
     isEditing,
     mapId
 }) => {
@@ -1164,6 +1383,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                         type={obj.type as any}
                         playerPos={playerPos}
                         playerVel={playerVel}
+                        playerLastDir={playerLastDir}
                         chimney={obj.chimney}
                         attachedChimneys={obj.attachedChimneys}
                         acs={obj.acs}
@@ -1188,7 +1408,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         <group>
             {mapElements}
             {debugMode && mapData && (
-                <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={mapData.worldSize} visible={!!showCollision} />
+                <>
+                    <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={mapData.worldSize} visible={!!showCollision} />
+                    <OcclusionCylinderDebug playerPos={playerPos} playerLastDir={playerLastDir} visible={!!showOcclusion} />
+                </>
             )}
             {status !== GameStatus.IDLE && (
                 <Character

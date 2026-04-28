@@ -1385,22 +1385,32 @@ export const Character: React.FC<CharacterProps> = ({
 
                 <group ref={modelGroup}>
                     {/* Head - Slightly smaller width/depth */}
-                    <mesh ref={headMesh} position={[0, 3.2, 0]} castShadow receiveShadow>
+                    <mesh ref={headMesh} position={[0, 3.2, 0]} castShadow receiveShadow renderOrder={2}>
                         <boxGeometry args={[1.4, 1.6, 1.4]} />
                         <meshStandardMaterial color={headColor} />
+                        {/* X-Ray Silhouette */}
+                        <mesh renderOrder={1}>
+                            <boxGeometry args={[1.4, 1.6, 1.4]} />
+                            <meshBasicMaterial color="#0ea5e9" transparent={false} depthTest={false} depthWrite={false} />
+                        </mesh>
                     </mesh>
                     {/* Body - Slightly smaller width/depth */}
-                    <mesh ref={bodyMesh} position={[0, 1.2, 0]} castShadow receiveShadow>
+                    <mesh ref={bodyMesh} position={[0, 1.2, 0]} castShadow receiveShadow renderOrder={2}>
                         <boxGeometry args={[1.4, 2.4, 1.4]} />
                         <meshStandardMaterial color={bodyColor} />
+                        {/* X-Ray Silhouette */}
+                        <mesh renderOrder={1}>
+                            <boxGeometry args={[1.4, 2.4, 1.4]} />
+                            <meshBasicMaterial color="#0ea5e9" transparent={false} depthTest={false} depthWrite={false} />
+                        </mesh>
                     </mesh>
                     {/* Eyes */}
                     <group ref={eyesMesh} position={[0, 3.2, 0]}>
-                        <mesh position={[0.36, 0, 0.72]} castShadow>
+                        <mesh position={[0.36, 0, 0.72]} castShadow renderOrder={3}>
                             <boxGeometry args={[0.3, 0.3, 0.1]} />
                             <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
                         </mesh>
-                        <mesh position={[-0.36, 0, 0.72]} castShadow>
+                        <mesh position={[-0.36, 0, 0.72]} castShadow renderOrder={3}>
                             <boxGeometry args={[0.3, 0.3, 0.1]} />
                             <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
                         </mesh>

@@ -35,20 +35,20 @@ export const Ladder: React.FC<{
     return (
         <group position={position} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
             {/* Left Rail */}
-            <mesh position={[-rungWidth / 2, 0, 0]} castShadow receiveShadow>
+            <mesh position={[-rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[railWidth, halfHeight * 2, railDepth]} />
                 <meshStandardMaterial color={railColor} roughness={0.9} />
             </mesh>
 
             {/* Right Rail */}
-            <mesh position={[rungWidth / 2, 0, 0]} castShadow receiveShadow>
+            <mesh position={[rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[railWidth, halfHeight * 2, railDepth]} />
                 <meshStandardMaterial color={railColor} roughness={0.9} />
             </mesh>
 
             {/* Rungs */}
             {rungs.map((y, i) => (
-                <mesh key={i} position={[0, y, 0]} castShadow receiveShadow>
+                <mesh key={i} position={[0, y, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[rungWidth, rungHeight, rungDepth]} />
                     <meshStandardMaterial color={rungColor} roughness={0.85} />
                 </mesh>

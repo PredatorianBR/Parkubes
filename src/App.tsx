@@ -48,13 +48,14 @@ const GameLayout: React.FC<{
   showGrid: boolean;
   showCollision: boolean;
   showWireframe: boolean;
+  showOcclusion: boolean;
   isEditing: boolean;
   mapId: number;
   handleRoundEnd: (playerWon: boolean) => void;
   handlePrepComplete: () => void;
   gameInterfaceProps: any;
 }> = React.memo(({ 
-  status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, isEditing, mapId,
+  status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, showOcclusion, isEditing, mapId,
   handleRoundEnd, handlePrepComplete, gameInterfaceProps
 }) => {
   const [matchTimer, setMatchTimer] = useState(0);
@@ -119,6 +120,7 @@ const GameLayout: React.FC<{
             showGrid={showGrid}
             showCollision={showCollision}
             showWireframe={showWireframe}
+            showOcclusion={showOcclusion}
             isEditing={isEditing}
             mapId={mapId}
           />
@@ -173,7 +175,8 @@ const App: React.FC = () => {
   const [debugMode, setDebugMode] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showCollision, setShowCollision] = useState(false);
-  const [showWireframe, setShowWireframe] = useState(false);
+  const [showWireframe, setShowWireframe] = useState(true);
+  const [showOcclusion, setShowOcclusion] = useState(false);
   const [showMission, setShowMission] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
@@ -337,6 +340,7 @@ const App: React.FC = () => {
         showGrid={showGrid}
         showCollision={showCollision}
         showWireframe={showWireframe}
+        showOcclusion={showOcclusion}
         isEditing={isEditing}
         mapId={gameState.mapId}
         handleRoundEnd={handleRoundEnd}
@@ -347,6 +351,7 @@ const App: React.FC = () => {
           showGrid, setShowGrid,
           showCollision, setShowCollision,
           showWireframe, setShowWireframe,
+          showOcclusion, setShowOcclusion,
           togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu,
           updateSetting, updateRatio, resetRatios, showMission, setIsEditing,
           setGameMode: (mode: GameMode) => setGameState(prev => ({ ...prev, mode }))

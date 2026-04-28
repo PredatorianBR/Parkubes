@@ -57,19 +57,19 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
         const zPos = frameDepth / 2;
         return (
             <group>
-                <mesh position={[0, h / 2 + frameThickness / 2, zPos]} castShadow>
+                <mesh position={[0, h / 2 + frameThickness / 2, zPos]} castShadow userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
                     <meshStandardMaterial color={frameColor} />
                 </mesh>
-                <mesh position={[0, -h / 2 - frameThickness / 2, zPos]} castShadow>
+                <mesh position={[0, -h / 2 - frameThickness / 2, zPos]} castShadow userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
                     <meshStandardMaterial color={frameColor} />
                 </mesh>
-                <mesh position={[-w / 2 - frameThickness / 2, 0, zPos]} castShadow>
+                <mesh position={[-w / 2 - frameThickness / 2, 0, zPos]} castShadow userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[frameThickness, h, frameDepth]} />
                     <meshStandardMaterial color={frameColor} />
                 </mesh>
-                <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} castShadow>
+                <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} castShadow userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[frameThickness, h, frameDepth]} />
                     <meshStandardMaterial color={frameColor} />
                 </mesh>
@@ -78,31 +78,31 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
     };
 
     return (
-        <group position={[position[0], position[1], position[2]]} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-hide' }}>
+        <group position={[position[0], position[1], position[2]]} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
             <group position={[0, 0, 0]}>
                 <Frame w={w} h={h} />
-                <mesh material={material} position={[0, 0, 0.01]}>
+                <mesh material={material} position={[0, 0, 0.01]} userData={{ type: 'detail-fade' }}>
                     <boxGeometry args={[w, h, 0.02]} />
                 </mesh>
                 <group position={[0, 0, 0.022]}>
                     {type === 'residential' ? (
                         <>
-                            <mesh position={[0, 0, 0]}>
+                            <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
                                 <boxGeometry args={[0.04, h, 0.02]} />
                                 <meshStandardMaterial color={grillColor} />
                             </mesh>
-                            <mesh position={[0, 0, 0]}>
+                            <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
                                 <boxGeometry args={[w, 0.04, 0.02]} />
                                 <meshStandardMaterial color={grillColor} />
                             </mesh>
                         </>
                     ) : (
                         <>
-                            <mesh position={[0, h * 0.25, 0]}>
+                            <mesh position={[0, h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
                                 <boxGeometry args={[w, 0.04, 0.02]} />
                                 <meshStandardMaterial color={grillColor} />
                             </mesh>
-                            <mesh position={[0, -h * 0.25, 0]}>
+                            <mesh position={[0, -h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
                                 <boxGeometry args={[w, 0.04, 0.02]} />
                                 <meshStandardMaterial color={grillColor} />
                             </mesh>

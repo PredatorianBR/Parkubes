@@ -15,6 +15,8 @@ interface GameInterfaceProps {
     setShowCollision?: (val: boolean) => void;
     showWireframe?: boolean;
     setShowWireframe?: (val: boolean) => void;
+    showOcclusion?: boolean;
+    setShowOcclusion?: (val: boolean) => void;
     togglePause: () => void;
     startGame: () => void;
     playAgain: () => void;
@@ -31,7 +33,7 @@ interface GameInterfaceProps {
 }
 
 export const GameInterface: React.FC<GameInterfaceProps> = ({
-    gameState, matchTimer, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing, setGameMode
+    gameState, matchTimer, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, showOcclusion, setShowOcclusion, togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu, updateSetting, updateRatio, resetRatios, showMission, setIsEditing, setGameMode
 }) => {
 
     return (
@@ -46,6 +48,8 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
                 setShowCollision={setShowCollision}
                 showWireframe={showWireframe}
                 setShowWireframe={setShowWireframe}
+                showOcclusion={showOcclusion}
+                setShowOcclusion={setShowOcclusion}
                 togglePause={togglePause}
                 restartRound={restartRound}
                 resetToMenu={resetToMenu}

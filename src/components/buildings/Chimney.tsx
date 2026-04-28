@@ -51,7 +51,7 @@ export const Chimney: React.FC<{ position: THREE.Vector3; scale: [number, number
     });
 
     return (
-        <group position={position} rotation={[0, rotation, 0]}>
+        <group position={position} rotation={[0, rotation, 0]} userData={{ type: 'detail-fade' }}>
             {/* Main Chimney Shaft */}
             <mesh castShadow receiveShadow userData={{ type: 'detail-fade' }}>
                 {isIndustrial ? (
@@ -111,7 +111,7 @@ export const Chimney: React.FC<{ position: THREE.Vector3; scale: [number, number
                 </group>
             )}
             {/* Always render instanced mesh, visibility controlled in loop */}
-            <instancedMesh ref={particlesRef} args={[undefined, undefined, count]} position={[0, 0, 0]}>
+            <instancedMesh ref={particlesRef} args={[undefined, undefined, count]} position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
                 <sphereGeometry args={[0.5, 8, 8]} />
                 <meshBasicMaterial color="#aaaaaa" transparent opacity={0.4} />
             </instancedMesh>

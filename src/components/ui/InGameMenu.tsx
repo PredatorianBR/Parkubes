@@ -11,6 +11,8 @@ interface InGameMenuProps {
     setShowCollision?: (val: boolean) => void;
     showWireframe?: boolean;
     setShowWireframe?: (val: boolean) => void;
+    showOcclusion?: boolean;
+    setShowOcclusion?: (val: boolean) => void;
     togglePause: () => void;
     restartRound: () => void;
     resetToMenu: () => void;
@@ -19,7 +21,7 @@ interface InGameMenuProps {
 }
 
 export const InGameMenu: React.FC<InGameMenuProps> = ({
-    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe,
+    gameState, debugMode, setDebugMode, showGrid, setShowGrid, showCollision, setShowCollision, showWireframe, setShowWireframe, showOcclusion, setShowOcclusion,
     togglePause, restartRound, resetToMenu, updateSetting, setIsEditing
 }) => {
     if (gameState.status === GameStatus.IDLE || gameState.status === GameStatus.GAME_OVER || gameState.status === GameStatus.ROUND_OVER) return null;
@@ -134,6 +136,20 @@ export const InGameMenu: React.FC<InGameMenuProps> = ({
                                 COLISÃO
                             </label>
                         </div>
+                        {setShowOcclusion && (
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    id="showOcc"
+                                    checked={!!showOcclusion}
+                                    onChange={(e) => setShowOcclusion(e.target.checked)}
+                                    className="w-3 h-3 accent-yellow-500"
+                                />
+                                <label htmlFor="showOcc" className="pixel-font text-[8px] text-gray-400 cursor-pointer">
+                                    CILINDRO DE VISÃO
+                                </label>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
