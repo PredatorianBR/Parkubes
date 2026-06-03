@@ -64,19 +64,19 @@ export const BlinkingWindow: React.FC<{ position: [number, number, number], rota
         <group ref={groupRef} position={[position[0], position[1], position[2]]} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
             <group position={[0, 0, 0]}>
                 <group>
-                    <mesh position={[0, h / 2 + frameThickness / 2, zPos]} castShadow userData={{ type: 'detail-fade' }}>
+                    <mesh position={[0, h / 2 + frameThickness / 2, zPos]} userData={{ type: 'detail-fade' }}>
                         <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
                         <meshStandardMaterial color={frameColor} />
                     </mesh>
-                    <mesh position={[0, -h / 2 - frameThickness / 2, zPos]} castShadow userData={{ type: 'detail-fade' }}>
+                    <mesh position={[0, -h / 2 - frameThickness / 2, zPos]} userData={{ type: 'detail-fade' }}>
                         <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
                         <meshStandardMaterial color={frameColor} />
                     </mesh>
-                    <mesh position={[-w / 2 - frameThickness / 2, 0, zPos]} castShadow userData={{ type: 'detail-fade' }}>
+                    <mesh position={[-w / 2 - frameThickness / 2, 0, zPos]} userData={{ type: 'detail-fade' }}>
                         <boxGeometry args={[frameThickness, h, frameDepth]} />
                         <meshStandardMaterial color={frameColor} />
                     </mesh>
-                    <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} castShadow userData={{ type: 'detail-fade' }}>
+                    <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} userData={{ type: 'detail-fade' }}>
                         <boxGeometry args={[frameThickness, h, frameDepth]} />
                         <meshStandardMaterial color={frameColor} />
                     </mesh>

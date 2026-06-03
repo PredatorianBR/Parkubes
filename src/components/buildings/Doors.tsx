@@ -10,17 +10,17 @@ export const DoorBlock: React.FC<{ position: [number, number, number], rotation:
     return (
         <group position={position} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
             {/* Left Jamb */}
-            <mesh position={[-0.48, 0, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[-0.48, 0, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[frameWidth, 2.2, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>
             {/* Right Jamb */}
-            <mesh position={[0.48, 0, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[0.48, 0, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[frameWidth, 2.2, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>
             {/* Top Header - Bottom at 1.04 */}
-            <mesh position={[0, 1.1 - frameWidth / 2, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[0, 1.1 - frameWidth / 2, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[0.9 + (frameWidth * 2), frameWidth, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>
@@ -50,17 +50,17 @@ export const IndustrialDoorBlock: React.FC<{ position: [number, number, number],
     return (
         <group position={position} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
             {/* Left Jamb */}
-            <mesh position={[-0.95, 0, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[-0.95, 0, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[frameWidth, 3.0, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>
             {/* Right Jamb */}
-            <mesh position={[0.95, 0, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[0.95, 0, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[frameWidth, 3.0, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>
             {/* Header - Bottom at 1.4 */}
-            <mesh position={[0, 1.5 - frameWidth / 2, frameZ]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[0, 1.5 - frameWidth / 2, frameZ]} receiveShadow userData={{ type: 'detail-fade' }}>
                 <boxGeometry args={[1.8 + (frameWidth * 2), frameWidth, frameDepth]} />
                 <meshStandardMaterial color={frameColor} />
             </mesh>

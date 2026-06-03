@@ -18,11 +18,11 @@ export const Roof: React.FC<{ size: [number, number, number]; color: string }> =
 
     return (
         <group>
-            <mesh position={[0, 0.15, 0]} receiveShadow userData={{ type: 'roof' }} renderOrder={11}>
+            <mesh position={[0, 0.15, 0]} castShadow={false} receiveShadow userData={{ type: 'roof' }} renderOrder={11}>
                 <boxGeometry args={[ow, 0.3, od]} />
                 <primitive object={roofMaterial} attach="material" />
             </mesh>
-            <mesh position={[0, 0.3, 0]} userData={{ type: 'roof' }} renderOrder={12}>
+            <mesh position={[0, 0.3, 0]} castShadow={false} userData={{ type: 'roof' }} renderOrder={12}>
                 <boxGeometry args={[ow - 0.2, 0.05, od - 0.2]} />
                 <primitive object={shadowMaterial} attach="material" />
             </mesh>

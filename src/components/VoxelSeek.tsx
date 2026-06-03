@@ -962,10 +962,10 @@ const Building: React.FC<{
             {/* Unified roof for custom shapes, or fallback to per-part roofs */}
             {shape?.active && shape.points && shape.points.length >= 3 && roofBaseGeometry && roofShadowGeometry ? (
                 <>
-                    <mesh geometry={roofBaseGeometry} receiveShadow userData={{ type: 'roof' }}>
+                    <mesh geometry={roofBaseGeometry} castShadow={false} receiveShadow userData={{ type: 'roof' }}>
                         <primitive object={roofMaterial} attach="material" />
                     </mesh>
-                    <mesh geometry={roofShadowGeometry} userData={{ type: 'roof' }}>
+                    <mesh geometry={roofShadowGeometry} castShadow={false} userData={{ type: 'roof' }}>
                         <primitive object={roofShadowMaterial} attach="material" />
                     </mesh>
                 </>
