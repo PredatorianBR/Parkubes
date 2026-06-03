@@ -2,14 +2,15 @@ import React, { useRef, useContext } from 'react';
 import { Html } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { MatchContext } from '../App';
+import { MatchContext } from '../MatchContext';
+import { VisualState } from '../types';
 
 interface CharacterProps {
     groupRef: React.RefObject<THREE.Group>;
     staminaFillRef?: React.RefObject<HTMLDivElement>;
     staminaGroupRef?: React.RefObject<HTMLDivElement>;
     overlayContent?: React.ReactNode;
-    visualStateRef?: React.MutableRefObject<any>;
+    visualStateRef?: React.MutableRefObject<Partial<VisualState> | null | undefined>;
     stunned?: boolean;
     isCharging?: boolean;
     isRolling?: boolean;
@@ -44,7 +45,6 @@ const ParticleEffects: React.FC<{
     isGrounded: boolean;
     currentSurface: number;
     staminaRef?: React.MutableRefObject<number>;
-    landingFactor: number;
     playerGroup: React.RefObject<THREE.Group>;
     stunned: boolean;
     fallDistance: number;
@@ -52,8 +52,8 @@ const ParticleEffects: React.FC<{
     isTiredBreathingRef?: React.MutableRefObject<boolean>;
     isRolling: boolean;
     moveSpeed: number;
-    visualStateRef?: React.MutableRefObject<any>;
-}> = ({ isRunning: _isRunning, isMoving: _isMoving, isGrounded: _isGrounded, currentSurface: _currentSurface, staminaRef, landingFactor: _landingFactor, playerGroup, stunned: _stunned, fallDistance: _fallDistance, justLanded: _justLanded, isTiredBreathingRef, isRolling: _isRolling, moveSpeed: _moveSpeed, visualStateRef }) => {
+    visualStateRef?: React.MutableRefObject<Partial<VisualState> | null | undefined>;
+}> = ({ isRunning: _isRunning, isMoving: _isMoving, isGrounded: _isGrounded, currentSurface: _currentSurface, staminaRef, playerGroup, stunned: _stunned, fallDistance: _fallDistance, justLanded: _justLanded, isTiredBreathingRef, isRolling: _isRolling, moveSpeed: _moveSpeed, visualStateRef }) => {
     const meshRef = useRef<THREE.InstancedMesh>(null!);
     const particles = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; life: number; color: THREE.Color; scale: number; active: boolean }[]>([]);
     const dummy = React.useMemo(() => new THREE.Object3D(), []);
@@ -97,7 +97,6 @@ const ParticleEffects: React.FC<{
         const isMoving = vs.isMoving ?? _isMoving;
         const isGrounded = vs.isGrounded ?? _isGrounded;
         const currentSurface = vs.currentSurface ?? _currentSurface;
-        const landingFactor = vs.landingFactor ?? _landingFactor;
         const stunned = vs.stunned ?? _stunned;
         const fallDistance = vs.fallDistance ?? _fallDistance;
         const justLanded = vs.justLanded ?? _justLanded;
@@ -546,7 +545,6 @@ export const Character: React.FC<CharacterProps> = ({
         const isHiding = vs.isHiding ?? _isHiding;
         const currentSurface = vs.currentSurface ?? _currentSurface;
         const fallDistance = vs.fallDistance ?? _fallDistance;
-        const justLanded = vs.justLanded ?? _justLanded;
         const isClimbing = vs.isClimbing ?? _isClimbing;
         const isLadderSliding = vs.isLadderSliding ?? _isLadderSliding;
         const isNearLadder = vs.isNearLadder ?? _isNearLadder;
@@ -732,7 +730,6 @@ export const Character: React.FC<CharacterProps> = ({
         if (landingFactor > 0) {
             // Damped bounce: multiple oscillations that decay
             const bounceFreq = 3.0; // number of bounces
-            const damping = Math.exp(-landingFactor * 3.5); // exponential decay as factor goes 1→0
             // Wait, landingFactor goes from 1 at land to 0. So invert for decay.
             const elapsed = 1 - landingFactor; // 0 at land → 1 at end
             const dampedBounce = Math.abs(Math.sin(elapsed * Math.PI * bounceFreq)) * Math.exp(-elapsed * 4);
@@ -836,7 +833,7 @@ export const Character: React.FC<CharacterProps> = ({
 
             // Calculate relative angle to look at the ladder
             if (groupRef.current) {
-                let currentBodyRotY = groupRef.current.rotation.y % (Math.PI * 2);
+                const currentBodyRotY = groupRef.current.rotation.y % (Math.PI * 2);
                 
                 // On roof, we need to look in the opposite direction of faceAngle (faceAngle points INTO the wall)
                 let targetAngle = ladderFaceAngle;
@@ -1333,7 +1330,6 @@ export const Character: React.FC<CharacterProps> = ({
                 isGrounded={_isGrounded}
                 currentSurface={_currentSurface}
                 staminaRef={staminaRef}
-                landingFactor={_landingFactor}
                 playerGroup={groupRef}
                 stunned={_stunned}
                 fallDistance={_fallDistance}
@@ -1388,20 +1384,32 @@ export const Character: React.FC<CharacterProps> = ({
                     <mesh ref={headMesh} position={[0, 3.2, 0]} castShadow receiveShadow renderOrder={2}>
                         <boxGeometry args={[1.4, 1.6, 1.4]} />
                         <meshStandardMaterial color={headColor} />
+                        
                         {/* X-Ray Silhouette */}
                         <mesh renderOrder={1}>
                             <boxGeometry args={[1.4, 1.6, 1.4]} />
-                            <meshBasicMaterial color="#0ea5e9" transparent={false} depthTest={false} depthWrite={false} />
+                            <meshBasicMaterial 
+                                color="#00e5ff" 
+                                depthTest={false}
+                                depthWrite={false} 
+                                transparent={false}
+                            />
                         </mesh>
                     </mesh>
                     {/* Body - Slightly smaller width/depth */}
                     <mesh ref={bodyMesh} position={[0, 1.2, 0]} castShadow receiveShadow renderOrder={2}>
                         <boxGeometry args={[1.4, 2.4, 1.4]} />
                         <meshStandardMaterial color={bodyColor} />
+                        
                         {/* X-Ray Silhouette */}
                         <mesh renderOrder={1}>
                             <boxGeometry args={[1.4, 2.4, 1.4]} />
-                            <meshBasicMaterial color="#0ea5e9" transparent={false} depthTest={false} depthWrite={false} />
+                            <meshBasicMaterial 
+                                color="#00e5ff" 
+                                depthTest={false}
+                                depthWrite={false} 
+                                transparent={false}
+                            />
                         </mesh>
                     </mesh>
                     {/* Eyes */}
@@ -1409,10 +1417,32 @@ export const Character: React.FC<CharacterProps> = ({
                         <mesh position={[0.36, 0, 0.72]} castShadow renderOrder={3}>
                             <boxGeometry args={[0.3, 0.3, 0.1]} />
                             <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
+                            
+                            {/* X-Ray Eye */}
+                            <mesh renderOrder={1.1}>
+                                <boxGeometry args={[0.3, 0.3, 0.1]} />
+                                <meshBasicMaterial 
+                                    color="#ffffff" 
+                                    depthTest={false}
+                                    depthWrite={false} 
+                                    transparent={false}
+                                />
+                            </mesh>
                         </mesh>
                         <mesh position={[-0.36, 0, 0.72]} castShadow renderOrder={3}>
                             <boxGeometry args={[0.3, 0.3, 0.1]} />
                             <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
+                            
+                            {/* X-Ray Eye */}
+                            <mesh renderOrder={1.1}>
+                                <boxGeometry args={[0.3, 0.3, 0.1]} />
+                                <meshBasicMaterial 
+                                    color="#ffffff" 
+                                    depthTest={false}
+                                    depthWrite={false} 
+                                    transparent={false}
+                                />
+                            </mesh>
                         </mesh>
                     </group>
                 </group>

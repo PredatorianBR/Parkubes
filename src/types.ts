@@ -1,6 +1,15 @@
-
-import React from 'react';
 import * as THREE from 'three';
+
+export interface LadderState {
+  isClimbing: boolean;
+  isLadderSliding: boolean;
+  isLadderHanging: boolean;
+  isLadderMounting: boolean;
+  ladderMountTimer: number;
+  isWallClimbing: boolean;
+  wallClimbProgress: number;
+  wallClimbDir: THREE.Vector2;
+}
 
 export type Position = [number, number, number];
 
@@ -136,3 +145,17 @@ export interface GameState {
   settings: GameSettings;
   mapId: number; // Force map regeneration
 }
+
+export interface VisualState {
+  isRunning: boolean;
+  isMoving: boolean;
+  isGrounded: boolean;
+  currentSurface: number;
+  landingFactor: number;
+  stunned: boolean;
+  fallDistance: number;
+  justLanded: boolean;
+  isRolling: boolean;
+  moveSpeed: number;
+}
+

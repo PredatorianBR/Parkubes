@@ -1,10 +1,9 @@
 import React from 'react';
 import { GameSettings } from '../../types';
-import { LockIcon } from './Icons';
 
 interface MapSettingsPanelProps {
     settings: GameSettings;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
     resetRatios: () => void;
     showWireframe?: boolean;

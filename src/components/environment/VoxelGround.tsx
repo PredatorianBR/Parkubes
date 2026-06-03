@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GRID_SCALE, GROUND_DEPTH } from '../../utils/physics';
 
-export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid?: number[][]; debugMode?: boolean; showGrid?: boolean }> = React.memo(({ size, waterGrid, sGrid, debugMode, showGrid }) => {
+export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid?: number[][]; debugMode?: boolean; showGrid?: boolean }> = React.memo(({ size, waterGrid, sGrid, showGrid }) => {
   const halfSize = Math.floor(size / 2);
   const scaleFactor = showGrid ? 0.95 : 1.0;
 
@@ -61,7 +61,15 @@ export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid
     baseBox.dispose();
 
     return merged;
-  }, [size, halfSize, waterGrid, sGrid, scaleFactor, gridSize, cellSize]);
+  }, [halfSize, waterGrid, sGrid, scaleFactor, gridSize, cellSize]);
+
+  React.useEffect(() => {
+    return () => {
+      if (mergedGeometry) {
+        mergedGeometry.dispose();
+      }
+    };
+  }, [mergedGeometry]);
 
   if (!mergedGeometry) return null;
 

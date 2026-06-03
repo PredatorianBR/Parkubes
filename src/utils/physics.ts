@@ -722,10 +722,10 @@ export const updateEntityPhysics = (
     // next.isClimbing = false; // Removed with climbing logic
 
     // Apply Water Speed Penalty
-    let moveSpeedMult = isInWater ? WATER_MOVE_SPEED_MULT : 1.0;
+    const moveSpeedMult = isInWater ? WATER_MOVE_SPEED_MULT : 1.0;
 
     let speed = stats.speed * MOVE_SPEED_BASE * moveSpeedMult * dt;
-    let currentMoveDir = moveDir.clone();
+    const currentMoveDir = moveDir.clone();
 
     if (next.isRolling) {
         currentMoveDir.set(next.lastDir.x, 0, next.lastDir.y).normalize();
@@ -993,7 +993,6 @@ export const updateEntityPhysics = (
         // Particles move at: (p.speed + 1.0) * (Math.max(1.0, riverFlow) / 3.0)
         // Average p.speed is 2.5, so average speed is 3.5 * (Math.max(1.0, riverFlow) / 3.0)
         const flowStrength = Math.max(1.0, world.riverFlow) * (3.5 / 3.0) * waterRatio;
-        const riverMargin = PLAYER_RADIUS + 0.1;
 
         const push = new THREE.Vector3(0, 0, 0);
         if (world.riverOrientation === 0) push.z = flowStrength * dt;      // N->S

@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useFrame } from '@react-three/fiber';
-import { GRID_SCALE, GROUND_DEPTH, worldToIndex } from '../../utils/physics';
+import { GRID_SCALE, GROUND_DEPTH } from '../../utils/physics';
 
 export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverOrientation?: number; riverFlow?: number }> = React.memo(({ size, waterGrid, riverOrientation = -1, riverFlow = 3.0 }) => {
     const foamRef = useRef<THREE.InstancedMesh>(null!);
@@ -91,7 +91,15 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
         baseBed.dispose();
 
         return { surfaceGeom, bedGeom, wallGeom };
-    }, [size, halfSize, waterGrid, gridSize, cellSize]);
+    }, [halfSize, waterGrid, gridSize, cellSize]);
+
+    useEffect(() => {
+        return () => {
+            if (surfaceGeom) surfaceGeom.dispose();
+            if (bedGeom) bedGeom.dispose();
+            if (wallGeom) wallGeom.dispose();
+        };
+    }, [surfaceGeom, bedGeom, wallGeom]);
 
     const currentMaxFoam = Math.floor(100 + riverFlow * 140); // Max 800 at flow 5
 
@@ -148,7 +156,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 const edge = sourceTiles[Math.floor(Math.random() * sourceTiles.length)];
                 let vx = (Math.random() - 0.5) * 2.0;
                 let vz = (Math.random() - 0.5) * 2.0;
-                let vy = 0.8 + Math.random() * 1.2;
+                const vy = 0.8 + Math.random() * 1.2;
 
                 const logicX = (edge.x + 0.5) / GRID_SCALE - halfSize;
                 const logicZ = (edge.z + 0.5) / GRID_SCALE - halfSize;
@@ -199,7 +207,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                 type: 'drift' as const
             };
         });
-    }, [size, halfSize, waterGrid, gridSize, cellSize, riverOrientation, riverFlow, flowVector]);
+    }, [size, halfSize, waterGrid, gridSize, cellSize, riverOrientation, riverFlow, flowVector, currentMaxFoam]);
 
     useFrame((state, delta) => {
         if (!foamRef.current || !waterGrid) return;
@@ -231,7 +239,7 @@ export const VoxelWater: React.FC<{ size: number; waterGrid?: number[][]; riverO
                     const edge = sourceTiles[Math.floor(Math.random() * sourceTiles.length)];
                     let vx = (Math.random() - 0.5) * 2.0;
                     let vz = (Math.random() - 0.5) * 2.0;
-                    let vy = 0.8 + Math.random() * 1.2;
+                    const vy = 0.8 + Math.random() * 1.2;
 
                     const logicX = (edge.x + 0.5) / GRID_SCALE - halfSize;
                     const logicZ = (edge.z + 0.5) / GRID_SCALE - halfSize;

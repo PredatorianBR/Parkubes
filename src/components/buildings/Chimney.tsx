@@ -35,7 +35,7 @@ export const Chimney: React.FC<{ position: THREE.Vector3; scale: [number, number
 
         particles.forEach((p, i) => {
             // Always animate physics even if fading
-            let y = (t * p.speed + p.offset) % 4;
+            const y = (t * p.speed + p.offset) % 4;
             dummy.position.set(0, scale[1] / 2 + y, 0);
             dummy.position.x += Math.sin(t * 2 + p.offset) * 0.2 * y;
             dummy.position.z += Math.cos(t * 1.5 + p.offset) * 0.2 * y;

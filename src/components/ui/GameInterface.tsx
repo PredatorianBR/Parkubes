@@ -4,7 +4,7 @@ import { MainMenu } from './MainMenu';
 import { InGameMenu } from './InGameMenu';
 import { HUD } from './HUD';
 
-interface GameInterfaceProps {
+export interface GameInterfaceProps {
     gameState: GameState;
     matchTimer: number;
     debugMode: boolean;
@@ -23,7 +23,7 @@ interface GameInterfaceProps {
     restartRound: () => void;
     nextRound: () => void;
     resetToMenu: () => void;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
 
     resetRatios: () => void;

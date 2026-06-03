@@ -9,7 +9,7 @@ interface HUDProps {
     showMission: boolean;
 }
 
-export const HUD: React.FC<HUDProps> = ({ status, mode, match, timer, showMission }) => {
+export const HUD: React.FC<HUDProps> = ({ status, match, showMission }) => {
     return (
         <>
             {/* HUD PRINCIPAL */}

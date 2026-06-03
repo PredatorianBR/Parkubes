@@ -2,9 +2,10 @@
 import React from 'react';
 import * as THREE from 'three';
 import { updateEntityPhysics, SpatialHashGrid } from './physics';
+import { LadderState } from '../types';
 
 // Wrapper to bridge Game Inputs -> Physics Engine
-let globalLadderState = {
+const globalLadderState: LadderState = {
     isClimbing: false,
     isLadderSliding: false,
     isLadderHanging: false,
@@ -47,10 +48,10 @@ export const updatePlayerPhysics = (
     riverFlow: number,
     ladderZones: { minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, faceAngle: number, railX: number, railZ: number }[],
     aiInput?: { moveDir: THREE.Vector3, jump: boolean, run: boolean, ladderUp?: boolean, ladderDown?: boolean },
-    ladderStateRef?: React.MutableRefObject<any>
+    ladderStateRef?: React.MutableRefObject<LadderState>
 ) => {
     
-    let activeLadderState = ladderStateRef?.current ?? globalLadderState;
+    const activeLadderState = ladderStateRef?.current ?? globalLadderState;
 
     // 1. Calculate Input Direction
     const inputDir = new THREE.Vector3(0, 0, 0);
@@ -74,7 +75,7 @@ export const updatePlayerPhysics = (
             camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
             // Analog Input Priority
-            const analogInput: any = keys.current.analog;
+            const analogInput = keys.current.analog;
             if (analogInput && (analogInput.x !== 0 || analogInput.y !== 0)) {
                 const joyX = analogInput.x;
                 const joyY = -analogInput.y; // Invert Y (Screen Y is down, World Z is forward/back)
@@ -180,7 +181,7 @@ export const updatePlayerPhysics = (
         wallClimbDir: activeLadderState.wallClimbDir.clone()
     };
 
-    const analogIn: any = keys.current.analog;
+    const analogIn = keys.current.analog as { x: number; y: number } | null | undefined;
     const isJoyUp = analogIn && analogIn.y < -0.3; // y < 0 is UP on thumbstick
     const isJoyDown = analogIn && analogIn.y > 0.3;
 

@@ -26,8 +26,18 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
         });
 
         const merged = BufferGeometryUtils.mergeGeometries(geometries);
+        geometries.forEach(g => g.dispose());
+        baseGeo.dispose();
         return merged;
     }, []);
+
+    useEffect(() => {
+        return () => {
+            if (geometry) {
+                geometry.dispose();
+            }
+        };
+    }, [geometry]);
 
     useEffect(() => {
         if (!meshRef.current || wheatObjects.length === 0) return;
@@ -45,7 +55,7 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
         meshRef.current.instanceMatrix.needsUpdate = true;
     }, [wheatObjects]);
 
-    const onBeforeCompile = (shader: any) => {
+    const onBeforeCompile = (shader: THREE.Shader) => {
         shader.uniforms.uTime = { value: 0 };
         shader.uniforms.uPlayerPos = { value: new THREE.Vector3() };
 

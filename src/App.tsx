@@ -1,25 +1,23 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
 import { VoxelSeek } from './components/VoxelSeek';
-import { GameInterface } from './components/ui/GameInterface';
+import { GameInterface, GameInterfaceProps } from './components/ui/GameInterface';
 import { OnScreenControls } from './components/ui/OnScreenControls';
 import { GameStatus, GameState, GameSettings, GameMode } from './types';
-import * as THREE from 'three';
 import { MatchState } from './types';
 
-// Context to avoid re-rendering heavy 3D components for every timer tick
-export const MatchContext = React.createContext<{ timer: number }>({ timer: 0 });
+import { MatchContext } from './MatchContext';
 const getRandomSettings = () => {
   // Randomize Ratios (Sum to 100)
   const keys = ['farm', 'house', 'highrise', 'factory', 'ruins', 'foliage'] as const;
-  let rawValues = keys.map(() => Math.random());
+  const rawValues = keys.map(() => Math.random());
   const sum = rawValues.reduce((a, b) => a + b, 0);
   const normalized = rawValues.map(v => Math.round((v / sum) * 100));
 
   // Fix potential rounding issues to ensure sum is exactly 100
-  let currentSum = normalized.reduce((a, b) => a + b, 0);
+  const currentSum = normalized.reduce((a, b) => a + b, 0);
   if (currentSum !== 100) {
     normalized[0] += (100 - currentSum);
   }
@@ -53,7 +51,7 @@ const GameLayout: React.FC<{
   mapId: number;
   handleRoundEnd: (playerWon: boolean) => void;
   handlePrepComplete: () => void;
-  gameInterfaceProps: any;
+  gameInterfaceProps: Omit<GameInterfaceProps, 'matchTimer'>;
 }> = React.memo(({ 
   status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, showOcclusion, isEditing, mapId,
   handleRoundEnd, handlePrepComplete, gameInterfaceProps
@@ -136,11 +134,7 @@ const GameLayout: React.FC<{
   );
 });
 
-// A small helper to keep GameInterface separate if needed, but for now we'll put it in GameLayout
-const GameLayoutHUD = ({ children }: { children: React.ReactNode }) => <>{children}</>;
-
 const App: React.FC = () => {
-  const initialRandom = getRandomSettings();
   const [gameState, setGameState] = useState<GameState>({
     status: GameStatus.IDLE,
     mode: GameMode.FREE,
@@ -233,7 +227,7 @@ const App: React.FC = () => {
     }));
   };
 
-  const updateSetting = (key: keyof GameSettings, value: any) => {
+  const updateSetting = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
     setGameState(prev => {
       const shouldRegen = key === 'worldSize' || key === 'riverWidth';
       return {

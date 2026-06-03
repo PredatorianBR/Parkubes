@@ -1,16 +1,9 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 
 export const OnScreenControls: React.FC<{ visible: boolean }> = ({ visible }) => {
-    const [isTouch, setIsTouch] = useState(false);
     const joystickRef = useRef<HTMLDivElement>(null);
     const [knobPos, setKnobPos] = useState({ x: 0, y: 0 });
-
-    useEffect(() => {
-        // Detect if we should show touch UI by default, 
-        // but the request asked for clicks too, so we always show if visible
-        setIsTouch('ontouchstart' in window);
-    }, []);
 
     const dispatchKey = (key: string, down: boolean) => {
         const eventName = down ? 'game-control-down' : 'game-control-up';

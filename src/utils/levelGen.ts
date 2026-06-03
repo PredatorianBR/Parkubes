@@ -1,7 +1,27 @@
-
 import * as THREE from 'three';
 import { VoxelObject, GameSettings, Position } from '../types';
-import { worldToIndex, GRID_SCALE, PLAYER_HEIGHT, SpatialHashGrid, CollisionBox } from './physics';
+import { worldToIndex, GRID_SCALE, PLAYER_HEIGHT, SpatialHashGrid } from './physics';
+
+function simplifyPolygonPoints(pts: [number, number][]): [number, number][] {
+    if (pts.length <= 2) return pts;
+    const result: [number, number][] = [];
+    for (let i = 0; i < pts.length; i++) {
+        const prev = pts[(i - 1 + pts.length) % pts.length];
+        const curr = pts[i];
+        const next = pts[(i + 1) % pts.length];
+        
+        const dx1 = curr[0] - prev[0];
+        const dz1 = curr[1] - prev[1];
+        const dx2 = next[0] - curr[0];
+        const dz2 = next[1] - curr[1];
+        
+        const cross = dx1 * dz2 - dz1 * dx2;
+        if (cross !== 0) {
+            result.push(curr);
+        }
+    }
+    return result;
+}
 
 export const findSpawnPos = (
     size: number,
@@ -12,7 +32,7 @@ export const findSpawnPos = (
     isWaterLogic: (lx: number, lz: number) => boolean,
     quadrant?: 1 | 2 | 3 | 4
 ) => {
-    let bestPos = new THREE.Vector3(0, 10, 0);
+    const bestPos = new THREE.Vector3(0, 10, 0);
     let bestScore = -1;
     let foundAny = false;
 
@@ -113,8 +133,7 @@ export const generateCityLevel = (
 
     pSpawn: THREE.Vector2,
     settings: GameSettings,
-    mapId: number, // ID unique to this match generation
-    debugMode: boolean = false
+    mapId: number // ID unique to this match generation
 ) => {
     // --- LOCAL SCOPED VARIABLES (Reset every function call) ---
     const objects: VoxelObject[] = [];
@@ -126,6 +145,7 @@ export const generateCityLevel = (
         factory: 0,
         highrise: 0
     };
+
     let totalBuiltArea = 0;
 
     const size = settings.worldSize;
@@ -142,17 +162,12 @@ export const generateCityLevel = (
     const tGrid: number[][] = Array(size).fill(null).map(() => Array(size).fill(0));
 
     // Tracking Sets
-    const globalWallOccupied = new Set<string>();
     const globalColumnOccupied = new Set<string>();
     const fenceLocations = new Set<string>();
-
-    const getPosKey = (x: number, y: number, z: number) => `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
 
     const baseStreetWidth = 3; // Minimum street width requested by user
     const minBlockSize = 6; // Allow tiny 6x6 filler blocks
     const maxBlockSize = 18;
-
-    let acClusterHeat = 0.0;
 
     const uid = (prefix: string) => `${prefix}_m${mapId}`;
 
@@ -273,34 +288,8 @@ export const generateCityLevel = (
         }
     }
 
-    const getZoneInfo = (cx: number, cz: number, range: number) => {
-        let nearHighrise = false;
-        let nearFarm = false;
-        const rangeStart = -range;
-        const rangeEnd = range;
-
-        for (let x = rangeStart; x <= rangeEnd; x++) {
-            for (let z = rangeStart; z <= rangeEnd; z++) {
-                if (x === 0 && z === 0) continue;
-                // tGrid check needs logic coords (no worldToIndex scaling needed, just bounds check)
-                const lx = cx + x + halfSize;
-                const lz = cz + z + halfSize;
-
-                if (lx >= 0 && lx < size && lz >= 0 && lz < size) {
-                    const type = tGrid[lx][lz];
-                    if (type === 2 || type === 3) nearHighrise = true;
-                    if (type === 4) nearFarm = true;
-                }
-            }
-        }
-        return { nearHighrise, nearFarm };
-    };
-
     // --- PLACE BUILDING ---
     const placeBuilding = (bx: number, bz: number, bw: number, bd: number, forcedType?: 'farm' | 'ruins' | 'house' | 'factory' | 'highrise', categoryFilter?: 'farm' | 'building' | 'ruins'): (() => void) | null => {
-        acClusterHeat *= 0.99;
-        const blockArea = bw * bd;
-
         let selectedType: 'farm' | 'ruins' | 'house' | 'factory' | 'highrise' = 'house';
 
         if (forcedType) {
@@ -350,7 +339,7 @@ export const generateCityLevel = (
         }
 
         const typeIdMap = { house: 1, factory: 2, highrise: 3, farm: 4, ruins: 5 };
-        let typeId = typeIdMap[selectedType];
+        const typeId = typeIdMap[selectedType];
 
         if (selectedType === 'farm') {
             // New Requirement: Enforce minimum width/depth of 3 voxels for the farm block
@@ -458,7 +447,6 @@ export const generateCityLevel = (
                             const tz = rz + dz + halfSize;
                             tGrid[tx][tz] = 5; // Mark as ruin
                             currentArea.ruins++;
-                            totalBuiltArea++;
                         }
                     }
                     const h = 1.0 + Math.random() * 2.8;
@@ -479,9 +467,9 @@ export const generateCityLevel = (
         }
 
         let type: 'house' | 'highrise' | 'factory' = 'house';
-        if (selectedType === 'factory') { type = 'factory'; typeId = 2; }
-        else if (selectedType === 'house') { type = 'house'; typeId = 1; }
-        else if (selectedType === 'highrise') { type = 'highrise'; typeId = 3; }
+        if (selectedType === 'factory') { type = 'factory'; }
+        else if (selectedType === 'house') { type = 'house'; }
+        else if (selectedType === 'highrise') { type = 'highrise'; }
 
         const availW = bw;
         const availD = bd;
@@ -675,8 +663,6 @@ export const generateCityLevel = (
         const assignedACs: { pos: Position, scale: Position, color: string, rotation: number, type: 'wall' | 'roof' }[] = [];
         const assignedLadders: { pos: Position, rot: [number, number, number], height: number }[] = [];
 
-        const buildingWallDoorTypes = new Set<string>();
-
         let placedCount = 0;
         for (let i = 0; i < fillW; i++) {
             for (let j = 0; j < fillD; j++) {
@@ -756,7 +742,7 @@ export const generateCityLevel = (
                                 columns.push({
                                     worldX: solidX, worldZ: solidZ,
                                     dx: n.dx, dz: n.dz,
-                                    rot: n.rot, rotVec: n.rotVec,
+                                    rot: n.rot, rotVec: n.rotVec as [number, number, number],
                                     minDist: minDist,
                                     biasDist: biasDist,
                                     facadeId: facadeId
@@ -773,7 +759,7 @@ export const generateCityLevel = (
                 id: string;
                 normal: { dx: number, dz: number };
                 rot: number;
-                rotVec: number[];
+                rotVec: [number, number, number];
                 columns: WallColumn[];
                 width: number;
                 height: number;
@@ -822,7 +808,7 @@ export const generateCityLevel = (
                         id: `${id}_g${groupIdx}`,
                         normal: n,
                         rot: groupCols[0].rot,
-                        rotVec: groupCols[0].rotVec,
+                        rotVec: groupCols[0].rotVec as [number, number, number],
                         columns: groupCols,
                         width: groupCols.length,
                         height: vH,
@@ -874,8 +860,8 @@ export const generateCityLevel = (
                         dType = Math.random() > 0.2 ? 'standard' : 'industrial';
                     }
 
-                    let dW = dType === 'industrial' ? 4 : 2;
-                    let dH = dType === 'industrial' ? 6 : 4;
+                    const dW = dType === 'industrial' ? 4 : 2;
+                    const dH = dType === 'industrial' ? 6 : 4;
 
                     // Relaxed padding for factories: if industrial door is too wide for 1-voxel padding, use 0-voxel padding
                     let pad = 1;
@@ -930,7 +916,7 @@ export const generateCityLevel = (
 
                             assignedDoors.push({
                                 pos: [worldX - cx, ly, worldZ - cz],
-                                rot: f.rotVec as [number, number, number],
+                                rot: f.rotVec,
                                 type: dType
                             });
                             f.hasDoor = true;
@@ -994,9 +980,9 @@ export const generateCityLevel = (
                 const isFactory = type === 'factory';
                 // Try facades for a door
                 for (const f of facades) {
-                    let dType: 'industrial' | 'standard' = (isFactory && indDoorsCount === 0) ? 'industrial' : 'standard';
-                    let dW = dType === 'industrial' ? 4 : 2;
-                    let dH = dType === 'industrial' ? 6 : 4;
+                    const dType: 'industrial' | 'standard' = (isFactory && indDoorsCount === 0) ? 'industrial' : 'standard';
+                    const dW = dType === 'industrial' ? 4 : 2;
+                    const dH = dType === 'industrial' ? 6 : 4;
 
                     // Try with padding 1 first, then 0 if factory needs industrial
                     for (let pad = 1; pad >= 0; pad--) {
@@ -1040,7 +1026,7 @@ export const generateCityLevel = (
 
                                 assignedDoors.push({
                                     pos: [worldX - cx, ly, worldZ - cz],
-                                    rot: f.rotVec as [number, number, number],
+                                    rot: f.rotVec,
                                     type: dType
                                 });
 
@@ -1116,7 +1102,7 @@ export const generateCityLevel = (
 
                          assignedWindows.push({
                              pos: [worldX - cx, worldYWin, worldZ - cz],
-                             rot: f.rotVec as [number, number, number]
+                             rot: f.rotVec
                          });
                          f.hasWindow = true;
                          groundFloorHasWindow = true;
@@ -1168,7 +1154,7 @@ export const generateCityLevel = (
                              const wY = (winBase + (winH / 2)) - (height / 2);
                              assignedWindows.push({
                                  pos: [worldX - cx, wY, worldZ - cz],
-                                 rot: f.rotVec as [number, number, number]
+                                 rot: f.rotVec
                              });
                              f.hasWindow = true;
                              groundFloorHasWindow = true;
@@ -1305,7 +1291,7 @@ export const generateCityLevel = (
 
                         assignedWindows.push({
                             pos: [worldX - cx, worldYWin, worldZ - cz],
-                            rot: f.rotVec as [number, number, number]
+                            rot: f.rotVec
                         });
                         f.hasWindow = true;
                     }
@@ -1368,7 +1354,7 @@ export const generateCityLevel = (
                             const worldY = 0.5;
                             assignedLadders.push({
                                 pos: [worldX - cx, worldY, worldZ - cz],
-                                rot: f.rotVec as [number, number, number],
+                                rot: f.rotVec,
                                 height: height + 1.0
                             });
                             ladderPlaced = true;
@@ -1427,7 +1413,7 @@ export const generateCityLevel = (
                                 const worldY = 0.5;
                                 assignedLadders.push({
                                     pos: [worldX - cx, worldY, worldZ - cz],
-                                    rot: f.rotVec as [number, number, number],
+                                    rot: f.rotVec,
                                     height: height + 1.0
                                 });
                                 ladderPlaced = true;
@@ -1539,10 +1525,9 @@ export const generateCityLevel = (
 
                             if (!chimneyOverlap) {
                                 // Industrial chimneys always start from the roof
-                                let chimneyHeight = 4.0 + Math.random() * 8.0;
+                                const chimneyHeight = 4.0 + Math.random() * 8.0;
                                 // Positioned so its base is exactly at the building height
-                                let ly = (height / 2) + (chimneyHeight / 2);
-
+                                const ly = (height / 2) + (chimneyHeight / 2);
 
                                 attachedChimneys.push({
                                     pos: [checkX, ly, checkZ],
@@ -1572,7 +1557,7 @@ export const generateCityLevel = (
                 scale: [fillW, height, fillD],
                 color: baseColor,
                 type: objType,
-                shape: { active: true, points, mask },
+                shape: { active: true, points: simplifyPolygonPoints(points), mask },
                 variant: variant,
                 windows: assignedWindows,
                 attachedChimneys: attachedChimneys,
@@ -1589,7 +1574,7 @@ export const generateCityLevel = (
 
     // --- CITY LAYOUT GENERATION (BSP Slicer) ---
     interface Plot { x: number; z: number; w: number; d: number; }
-    let plots: Plot[] = [{
+    const plots: Plot[] = [{
         x: -halfSize + 2,
         z: -halfSize + 2,
         w: size - 4,
@@ -1668,7 +1653,7 @@ export const generateCityLevel = (
             decorators.push(dec);
         } else {
              // Subdivide if it failed (e.g. hit water or small fit rules)
-             let splitHoriz = plot.d > plot.w;
+             const splitHoriz = plot.d > plot.w;
              if (splitHoriz && plot.d >= minBlockSize * 2 + baseStreetWidth) {
                  const splitZ = Math.floor((plot.d - baseStreetWidth) / 2);
                  finalPlots.push({ x: plot.x, z: plot.z, w: plot.w, d: Math.max(minBlockSize, splitZ) });

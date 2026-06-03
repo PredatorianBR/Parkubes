@@ -1,5 +1,4 @@
 import React from 'react';
-import * as THREE from 'three';
 
 export const DoorBlock: React.FC<{ position: [number, number, number], rotation: [number, number, number] }> = ({ position, rotation }) => {
     // UPDATED: Darker brown frame, door remains original wood brown

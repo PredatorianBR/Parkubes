@@ -10,7 +10,7 @@ interface MainMenuProps {
     playAgain: () => void;
     nextRound: () => void;
     resetToMenu: () => void;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
 
     resetRatios: () => void;

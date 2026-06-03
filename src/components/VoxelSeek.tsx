@@ -1,18 +1,16 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GameStatus, VoxelObject, GameSettings, Position, GameMode, MatchState } from '../types';
-import { Character, MatchTimerOverlay } from './Character';
+import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
-import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
+import { generateCityLevel } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
-import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT, SpatialHashGrid, CollisionBox, checkLineOfSight, getTerrainHeight } from '../utils/physics';
+import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT, SpatialHashGrid } from '../utils/physics';
 import { VoxelGround } from './environment/VoxelGround';
 import { VoxelWater } from './environment/VoxelWater';
 import { WheatField } from './environment/WheatField';
-import { RuinBlock } from './environment/RuinBlock';
-import { FenceBlock } from './environment/FenceBlock';
+
 
 import { WallAC, RoofAC } from './buildings/AcUnits';
 import { Chimney } from './buildings/Chimney';
@@ -21,7 +19,8 @@ import { Ladder } from './buildings/Ladder';
 import { GridMaterial } from './GridMaterial';
 import { BlinkingWindow } from './buildings/BlinkingWindow';
 import { Roof } from './buildings/Roof';
-import { Line } from '@react-three/drei';
+
+import { OcclusionUniforms, injectOcclusionShader } from '../utils/shaderUtils';
 
 
 interface VoxelSeekProps {
@@ -124,23 +123,36 @@ const CollisionDebug: React.FC<{ collisionGrid: SpatialHashGrid; bGrid: number[]
     );
 });
 
-const OcclusionCylinderDebug: React.FC<{ playerPos: React.MutableRefObject<THREE.Vector3>, playerLastDir: React.MutableRefObject<THREE.Vector2>, visible: boolean }> = React.memo(({ playerPos, playerLastDir, visible }) => {
-    const meshRef = useRef<THREE.Group>(null!);
-    
+const VisionPointsDebug: React.FC<{ playerPos: React.MutableRefObject<THREE.Vector3>, playerLastDir: React.MutableRefObject<THREE.Vector2>, visible: boolean }> = React.memo(({ playerPos, playerLastDir, visible }) => {
+    const meshRef = useRef<THREE.InstancedMesh>(null!);
+    const dummy = useMemo(() => new THREE.Object3D(), []);
+
     useFrame(() => {
-        if (!meshRef.current || !visible) return;
-        meshRef.current.position.copy(playerPos.current);
+        if (!meshRef.current || !visible || !playerLastDir.current) return;
         
-        const angle = Math.atan2(playerLastDir.current.x, playerLastDir.current.y);
-        meshRef.current.rotation.y = angle;
+        const px = playerPos.current.x;
+        const py = playerPos.current.y;
+        const pz = playerPos.current.z;
+        const dirX = playerLastDir.current.x;
+        const dirZ = playerLastDir.current.y;
+
+        const distances = [4.0, 8.0, 12.0, 16.0];
+        
+        for (let i = 0; i < distances.length; i++) {
+            const dist = distances[i];
+            dummy.position.set(px + dirX * dist, py + 0.5, pz + dirZ * dist);
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(i, dummy.matrix);
+        }
+        meshRef.current.instanceMatrix.needsUpdate = true;
     });
 
     return (
-        <group ref={meshRef} visible={visible}>
-            <mesh position={[0, 2.8, 6.0]} rotation={[-Math.PI / 2, 0, 0]}>
-                <coneGeometry args={[2.0, 12.0, 32]} />
-                <meshBasicMaterial color="#eab308" wireframe transparent opacity={0.4} depthTest={false} />
-            </mesh>
+        <group visible={visible}>
+            <instancedMesh ref={meshRef} args={[undefined, undefined, 4]} frustumCulled={false}>
+                <sphereGeometry args={[0.3, 8, 8]} />
+                <meshBasicMaterial color="#eab308" transparent opacity={0.8} depthTest={false} />
+            </instancedMesh>
         </group>
     );
 });
@@ -149,7 +161,6 @@ const VoxelRuins: React.FC<{ ruins: VoxelObject[], showGrid?: boolean }> = React
     const meshRef = useRef<THREE.InstancedMesh>(null!);
     const meshTop1Ref = useRef<THREE.InstancedMesh>(null!);
     const meshTop2Ref = useRef<THREE.InstancedMesh>(null!);
-    const materialRef = useRef<THREE.MeshStandardMaterial>(null!);
 
     useEffect(() => {
         if (!meshRef.current || ruins.length === 0) return;
@@ -404,7 +415,70 @@ const VoxelFoliage: React.FC<{ objects: VoxelObject[] }> = React.memo(({ objects
     );
 });
 
+function cleanGeometryForEdges(geom: THREE.BufferGeometry): THREE.BufferGeometry {
+    const nonIndexed = geom.index ? geom.toNonIndexed() : geom;
+    const clean = new THREE.BufferGeometry();
+    const posAttr = nonIndexed.getAttribute('position');
+    if (posAttr) {
+        clean.setAttribute('position', posAttr.clone());
+    }
+    if (geom.index && nonIndexed !== geom) {
+        nonIndexed.dispose();
+    }
+    return clean;
+}
+
+function createLineSegmentsGeometry(shape: THREE.Shape): THREE.BufferGeometry {
+    const points = shape.getPoints(); // N+1 points for closed shapes (last point equals first)
+    const vertices: number[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        vertices.push(p1.x, 0, p1.y);
+        vertices.push(p2.x, 0, p2.y);
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    return geom;
+}
+
+function offsetOrthogonalPolygon(points: [number, number][], d: number): [number, number][] {
+    const n = points.length;
+    if (n < 3) return points;
+    const offsetPoints: [number, number][] = [];
+    for (let i = 0; i < n; i++) {
+        const prev = points[(i - 1 + n) % n];
+        const curr = points[i];
+        const next = points[(i + 1) % n];
+
+        const dxIn = curr[0] - prev[0];
+        const dzIn = curr[1] - prev[1];
+        const lenIn = Math.sqrt(dxIn * dxIn + dzIn * dzIn) || 1;
+        const uxIn = dxIn / lenIn;
+        const uzIn = dzIn / lenIn;
+
+        const dxOut = next[0] - curr[0];
+        const dzOut = next[1] - curr[1];
+        const lenOut = Math.sqrt(dxOut * dxOut + dzOut * dzOut) || 1;
+        const uxOut = dxOut / lenOut;
+        const uzOut = dzOut / lenOut;
+
+        const nxIn = uzIn;
+        const nzIn = -uxIn;
+
+        const nxOut = uzOut;
+        const nzOut = -uxOut;
+
+        const ox = curr[0] + d * (nxIn + nxOut);
+        const oz = curr[1] + d * (nzIn + nzOut);
+        offsetPoints.push([ox, oz]);
+    }
+    return offsetPoints;
+}
+
 const Building: React.FC<{
+    id: string;
+    occludedBuildingIdsRef: React.MutableRefObject<Set<string>>;
     position: THREE.Vector3;
     scale: [number, number, number];
     color: string;
@@ -426,12 +500,29 @@ const Building: React.FC<{
     showGrid?: boolean;
     status: GameStatus;
     debugMode?: boolean;
-}> = React.memo(({ position, scale, color, type, playerPos, playerVel, playerLastDir, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], variant = 0, isLit = false, isCooking = false, showWireframe = false, showGrid = false, status, debugMode }) => {
+}> = React.memo(({ id, occludedBuildingIdsRef, position, scale, color, type, playerPos, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], isCooking = false, showGrid = false }) => {
     const groupRef = useRef<THREE.Group>(null!);
-    const gridShaderRef = useRef<any>(null);
+    const gridShaderRef = useRef<THREE.Shader | null>(null);
     const { camera } = useThree();
     const [w, h, d] = scale;
     const isFactory = type === 'factory';
+
+    const roofColor = useMemo(() => {
+        if (type === 'factory') return "#1f2937";
+        if (h <= 4) return "#7f1d1d";
+        if (h <= 6) return "#475569";
+        return "#0f172a";
+    }, [type, h]);
+
+    const roofMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: roofColor }), [roofColor]);
+    const roofShadowMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: "#000000", transparent: true, opacity: 0.2 }), []);
+
+    useEffect(() => {
+        return () => {
+            roofMaterial.dispose();
+            roofShadowMaterial.dispose();
+        };
+    }, [roofMaterial, roofShadowMaterial]);
 
     // Memoize parts to use in both Render and Physics loop
     const parts = useMemo(() => {
@@ -470,7 +561,7 @@ const Building: React.FC<{
         return p;
     }, [w, h, d, shape]);
 
-    const { hullGeometry, fillGeometry, wireframeEdges } = useMemo(() => {
+    const { hullGeometry, fillGeometry, wireframeEdges, roofBaseGeometry, roofShadowGeometry } = useMemo(() => {
         let hGeom: THREE.BufferGeometry;
         const hw = (w || 1) / 2, hd = (d || 1) / 2;
 
@@ -491,7 +582,7 @@ const Building: React.FC<{
             if (rawW <= 0 || rawD <= 0) return;
 
             // Account for rotation: swap width/depth when rotated ~90 degrees
-            const rot = (att as any).rotation || 0;
+            const rot = att.rotation || 0;
             const isRotated = Math.abs(Math.sin(rot)) > 0.5;
             const aw = isRotated ? rawD : rawW;
             const ad = isRotated ? rawW : rawD;
@@ -515,45 +606,147 @@ const Building: React.FC<{
         frontBumps.sort((a, b) => b.max - a.max);
         leftBumps.sort((a, b) => b.max - a.max);
 
-        // --- Base footprint shape ---
-        const fillGeoms: THREE.BufferGeometry[] = [];
-
-        if (shape?.active && shape.points && shape.points.length >= 3) {
-            // Always use shape.points as the base footprint
-            const baseShape = new THREE.Shape();
-            const startPt = shape.points[0];
-            baseShape.moveTo(startPt[0] - hw, startPt[1] - hd);
-            for (let i = 1; i < shape.points.length; i++) {
-                baseShape.lineTo(shape.points[i][0] - hw, shape.points[i][1] - hd);
+        // --- Footprint Shape (Integrated building footprint + wall bumps) ---
+        const footprintShape = new THREE.Shape();
+        if (shape?.active && shape.mask) {
+            const { mask } = shape;
+            const mWidth = mask.length;
+            const mDepth = mask[0].length;
+            const pad = 2;
+            const pWidth = mWidth + 2 * pad;
+            const pDepth = mDepth + 2 * pad;
+            const paddedMask = Array(pWidth).fill(null).map(() => Array(pDepth).fill(false));
+            for (let i = 0; i < mWidth; i++) {
+                for (let j = 0; j < mDepth; j++) {
+                    paddedMask[i + pad][j + pad] = mask[i][j];
+                }
             }
-            baseShape.closePath();
-            const baseGeom = new THREE.ShapeGeometry(baseShape);
-            baseGeom.rotateX(Math.PI / 2);
-            fillGeoms.push(baseGeom);
+
+            // Union attached chimneys into the padded mask
+            if (attachedChimneys && attachedChimneys.length > 0) {
+                attachedChimneys.forEach(att => {
+                    if (!att?.pos || !att?.scale) return;
+                    const [ax, , az] = att.pos as [number, number, number];
+                    const [aw, , ad] = att.scale as [number, number, number];
+                    if (aw > 0 && ad > 0) {
+                        const rot = att.rotation || 0;
+                        const cos = Math.cos(-rot);
+                        const sin = Math.sin(-rot);
+                        
+                        for (let pi = 0; pi < pWidth; pi++) {
+                            for (let pj = 0; pj < pDepth; pj++) {
+                                // Center of this cell in building space
+                                const px = -hw + (pi - pad) + 0.5;
+                                const pz = -hd + (pj - pad) + 0.5;
+                                
+                                // Rotate relative to chimney center
+                                const dx = px - ax;
+                                const dz = pz - az;
+                                const lx = dx * cos - dz * sin;
+                                const lz = dx * sin + dz * cos;
+                                
+                                if (Math.abs(lx) < aw / 2 + 0.1 && Math.abs(lz) < ad / 2 + 0.1) {
+                                    paddedMask[pi][pj] = true;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Extract the union footprint shape using the grid contour walk
+            const outlineEdges = new Map<string, [number, number]>();
+            const addEdge = (x1: number, z1: number, x2: number, z2: number) => { 
+                outlineEdges.set(`${x1},${z1}`, [x2, z2]); 
+            };
+            for (let x = 0; x < pWidth; x++) {
+                for (let z = 0; z < pDepth; z++) {
+                    if (paddedMask[x][z]) {
+                        if (z === 0 || !paddedMask[x][z - 1]) addEdge(x, z, x + 1, z);
+                        if (x === pWidth - 1 || !paddedMask[x + 1][z]) addEdge(x + 1, z, x + 1, z + 1);
+                        if (z === pDepth - 1 || !paddedMask[x][z + 1]) addEdge(x + 1, z + 1, x, z + 1);
+                        if (x === 0 || !paddedMask[x - 1][z]) addEdge(x, z + 1, x, z);
+                    }
+                }
+            }
+            
+            const points: [number, number][] = [];
+            if (outlineEdges.size > 0) {
+                const startKey = outlineEdges.keys().next().value;
+                let currentKey = startKey;
+                while (true) {
+                    const [x, z] = currentKey.split(',').map(Number);
+                    points.push([x, z]);
+                    const nextNode = outlineEdges.get(currentKey);
+                    if (!nextNode) break;
+                    currentKey = `${nextNode[0]},${nextNode[1]}`;
+                    if (currentKey === startKey) break;
+                }
+            }
+
+            if (points.length >= 3) {
+                const startPt = points[0];
+                footprintShape.moveTo(startPt[0] - hw - pad, startPt[1] - hd - pad);
+                for (let i = 1; i < points.length; i++) {
+                    footprintShape.lineTo(points[i][0] - hw - pad, points[i][1] - hd - pad);
+                }
+                footprintShape.closePath();
+            }
+        } else if (shape?.active && shape.points && shape.points.length >= 3) {
+            const startPt = shape.points[0];
+            footprintShape.moveTo(startPt[0] - hw, startPt[1] - hd);
+            for (let i = 1; i < shape.points.length; i++) {
+                footprintShape.lineTo(shape.points[i][0] - hw, shape.points[i][1] - hd);
+            }
+            footprintShape.closePath();
         } else {
-            const baseGeom = new THREE.PlaneGeometry(w || 1, d || 1);
-            baseGeom.rotateX(-Math.PI / 2);
-            fillGeoms.push(baseGeom);
+            footprintShape.moveTo(-hw, -hd);
+
+            // 1. Back wall: traveling from -hw to hw (z = -hd)
+            backBumps.forEach(bump => {
+                footprintShape.lineTo(bump.min, -hd);
+                footprintShape.lineTo(bump.min, -hd - bump.depth);
+                footprintShape.lineTo(bump.max, -hd - bump.depth);
+                footprintShape.lineTo(bump.max, -hd);
+            });
+            footprintShape.lineTo(hw, -hd);
+
+            // 2. Right wall: traveling from -hd to hd (x = hw)
+            rightBumps.forEach(bump => {
+                footprintShape.lineTo(hw, bump.min);
+                footprintShape.lineTo(hw + bump.depth, bump.min);
+                footprintShape.lineTo(hw + bump.depth, bump.max);
+                footprintShape.lineTo(hw, bump.max);
+            });
+            footprintShape.lineTo(hw, hd);
+
+            // 3. Front wall: traveling from hw to -hw (z = hd)
+            const sortedFrontBumps = [...frontBumps].sort((a, b) => b.min - a.min);
+            sortedFrontBumps.forEach(bump => {
+                footprintShape.lineTo(bump.max, hd);
+                footprintShape.lineTo(bump.max, hd + bump.depth);
+                footprintShape.lineTo(bump.min, hd + bump.depth);
+                footprintShape.lineTo(bump.min, hd);
+            });
+            footprintShape.lineTo(-hw, hd);
+
+            // 4. Left wall: traveling from hd to -hd (x = -hw)
+            const sortedLeftBumps = [...leftBumps].sort((a, b) => b.min - a.min);
+            sortedLeftBumps.forEach(bump => {
+                footprintShape.lineTo(-hw, bump.max);
+                footprintShape.lineTo(-hw - bump.depth, bump.max);
+                footprintShape.lineTo(-hw - bump.depth, bump.min);
+                footprintShape.lineTo(-hw, bump.min);
+            });
+            footprintShape.lineTo(-hw, -hd);
         }
 
-        // Add chimney/AC protruding footprints as separate planes
-        allAtts.forEach(att => {
-            if (!att?.pos || !att?.scale) return;
-            const [ax, , az] = att.pos as [number, number, number];
-            const [rawW, , rawD] = att.scale as [number, number, number];
-            if (rawW <= 0 || rawD <= 0) return;
-            const rot = (att as any).rotation || 0;
-            const isRotated = Math.abs(Math.sin(rot)) > 0.5;
-            const aw = isRotated ? rawD : rawW;
-            const ad = isRotated ? rawW : rawD;
+        const fillGeom = new THREE.ShapeGeometry(footprintShape);
+        fillGeom.rotateX(Math.PI / 2);
 
-            const g = new THREE.PlaneGeometry(aw, ad);
-            g.rotateX(-Math.PI / 2);
-            g.translate(ax, 0, az);
-            fillGeoms.push(g);
-        });
+        const edgesGeom = createLineSegmentsGeometry(footprintShape);
 
-        // --- Hull (3D building body) ---
+        // --- Hull (3D solid building body, kept separate from chimneys to retain separate materials/colors) ---
         if (shape?.active && shape.points && shape.points.length >= 3) {
             try {
                 const shapeObj = new THREE.Shape();
@@ -565,374 +758,226 @@ const Building: React.FC<{
                 hGeom = new THREE.ExtrudeGeometry(shapeObj, { depth: h || 1, bevelEnabled: false });
                 hGeom.rotateX(Math.PI / 2);
                 hGeom.translate(-hw, h / 2, -hd);
-            } catch (e) {
+            } catch {
                 hGeom = new THREE.BoxGeometry(w || 1, h || 1, d || 1);
             }
         } else {
             hGeom = new THREE.BoxGeometry(w || 1, h || 1, d || 1);
         }
 
-        // --- Fill + Wireframe ---
-        const mergedFill = fillGeoms.length > 1 ? mergeGeometries(fillGeoms) : fillGeoms[0];
-        const fillGeom = mergedFill || fillGeoms[0];
+        let roofBaseGeom: THREE.BufferGeometry | null = null;
+        let roofShadowGeom: THREE.BufferGeometry | null = null;
 
-        const edgesGeom = new THREE.EdgesGeometry(fillGeom, 1);
+        if (shape?.active && shape.points && shape.points.length >= 3) {
+            try {
+                // 1. Build the base/outer roof shape (with offset/padding of 0.2)
+                const offsetPoints = offsetOrthogonalPolygon(shape.points, 0.2);
+                const baseShapeObj = new THREE.Shape();
+                baseShapeObj.moveTo(offsetPoints[0][0], offsetPoints[0][1]);
+                for (let i = 1; i < offsetPoints.length; i++) {
+                    baseShapeObj.lineTo(offsetPoints[i][0], offsetPoints[i][1]);
+                }
+                baseShapeObj.closePath();
+
+                roofBaseGeom = new THREE.ExtrudeGeometry(baseShapeObj, { depth: 0.3, bevelEnabled: false });
+                roofBaseGeom.rotateX(Math.PI / 2);
+                roofBaseGeom.translate(-hw, h / 2 + 0.3, -hd);
+
+                // 2. Build the inner shadow roof shape (with offset/padding of 0.1)
+                const offsetPointsShadow = offsetOrthogonalPolygon(shape.points, 0.1);
+                const shadowShapeObj = new THREE.Shape();
+                shadowShapeObj.moveTo(offsetPointsShadow[0][0], offsetPointsShadow[0][1]);
+                for (let i = 1; i < offsetPointsShadow.length; i++) {
+                    shadowShapeObj.lineTo(offsetPointsShadow[i][0], offsetPointsShadow[i][1]);
+                }
+                shadowShapeObj.closePath();
+
+                roofShadowGeom = new THREE.ExtrudeGeometry(shadowShapeObj, { depth: 0.05, bevelEnabled: false });
+                roofShadowGeom.rotateX(Math.PI / 2);
+                roofShadowGeom.translate(-hw, h / 2 + 0.325, -hd);
+            } catch (e) {
+                console.error("Error creating custom roof geometry: ", e);
+            }
+        }
 
         return { 
             hullGeometry: hGeom, 
             fillGeometry: fillGeom,
-            wireframeEdges: edgesGeom
+            wireframeEdges: edgesGeom,
+            roofBaseGeometry: roofBaseGeom,
+            roofShadowGeometry: roofShadowGeom
         };
     }, [w, h, d, shape, attachedChimneys, acs]);
 
+    const currentOpacity = useRef(1.0);
+    const currentWireframeOpacity = useRef(0.0);
+    const currentFillOpacity = useRef(0.0);
 
+    const wireframeMaterial = useMemo(() => {
+        return new THREE.LineBasicMaterial({
+            color: "#00e5ff",
+            transparent: true,
+            opacity: 0.0,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+    }, []);
 
-    // Refs for Physics Raycasting
-    const box = useMemo(() => new THREE.Box3(), []);
-    const ray = useMemo(() => new THREE.Ray(), []);
-    const intersectionPoint = useMemo(() => new THREE.Vector3(), []);
-    const vecToCam = useMemo(() => new THREE.Vector3(), []);
-    const worldCenter = useMemo(() => new THREE.Vector3(), []); // Pre-allocated vector to prevent GC spikes in loops
-    const playerPartPos = useMemo(() => new THREE.Vector3(), []); // NEW: Pre-allocated for multi-point occlusion
+    const fillMaterial = useMemo(() => {
+        return new THREE.MeshBasicMaterial({
+            color: "#00e5ff",
+            transparent: true,
+            opacity: 0.0,
+            depthWrite: false,
+            side: THREE.DoubleSide
+        });
+    }, []);
 
-    // Offsets to cover the character's volume (approx 0.7 radius, 3.8 height) plus expanded volume for alleyway clearance
-    const dynamicOffsets = useMemo(() => [
-        new THREE.Vector3(0, 0.5, 0),    // Feet level
-        new THREE.Vector3(0, 1.8, 0),    // Mid level
-        new THREE.Vector3(0, 3.4, 0),    // Head level
-        // Dynamic Cone Points (Pre-allocated, updated in useFrame)
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, 0)
-    ], []);
-
-    // OCCLUSION FADING LOGIC
-    const frameCount = useRef(Math.floor(Math.random() * 10)); // Individual building offset
-    const isBlockingRef = useRef(false);
+    React.useEffect(() => {
+        return () => {
+            wireframeMaterial.dispose();
+            fillMaterial.dispose();
+        };
+    }, [wireframeMaterial, fillMaterial]);
 
     useFrame((state, delta) => {
         if (!groupRef.current) return;
-
-        frameCount.current++;
-        const shouldUpdateOcclusion = frameCount.current % 6 === 0;
-
-        if (shouldUpdateOcclusion && playerLastDir?.current) {
-            const dirX = playerLastDir.current.x;
-            const dirZ = playerLastDir.current.y;
-            const perpX = -dirZ;
-            const perpZ = dirX;
-            const len = dynamicOffsets.length;
-            // Flare at mid-distance (thinner, longer)
-            dynamicOffsets[len - 4].set(dirX * 6.0 + perpX * 1.0, 2.8, dirZ * 6.0 + perpZ * 1.0);
-            dynamicOffsets[len - 3].set(dirX * 6.0 - perpX * 1.0, 2.8, dirZ * 6.0 - perpZ * 1.0);
-            // Flare at far-distance
-            dynamicOffsets[len - 2].set(dirX * 12.0 + perpX * 2.0, 2.8, dirZ * 12.0 + perpZ * 2.0);
-            dynamicOffsets[len - 1].set(dirX * 12.0 - perpX * 2.0, 2.8, dirZ * 12.0 - perpZ * 2.0);
-        }
+        const dt = Math.min(delta, 0.1);
 
         // Update Grid Uniform
         if (gridShaderRef.current) {
             gridShaderRef.current.uniforms.showGrid.value = showGrid ? 1.0 : 0.0;
         }
 
-        // --- NEW LOGIC: ENABLE OCCLUSION AS SOON AS GAME STARTS ---
-        // Occlusion should be active in PREP, PLAYING and PAUSED.
-        // It should ONLY be disabled in IDLE (generating/menu).
-        const isGameActive = status !== GameStatus.IDLE;
-
-        if (!isGameActive) {
-            const resetObj = (obj: THREE.Object3D, inheritedFade: boolean) => {
-                const anyObj = obj as any;
-                const isFadeRoot = obj.userData.type === 'hull' || obj.userData.type === 'detail-fade';
-                const shouldFade = inheritedFade || isFadeRoot;
-
-                if ((anyObj.isMesh || anyObj.isLine || anyObj.isPoints) && shouldFade) {
-                    const materials = Array.isArray(anyObj.material) ? anyObj.material : [anyObj.material];
-                    materials.forEach((mat: any) => {
-                        if (mat) {
-                            mat.opacity = 1.0;
-                            mat.transparent = false;
-                            mat.depthWrite = true;
-                        }
-                    });
-                    
-                    if (anyObj.isMesh) {
-                        obj.visible = true;
-                        anyObj.castShadow = true;
-                        anyObj.receiveShadow = true;
-                    }
-                }
-
-                if (obj.userData.type === 'detail-hide' || obj.userData.type === 'roof' || obj.userData.type === 'detail-fade') {
-                    obj.visible = true;
-                }
-                if (obj.userData.type === 'wireframe' || obj.userData.type === 'wireframe-fill') {
-                    obj.visible = false;
-                }
-
-                obj.children.forEach(child => resetObj(child, shouldFade));
-            };
-            resetObj(groupRef.current, false);
-            return;
-        }
-
-        // Skip occlusion check for buildings that are definitely not blocking the player
-        // In this isometric view, only buildings within a certain radius or "behind" the player matter
-        const distSq = position.distanceToSquared(playerPos.current);
-        if (distSq > 10000) { // Approx 100 units
-
-            // Ensure we reset opacity if player moved away
-            groupRef.current.traverse((child) => {
-                if ((child as THREE.Mesh).isMesh && (child.userData.type === 'hull' || child.userData.type === 'detail-fade')) {
-                    const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-                    if (mat && mat.opacity < 0.99) {
-                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, 1.0, delta * 5);
-                        mat.transparent = mat.opacity < 0.99;
-                    }
-                }
-            });
-            return;
-        }
-
-        // Setup Ray Direction: Player -> Camera
-        vecToCam.subVectors(camera.position, playerPos.current);
-        ray.direction.copy(vecToCam).normalize();
+        // Smoothly fade building opacity based on occlusion (Highly transparent target: 0.0)
+        const isOccluded = occludedBuildingIdsRef.current.has(id);
+        const targetOpacity = isOccluded ? 0.0 : 1.0;
         
-        // XZ-only distance for depth comparison (ignores height, critical for isometric camera)
-        const playerDepthXZ = Math.sqrt(
-            (playerPos.current.x - camera.position.x) ** 2 + 
-            (playerPos.current.z - camera.position.z) ** 2
-        );
+        const wasTransparent = currentOpacity.current < 0.999;
+        currentOpacity.current = THREE.MathUtils.lerp(currentOpacity.current, targetOpacity, dt * 8.0);
+        const isTransparent = currentOpacity.current < 0.999;
+        
+        if (isTransparent || wasTransparent !== isTransparent || Math.abs(currentOpacity.current - targetOpacity) > 0.001) {
+            groupRef.current.traverse((child) => {
+                if (child instanceof THREE.Mesh && child.userData.type !== 'footprint') {
+                    // Keep meshes visible so they always cast shadows, even when transparent
+                    child.visible = true;
 
-        if (shouldUpdateOcclusion) {
-            let isBlocking = false;
-
-            // Quick reject: only allow occlusion for buildings BETWEEN camera and player
-            // Uses XZ plane only to prevent tall buildings behind player from false-triggering
-            const cpX = playerPos.current.x - camera.position.x;
-            const cpZ = playerPos.current.z - camera.position.z;
-            const cpLenSq = cpX * cpX + cpZ * cpZ;
-
-            const cbX = position.x - camera.position.x;
-            const cbZ = position.z - camera.position.z;
-
-            const t = (cbX * cpX + cbZ * cpZ) / cpLenSq;
-
-            // Quick reject: only allow occlusion for buildings in front of camera
-            if (t > 0) {
-                for (const part of parts) {
-                    worldCenter.set(
-                        position.x + part.pos[0],
-                        position.y,
-                        position.z + part.pos[2]
-                    );
-
-                    const pW = part.size[0];
-                    const pH = part.size[1];
-                    const pD = part.size[2];
-
-                    box.min.set(worldCenter.x - pW / 2, worldCenter.y, worldCenter.z - pD / 2);
-                    box.max.set(worldCenter.x + pW / 2, worldCenter.y + pH, worldCenter.z + pD / 2);
-
-                    // 1. Check if building is in the vision cone (looking ahead)
-                    let inVisionCone = false;
-                    if (playerLastDir?.current) {
-                        const lookDir = new THREE.Vector3(playerLastDir.current.x, 0, playerLastDir.current.y).normalize();
-                        ray.origin.copy(playerPos.current);
-                        ray.origin.y += 1.0; // Check from chest height
-                        ray.direction.copy(lookDir);
-                        
-                        const hitCone = ray.intersectBox(box, intersectionPoint);
-                        if (hitCone && ray.origin.distanceTo(intersectionPoint) < 12.0) {
-                            inVisionCone = true;
-                        }
-                    }
-
-                    if (inVisionCone) {
-                        isBlocking = true;
-                        break;
-                    }
-
-                    // 2. Check if building obstructs camera view
-                    ray.direction.copy(vecToCam).normalize(); // Use parallel camera ray for orthographic view
-                    for (const offset of dynamicOffsets) {
-                        ray.origin.copy(playerPos.current).add(offset);
-                        
-                        // Check if the vision point is already inside the building
-                        if (box.containsPoint(ray.origin)) {
-                            isBlocking = true;
+                    // Resolve building part type by checking the mesh itself or searching its parent hierarchy
+                    let partType = child.userData.type;
+                    let p = child.parent;
+                    while (!partType && p) {
+                        if (p.userData && p.userData.type) {
+                            partType = p.userData.type;
                             break;
                         }
+                        p = p.parent;
+                    }
 
-                        const hit = ray.intersectBox(box, intersectionPoint);
-                        if (hit) {
-                            // Depth comparison: is the hit point closer to camera than the specific vision point?
-                            const originDepthXZ = Math.sqrt(
-                                (ray.origin.x - camera.position.x) ** 2 + 
-                                (ray.origin.z - camera.position.z) ** 2
-                            );
-                            const hitDepthXZ = Math.sqrt(
-                                (intersectionPoint.x - camera.position.x) ** 2 + 
-                                (intersectionPoint.z - camera.position.z) ** 2
-                            );
-                            
-                            if (hitDepthXZ < originDepthXZ - 0.2) { 
-                                isBlocking = true;
-                                break;
-                            }
+                    const isLadder = partType === 'ladder' || child.userData.isLadder;
+                    const meshOpacity = isLadder 
+                        ? (currentOpacity.current * 0.85 + 0.15) // Fades to 0.15 (15% opacity) when building is transparent (currentOpacity = 0)
+                        : currentOpacity.current;              // Fades to 0.0 when building is transparent (currentOpacity = 0)
+
+                    // Assign explicit renderOrder to ensure proper layering during semi-transparent transition
+                    if (partType === 'hull') {
+                        child.renderOrder = 10;
+                    } else if (partType === 'roof') {
+                        const materials = Array.isArray(child.material) ? child.material : [child.material];
+                        const isShadow = materials.some((m) => m.transparent || m.opacity < 0.999);
+                        child.renderOrder = isShadow ? 12 : 11;
+                    } else if (partType === 'ladder' || child.userData.isLadder) {
+                        child.renderOrder = 13;
+                    } else if (partType === 'detail-fade') {
+                        if (child instanceof THREE.InstancedMesh) {
+                            child.renderOrder = 14; // Smoke particles render on top of chimney details
+                        } else {
+                            child.renderOrder = 13; // Windows, doors, chimneys, ACs
                         }
+                    } else {
+                        child.renderOrder = 13;
                     }
-                    if (isBlocking) break;
-                }
-            }
 
-            isBlockingRef.current = isBlocking;
-        }
-
-        const isBlocking = isBlockingRef.current;
-
-        let targetOpacity = 1.0;
-        if (isBlocking) {
-            targetOpacity = 0.0;
-        }
-
-        // Calculate if player is standing on TOP of this specific building
-        // Visual Building Top is roughly position.y + h/2. 
-        // We use a margin of -1.0 so if feet are slightly inside roof, it still counts as "on top"
-        const isAbove = playerPos.current.y >= position.y + h / 2 - 1.0;
-
-        const updateObj = (obj: THREE.Object3D, inheritedFade: boolean) => {
-            const anyObj = obj as any;
-            const isFadeRoot = obj.userData.type === 'hull' || obj.userData.type === 'detail-fade';
-            const shouldFade = inheritedFade || isFadeRoot;
-            const isMeshLike = anyObj.isMesh || anyObj.isLine || anyObj.isPoints;
-
-            // Visibility Logic
-            if (obj.userData.type === 'detail-hide') {
-                obj.visible = !isBlocking;
-            } else if (obj.userData.type === 'roof') {
-                obj.visible = !isBlocking || isAbove;
-            } else if (isFadeRoot) {
-                obj.visible = true;
-            } else if (obj.userData.type === 'wireframe') {
-                if (!showWireframe) {
-                    obj.visible = false;
-                } else {
-                    const wireOpacity = 1.0 - targetOpacity;
-                    obj.visible = wireOpacity > 0.1;
-                    if (obj.visible && anyObj.material) {
-                        const mat = anyObj.material;
-                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, wireOpacity * 0.8, delta * 12);
-                        mat.transparent = true;
-                    }
-                }
-            } else if (obj.userData.type === 'wireframe-fill') {
-                const wireOpacity = 1.0 - targetOpacity;
-                obj.visible = !!showWireframe && wireOpacity > 0.1;
-                if (obj.visible && anyObj.material) {
-                    const mat = anyObj.material;
-                    mat.opacity = THREE.MathUtils.lerp(mat.opacity, wireOpacity * 0.45, delta * 12);
-                    mat.transparent = true;
-                }
-            }
-
-            // Fading Logic
-            if (isMeshLike && shouldFade && anyObj.material) {
-                const materials = Array.isArray(anyObj.material) ? anyObj.material : [anyObj.material];
-                materials.forEach((mat: any) => {
-                    if (Math.abs(mat.opacity - targetOpacity) > 0.001) {
-                        const fadeSpeed = delta * 8;
-                        mat.opacity = THREE.MathUtils.lerp(mat.opacity, targetOpacity, fadeSpeed);
-                        
-                        const isFading = mat.opacity < 0.99;
-                        if (mat.transparent !== isFading) {
-                            mat.transparent = isFading;
-                            mat.depthWrite = !isFading || mat.opacity > 0.8;
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    materials.forEach((mat) => {
+                        if (mat.userData.initialOpacity === undefined) {
+                            mat.userData.initialOpacity = mat.opacity !== undefined ? mat.opacity : 1.0;
+                        }
+                        mat.opacity = mat.userData.initialOpacity * meshOpacity;
+                        const targetTransparent = mat.opacity < 0.999;
+                        if (mat.transparent !== targetTransparent) {
+                            mat.transparent = targetTransparent;
                             mat.needsUpdate = true;
-                        } else if (isFading) {
-                            const shouldWriteDepth = mat.opacity > 0.8;
-                            if (mat.depthWrite !== shouldWriteDepth) {
-                                mat.depthWrite = shouldWriteDepth;
-                                mat.needsUpdate = true;
-                            }
                         }
-                    } else if (targetOpacity >= 0.99 && mat.transparent) {
-                        mat.opacity = 1.0;
-                        mat.transparent = false;
-                        mat.depthWrite = true;
-                        mat.needsUpdate = true;
-                    }
+                        // Write to depth buffer only when building is visible/fading, and disable it when fully transparent (currentOpacity = 0)
+                        mat.depthWrite = currentOpacity.current > 0.001;
+                    });
+                }
+            });
+        }
 
-                    // Shadow & Visibility Logic
-                    // We hide the mesh entirely when opacity is near zero to ensure shadows are removed.
-                    // This is more reliable than just toggling castShadow.
-                    if (anyObj.isMesh) {
-                        const isFullyTransparent = mat.opacity < 0.01 && targetOpacity === 0;
-                        obj.visible = !isFullyTransparent;
-                        
-                        // Also toggle shadow properties as an extra measure
-                        const shouldShadow = mat.opacity > 0.2; 
-                        if (anyObj.castShadow !== shouldShadow) {
-                            anyObj.castShadow = shouldShadow;
-                            anyObj.receiveShadow = shouldShadow;
-                        }
-                    }
-                });
-            }
+        // Smoothly fade the 3D wireframe outline (accentuated thick wall simulation: 0.95)
+        const targetWireframeOpacity = isOccluded ? 0.95 : 0.0;
+        currentWireframeOpacity.current = THREE.MathUtils.lerp(currentWireframeOpacity.current, targetWireframeOpacity, dt * 8.0);
+        wireframeMaterial.opacity = currentWireframeOpacity.current;
 
-            obj.children.forEach(child => updateObj(child, shouldFade));
-        };
-
-        updateObj(groupRef.current, false);
+        // Smoothly fade the solid footprint fill (1.0 under occlusion)
+        const targetFillOpacity = isOccluded ? 1.0 : 0.0;
+        currentFillOpacity.current = THREE.MathUtils.lerp(currentFillOpacity.current, targetFillOpacity, dt * 8.0);
+        fillMaterial.opacity = currentFillOpacity.current;
     });
 
-    let roofColor = "#334155";
-    if (type === 'factory') {
-        roofColor = "#1f2937";
-    } else {
-        if (h <= 4) roofColor = "#7f1d1d";
-        else if (h <= 6) roofColor = "#475569";
-        else roofColor = "#0f172a";
-    }
+    // roofColor is now memoized at the top of the component
 
     return (
-        <group ref={groupRef} position={position}>
+        <group ref={groupRef} position={position} userData={{ buildingId: id }}>
             {/* Merged Hull Mesh */}
             <mesh geometry={hullGeometry} castShadow receiveShadow userData={{ type: 'hull' }}>
                 <GridMaterial color={color} showGrid={showGrid} floorHeight={FLOOR_HEIGHT} />
             </mesh>
 
-            {/* Solid Fill for Footprint (Including attachments) */}
-            <mesh 
-                geometry={fillGeometry} 
-                position={[0, -position.y + 0.15, 0]}
-                userData={{ type: 'wireframe-fill' }}
-                renderOrder={10}
-                castShadow={false}
-                receiveShadow={false}
-            >
-                <meshBasicMaterial color="#1e40af" transparent opacity={0} depthTest={false} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
-            </mesh>
-
-            {/* Wireframe for Transparency Mode (Boolean Union Perimeter) */}
-            <lineSegments
-                geometry={wireframeEdges}
-                position={[0, -position.y + 0.12, 0]}
-                renderOrder={6}
-                userData={{ type: 'wireframe' }}
-            >
-                <lineBasicMaterial color="#ffffff" transparent opacity={0} depthTest={true} depthWrite={false} />
+            {/* 2D Holographic Floor Wireframe (Visually merged into a single thick line on the ground plane) */}
+            <lineSegments geometry={wireframeEdges} position={[0, -h / 2 + 0.06, 0]}>
+                <primitive object={wireframeMaterial} attach="material" />
+            </lineSegments>
+            <lineSegments geometry={wireframeEdges} position={[0.02, -h / 2 + 0.06, 0.02]}>
+                <primitive object={wireframeMaterial} attach="material" />
+            </lineSegments>
+            <lineSegments geometry={wireframeEdges} position={[-0.02, -h / 2 + 0.06, -0.02]}>
+                <primitive object={wireframeMaterial} attach="material" />
+            </lineSegments>
+            <lineSegments geometry={wireframeEdges} position={[0.02, -h / 2 + 0.06, -0.02]}>
+                <primitive object={wireframeMaterial} attach="material" />
+            </lineSegments>
+            <lineSegments geometry={wireframeEdges} position={[-0.02, -h / 2 + 0.06, 0.02]}>
+                <primitive object={wireframeMaterial} attach="material" />
             </lineSegments>
 
-            {/* Roofs must still be positioned per part, as they are separate visual toppers */}
-            {parts.map((part, i) => (
-                <group key={i} position={new THREE.Vector3(...part.pos)}>
-                    <group position={[0, h / 2, 0]}>
-                        <Roof size={part.size} color={roofColor} />
+            {/* Holographic Footprint Fill */}
+            <mesh geometry={fillGeometry} position={[0, -h / 2 + 0.05, 0]} userData={{ type: 'footprint' }}>
+                <primitive object={fillMaterial} attach="material" />
+            </mesh>
+
+
+            {/* Unified roof for custom shapes, or fallback to per-part roofs */}
+            {shape?.active && shape.points && shape.points.length >= 3 && roofBaseGeometry && roofShadowGeometry ? (
+                <>
+                    <mesh geometry={roofBaseGeometry} receiveShadow userData={{ type: 'roof' }}>
+                        <primitive object={roofMaterial} attach="material" />
+                    </mesh>
+                    <mesh geometry={roofShadowGeometry} userData={{ type: 'roof' }}>
+                        <primitive object={roofShadowMaterial} attach="material" />
+                    </mesh>
+                </>
+            ) : (
+                parts.map((part, i) => (
+                    <group key={i} position={new THREE.Vector3(...part.pos)}>
+                        <group position={[0, h / 2, 0]}>
+                            <Roof size={part.size} color={roofColor} />
+                        </group>
                     </group>
-                </group>
-            ))}
+                ))
+            )}
 
             <group userData={{ type: 'detail-fade' }}>
                 {windows.map((item, i) => {
@@ -996,21 +1041,18 @@ const Building: React.FC<{
     );
 });
 
-export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
-    status,
-    mode,
-    match,
-    settings,
-    onRoundEnd,
-    onPrepComplete,
-    debugMode,
-    showGrid,
-    showCollision,
-    showWireframe,
-    showOcclusion,
-    isEditing,
-    mapId
-}) => {
+export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
+    const {
+        status,
+        settings,
+        onPrepComplete,
+        debugMode,
+        showGrid,
+        showCollision,
+        showWireframe,
+        showOcclusion,
+        mapId
+    } = props;
     const { camera, controls } = useThree(); // Access Controls
 
     const keys = useControls();
@@ -1035,6 +1077,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     const lastFallDist = useRef(0);
     const prevPlayerPos = useRef(new THREE.Vector3(0, 0, 0));
     const smoothedMoveSpeed = useRef(0);
+    const occludedBuildingIdsRef = useRef<Set<string>>(new Set());
+    const buildingsGroupRef = useRef<THREE.Group>(null);
 
     // Character Refs for direct manipulation (if needed)
     const characterGroup = useRef<THREE.Group>(null!);
@@ -1074,9 +1118,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         // Debounce Level Generation to prevent freezing when moving sliders
         const timeout = setTimeout(() => {
             const spawn = new THREE.Vector2(0, 0);
-            const data = generateCityLevel(spawn, settings, mapId, debugMode);
+            const data = generateCityLevel(spawn, settings, mapId);
             setMapData(data);
-            (window as any).__PARKUBES_MAP_DATA = data; // Export map data for debug/AI scripts
+            // @ts-expect-error - Export map data for debug/AI scripts
+            window.__PARKUBES_MAP_DATA = data;
 
             // Reset Player to Initial Spawn
             playerPos.current.copy(data.spawnPos);
@@ -1089,27 +1134,14 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         }, 150); // 150ms debounce
 
         return () => clearTimeout(timeout);
-    }, [settings.worldSize, settings.riverWidth, settings.ratios, mapId]);
+    }, [settings, mapId]);
 
     // Handle Match Start or Respawn (PREP status)
     useEffect(() => {
         if (status === GameStatus.PREP && mapData) {
-            // 1. Recalculate a fresh random spawn point on the current map
-            const halfSize = Math.floor(settings.worldSize / 2);
-            const gridSize = settings.worldSize * GRID_SCALE;
-
-            const isWaterLogic = (lx: number, lz: number) => {
-                const startX = worldToIndex(lx, halfSize, settings.worldSize);
-                const startZ = worldToIndex(lz, halfSize, settings.worldSize);
-                if (startX >= 0 && startX < gridSize && startZ >= 0 && startZ < gridSize) {
-                    return mapData.wGrid[startX][startZ] === 1;
-                }
-                return false;
-            };
-
             // 3. Reset Camera & Controls
             if (controls) {
-                // @ts-ignore
+                // @ts-expect-error - controls has no types for reset method
                 if (controls.reset) controls.reset();
             }
             camera.position.set(100, 100, 100);
@@ -1118,7 +1150,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             // 4. Notify Prep Complete
             onPrepComplete();
         }
-    }, [status, mapData]); // Triggers on status change (Respawn/Iniciar) or Map change
+    }, [status, mapData, camera, controls, onPrepComplete]); // Triggers on status change (Respawn/Iniciar) or Map change
 
     // Handle Camera Free-Mode Zoom to Fit
     useEffect(() => {
@@ -1166,7 +1198,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
     useFrame((state, delta) => {
         if (!mapData) return;
         const dt = Math.min(delta, 0.1);
-        let playerCanMove = status === GameStatus.PLAYING || status === GameStatus.PREP;
+        const playerCanMove = status === GameStatus.PLAYING || status === GameStatus.PREP;
         const physicsOutput = updatePlayerPhysics(
             dt,
             playerPos.current,
@@ -1209,7 +1241,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             if (isOnLadder) {
                 // Face the ladder wall
                 const targetAngle = physicsOutput.ladderFaceAngle;
-                let currentAngle = characterGroup.current.rotation.y;
+                const currentAngle = characterGroup.current.rotation.y;
                 let diff = targetAngle - currentAngle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
                 while (diff < -Math.PI) diff += Math.PI * 2;
@@ -1219,7 +1251,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             } else if (physicsOutput.pMoving && !physicsOutput.effectiveStunned) {
                 // pDir now reflects world direction relative to camera
                 const targetAngle = Math.atan2(physicsOutput.pDir.x, physicsOutput.pDir.z);
-                let currentAngle = characterGroup.current.rotation.y;
+                const currentAngle = characterGroup.current.rotation.y;
                 let diff = targetAngle - currentAngle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
                 while (diff < -Math.PI) diff += Math.PI * 2;
@@ -1257,7 +1289,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
         }
 
         // --- HIDING LOGIC ---
-        let isHiding = false;
+        const isHiding = false;
 
         const dx = playerPos.current.x - prevPlayerPos.current.x;
         const dz = playerPos.current.z - prevPlayerPos.current.z;
@@ -1328,10 +1360,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             camera.position.lerp(camPos, dt * 2);
 
             if (controls) {
-                // @ts-ignore
-                controls.target.lerp(target, dt * 5);
-                // @ts-ignore
-                controls.update();
+                const ctrl = controls as unknown as { target: THREE.Vector3, update: () => void } | null;
+                if (ctrl) {
+                    ctrl.target.lerp(target, dt * 5);
+                    ctrl.update();
+                }
             }
         }
         else if (settings.cameraFollow) {
@@ -1354,6 +1387,64 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 playerVel.current.set(0, 0, 0);
             }
         }
+
+        // --- OCCLUSION RAYCASTING ---
+        if (mapData) {
+            const raycaster = new THREE.Raycaster();
+            const camPos = camera.position;
+            const playerHead = playerPos.current.clone();
+            playerHead.y += 1.0; // target player chest/head
+            
+            const toPlayer = new THREE.Vector3().subVectors(playerHead, camPos);
+            toPlayer.y = 0; // horizontal projection
+            toPlayer.normalize();
+            
+            // Perpendicular direction (left/right relative to screen view)
+            const perp = new THREE.Vector3(-toPlayer.z, 0, toPlayer.x);
+            
+            const targets: THREE.Vector3[] = [playerHead];
+            
+            // 1. Side buffers (0.6 units) for early horizontal entry detection
+            const sideBuffer = 0.6;
+            targets.push(playerHead.clone().addScaledVector(perp, sideBuffer));
+            targets.push(playerHead.clone().addScaledVector(perp, -sideBuffer));
+            
+            // 2. Velocity-based predictive lookahead (0.3s future projection)
+            if (playerVel.current.lengthSq() > 0.01) {
+                const velProj = playerVel.current.clone().multiplyScalar(0.3);
+                // Clamp lookahead distance to a maximum of 1.8 units
+                if (velProj.length() > 1.8) velProj.normalize().multiplyScalar(1.8);
+                targets.push(playerHead.clone().add(velProj));
+            }
+            
+            const currentIntersectedIds = new Set<string>();
+            const rootObject = buildingsGroupRef.current || state.scene;
+            const isTargeted = !!buildingsGroupRef.current;
+            
+            for (const target of targets) {
+                const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
+                raycaster.set(camPos, dir);
+                raycaster.far = camPos.distanceTo(target) - 0.2; // stop right before target
+                
+                // Intersect ONLY the buildings group recursively if available, otherwise fallback to scene
+                const intersects = isTargeted 
+                    ? raycaster.intersectObject(rootObject, true) 
+                    : raycaster.intersectObjects(rootObject.children, true);
+                    
+                for (const hit of intersects) {
+                    let curr: THREE.Object3D | null = hit.object;
+                    while (curr) {
+                        if (curr.userData && curr.userData.buildingId) {
+                            currentIntersectedIds.add(curr.userData.buildingId);
+                            break;
+                        }
+                        curr = curr.parent;
+                    }
+                }
+            }
+            
+            occludedBuildingIdsRef.current = currentIntersectedIds;
+        }
     });
 
     // Memoize Map Rendering
@@ -1374,30 +1465,34 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
                 <VoxelFences fences={fences} />
                 <VoxelFoliage objects={foliage} />
                 <WheatField wheatObjects={wheat} playerPos={playerPos} />
-                {buildings.map(obj => (
-                    <Building
-                        key={obj.id}
-                        position={new THREE.Vector3(...obj.position)}
-                        scale={obj.scale}
-                        color={obj.color}
-                        type={obj.type as any}
-                        playerPos={playerPos}
-                        playerVel={playerVel}
-                        playerLastDir={playerLastDir}
-                        chimney={obj.chimney}
-                        attachedChimneys={obj.attachedChimneys}
-                        acs={obj.acs}
-                        shape={obj.shape}
-                        windows={obj.windows}
-                        doors={obj.doors}
-                        ladders={obj.ladders}
-                        variant={obj.variant}
-                        showWireframe={showWireframe}
-                        showGrid={showGrid}
-                        status={status}
-                        debugMode={debugMode}
-                    />
-                ))}
+                <group ref={buildingsGroupRef}>
+                    {buildings.map(obj => (
+                        <Building
+                            key={obj.id}
+                            id={obj.id}
+                            occludedBuildingIdsRef={occludedBuildingIdsRef}
+                            position={new THREE.Vector3(...obj.position)}
+                            scale={obj.scale}
+                            color={obj.color}
+                            type={obj.type as 'box' | 'factory' | 'highrise'}
+                            playerPos={playerPos}
+                            playerVel={playerVel}
+                            playerLastDir={playerLastDir}
+                            chimney={obj.chimney}
+                            attachedChimneys={obj.attachedChimneys}
+                            acs={obj.acs}
+                            shape={obj.shape}
+                            windows={obj.windows}
+                            doors={obj.doors}
+                            ladders={obj.ladders}
+                            variant={obj.variant}
+                            showWireframe={showWireframe}
+                            showGrid={showGrid}
+                            status={status}
+                            debugMode={debugMode}
+                        />
+                    ))}
+                </group>
             </>
         );
     }, [mapData, debugMode, showGrid, showWireframe, status, settings.riverFlow]);
@@ -1410,7 +1505,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(({
             {debugMode && mapData && (
                 <>
                     <CollisionDebug collisionGrid={mapData.collisionGrid} bGrid={mapData.bGrid} size={mapData.worldSize} visible={!!showCollision} />
-                    <OcclusionCylinderDebug playerPos={playerPos} playerLastDir={playerLastDir} visible={!!showOcclusion} />
+                    <VisionPointsDebug playerPos={playerPos} playerLastDir={playerLastDir} visible={!!showOcclusion} />
                 </>
             )}
             {status !== GameStatus.IDLE && (

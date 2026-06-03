@@ -1,4 +1,5 @@
 import React from 'react';
+import * as THREE from 'three';
 
 /**
  * Vertical Ladder component for building walls.
@@ -32,25 +33,35 @@ export const Ladder: React.FC<{
         rungs.push(y);
     }
 
+    const railMaterial = React.useMemo(() => new THREE.MeshStandardMaterial({ color: railColor, roughness: 0.9 }), [railColor]);
+    const rungMaterial = React.useMemo(() => new THREE.MeshStandardMaterial({ color: rungColor, roughness: 0.85 }), [rungColor]);
+
+    React.useEffect(() => {
+        return () => {
+            railMaterial.dispose();
+            rungMaterial.dispose();
+        };
+    }, [railMaterial, rungMaterial]);
+
     return (
-        <group position={position} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
+        <group position={position} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'ladder' }}>
             {/* Left Rail */}
-            <mesh position={[-rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[-rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'ladder' }}>
                 <boxGeometry args={[railWidth, halfHeight * 2, railDepth]} />
-                <meshStandardMaterial color={railColor} roughness={0.9} />
+                <primitive object={railMaterial} attach="material" />
             </mesh>
 
             {/* Right Rail */}
-            <mesh position={[rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+            <mesh position={[rungWidth / 2, 0, 0]} castShadow receiveShadow userData={{ type: 'ladder' }}>
                 <boxGeometry args={[railWidth, halfHeight * 2, railDepth]} />
-                <meshStandardMaterial color={railColor} roughness={0.9} />
+                <primitive object={railMaterial} attach="material" />
             </mesh>
 
             {/* Rungs */}
             {rungs.map((y, i) => (
-                <mesh key={i} position={[0, y, 0]} castShadow receiveShadow userData={{ type: 'detail-fade' }}>
+                <mesh key={i} position={[0, y, 0]} castShadow receiveShadow userData={{ type: 'ladder' }}>
                     <boxGeometry args={[rungWidth, rungHeight, rungDepth]} />
-                    <meshStandardMaterial color={rungColor} roughness={0.85} />
+                    <primitive object={rungMaterial} attach="material" />
                 </mesh>
             ))}
         </group>

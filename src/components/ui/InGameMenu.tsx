@@ -16,7 +16,7 @@ interface InGameMenuProps {
     togglePause: () => void;
     restartRound: () => void;
     resetToMenu: () => void;
-    updateSetting: (key: keyof GameSettings, value: any) => void;
+    updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
     setIsEditing: (val: boolean) => void;
 }
 
@@ -146,7 +146,7 @@ export const InGameMenu: React.FC<InGameMenuProps> = ({
                                     className="w-3 h-3 accent-yellow-500"
                                 />
                                 <label htmlFor="showOcc" className="pixel-font text-[8px] text-gray-400 cursor-pointer">
-                                    CILINDRO DE VISÃO
+                                    PONTOS DE VISÃO (RUA)
                                 </label>
                             </div>
                         )}

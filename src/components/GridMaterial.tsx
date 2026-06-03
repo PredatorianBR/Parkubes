@@ -19,6 +19,7 @@ export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHe
         materialRef.current.onBeforeCompile = (shader) => {
             shader.uniforms.showGrid = materialRef.current.userData.showGrid;
             shader.uniforms.floorHeight = materialRef.current.userData.floorHeight;
+
             shader.vertexShader = shader.vertexShader.replace(
                 '#include <common>',
                 `#include <common>
@@ -28,6 +29,7 @@ export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHe
                 `#include <worldpos_vertex>
                 vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
             );
+
             shader.fragmentShader = shader.fragmentShader.replace(
                 '#include <common>',
                 `#include <common>
@@ -71,6 +73,15 @@ export const GridMaterial: React.FC<{ color: string; showGrid?: boolean; floorHe
         materialRef.current.userData.floorHeight.value = floorHeight;
     }
 
+    React.useEffect(() => {
+        return () => {
+            if (materialRef.current) {
+                materialRef.current.dispose();
+            }
+        };
+    }, []);
+
     // Attach material to parent mesh
     return <primitive object={materialRef.current} attach="material" />;
 };
+
