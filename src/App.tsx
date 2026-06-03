@@ -66,20 +66,33 @@ const GameLayout: React.FC<{
 
   // Timer decrement: simple interval that only updates local matchTimer
   useEffect(() => {
-    if (mode !== GameMode.HIDE_AND_SEEK || status !== GameStatus.PLAYING) return;
+    if (mode !== GameMode.HIDE_AND_SEEK) return;
+    if (status !== GameStatus.PLAYING && status !== GameStatus.PREP) return;
     
     const interval = setInterval(() => {
       setMatchTimer(t => {
-        if (t <= 1) {
-          handleRoundEnd(true);
-          return 0;
+        if (status === GameStatus.PREP) {
+          if (t <= 1) {
+            handlePrepComplete();
+            return 30; // Start playing timer at 30
+          }
+          return t - 1;
+        } else {
+          // PLAYING
+          if (t <= 1) {
+            // Hider wins if time runs out.
+            // Odd round: Player is hider (1, 3). Even round: AI is hider (2, 4).
+            const isPlayerHider = match.currentRound % 2 !== 0;
+            handleRoundEnd(isPlayerHider);
+            return 0;
+          }
+          return t - 1;
         }
-        return t - 1;
       });
     }, 1000);
     
     return () => clearInterval(interval);
-  }, [status, mode, handleRoundEnd]);
+  }, [status, mode, match.currentRound, handleRoundEnd, handlePrepComplete]);
 
   const shadowSize = settings.worldSize * 1.5;
 

@@ -4,9 +4,9 @@ import * as THREE from 'three';
 import { GameStatus, VoxelObject, GameSettings, Position, GameMode, MatchState } from '../types';
 import { Character } from './Character';
 import { useControls } from '../hooks/useControls';
-import { generateCityLevel } from '../utils/levelGen';
+import { generateCityLevel, findSpawnPos } from '../utils/levelGen';
 import { updatePlayerPhysics } from '../utils/player';
-import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT, SpatialHashGrid } from '../utils/physics';
+import { worldToIndex, GRID_SCALE, FLOOR_HEIGHT, SpatialHashGrid, checkLineOfSight, getTerrainHeight } from '../utils/physics';
 import { VoxelGround } from './environment/VoxelGround';
 import { VoxelWater } from './environment/VoxelWater';
 import { WheatField } from './environment/WheatField';
@@ -502,7 +502,7 @@ const Building: React.FC<{
     debugMode?: boolean;
 }> = React.memo(({ id, occludedBuildingIdsRef, position, scale, color, type, playerPos, chimney, attachedChimneys = [], acs = [], shape, windows = [], doors = [], ladders = [], isCooking = false, showGrid = false }) => {
     const groupRef = useRef<THREE.Group>(null!);
-    const gridShaderRef = useRef<THREE.Shader | null>(null);
+    const gridShaderRef = useRef<any>(null);
     const { camera } = useThree();
     const [w, h, d] = scale;
     const isFactory = type === 'factory';
@@ -1077,6 +1077,85 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
     const lastFallDist = useRef(0);
     const prevPlayerPos = useRef(new THREE.Vector3(0, 0, 0));
     const smoothedMoveSpeed = useRef(0);
+
+    // AI Physics & State Refs
+    const aiPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiVel = useRef(new THREE.Vector3(0, 0, 0));
+    const aiLastDir = useRef(new THREE.Vector2(0, 1));
+    const aiIsGrounded = useRef(false);
+    const aiIsCharging = useRef(false);
+    const aiIsRolling = useRef(false);
+    const aiStamina = useRef(100);
+    const aiStunTimer = useRef(0);
+    const aiJumpDelayTimer = useRef(0);
+    const aiAirTimeHighPoint = useRef(0);
+    const aiJumpPressedPrev = useRef(false);
+    const aiRollTimer = useRef(0);
+    const aiJumpBufferTimer = useRef(0);
+    const aiStumbleTimer = useRef(0);
+    const aiStumbleVelocity = useRef(new THREE.Vector3(0, 0, 0));
+    const aiLandingAnimTimer = useRef(0);
+    const aiLastFallDist = useRef(0);
+    const aiPrevPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiSmoothedMoveSpeed = useRef(0);
+    const aiStuckTimer = useRef(0);
+    const aiDetourTimer = useRef(0);
+    const aiDetourDir = useRef(new THREE.Vector3(0, 0, 0));
+    const aiJumpHoldTimer = useRef(0);
+    const aiLastProgressPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiProgressCheckTimer = useRef(0);
+    const aiSearchLookTimer = useRef(0);
+
+    // AI Ladder State
+    const aiLadderState = useRef({
+        isClimbing: false,
+        isLadderSliding: false,
+        isLadderHanging: false,
+        isLadderMounting: false,
+        ladderMountTimer: 0,
+        isWallClimbing: false,
+        wallClimbProgress: 0,
+        wallClimbDir: new THREE.Vector2(0, 0)
+    });
+
+    // AI Character Group & UI Refs
+    const aiCharacterGroup = useRef<THREE.Group>(null!);
+    const aiStaminaGroup = useRef<HTMLDivElement>(null!);
+    const aiStaminaFill = useRef<HTMLDivElement>(null!);
+
+    // AI Hiding & Decision States
+    const aiHidingSpot = useRef(new THREE.Vector3(0, 0, 0));
+    const aiLastKnownPlayerPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiHasLastKnownPlayerPos = useRef(false);
+    const aiWanderTarget = useRef(new THREE.Vector3(0, 0, 0));
+    const aiHasWanderTarget = useRef(false);
+    const aiFleeTimer = useRef(0); // Cooldown to re-evaluate fleeing hiding spot
+
+    // AI Visual State
+    const aiVisualStateRef = useRef({
+        isCharging: false,
+        isRolling: false,
+        isGrounded: true,
+        isRunning: false,
+        isMoving: false,
+        moveSpeed: 0,
+        isStumbling: false,
+        stunned: false,
+        landingFactor: 0,
+        currentSurface: 0,
+        fallDistance: 0,
+        justLanded: false,
+        isHiding: false,
+        isClimbing: false,
+        isLadderSliding: false,
+        isNearLadder: false,
+        isLadderHanging: false,
+        isLadderMounting: false,
+        ladderFaceAngle: 0,
+        isWallClimbing: false,
+        wallClimbProgress: 0
+    });
+
     const occludedBuildingIdsRef = useRef<Set<string>>(new Set());
     const buildingsGroupRef = useRef<THREE.Group>(null);
 
@@ -1136,10 +1215,130 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
         return () => clearTimeout(timeout);
     }, [settings, mapId]);
 
+    const oppositeQuadrant = (q: number): 1 | 2 | 3 | 4 => {
+        switch (q) {
+            case 1: return 3;
+            case 2: return 4;
+            case 3: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    };
+
+    const selectHidingSpot = (playerSpawn: THREE.Vector3) => {
+        if (!mapData) return new THREE.Vector3(0, 0, 0);
+        let bestSpot = new THREE.Vector3(0, 0, 0);
+        let bestScore = -1;
+        
+        // Candidate list
+        const candidates: THREE.Vector3[] = [];
+        
+        // 1. Rooftops with ladders
+        mapData.objects.forEach(obj => {
+            if (obj.ladders && obj.ladders.length > 0) {
+                const roofY = obj.position[1] + obj.scale[1] / 2;
+                candidates.push(new THREE.Vector3(obj.position[0], roofY, obj.position[2]));
+            }
+        });
+        
+        // 2. Random street/ground positions
+        const halfSize = Math.floor(settings.worldSize / 2);
+        for (let i = 0; i < 40; i++) {
+            const rx = (Math.random() - 0.5) * settings.worldSize;
+            const rz = (Math.random() - 0.5) * settings.worldSize;
+            const ry = getTerrainHeight(rx, rz, 0, mapData.collisionGrid, mapData.bGrid, mapData.wGrid, settings.worldSize);
+            if (ry !== -Infinity && ry < 2.0) { // ground level
+                candidates.push(new THREE.Vector3(rx, ry, rz));
+            }
+        }
+        
+        // Evaluate candidates
+        candidates.forEach(cand => {
+            const dist = cand.distanceTo(playerSpawn);
+            const hasLOS = checkLineOfSight(playerSpawn, cand, mapData.collisionGrid);
+            let score = dist;
+            if (!hasLOS) {
+                score *= 2.0; // Preference for out of sight
+            } else {
+                score *= 0.5; // Penalty for direct sight
+            }
+            if (cand.y > 2.0) {
+                score += 15; // Rooftop bonus
+            }
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestSpot.copy(cand);
+            }
+        });
+        
+        return bestScore > -1 ? bestSpot : new THREE.Vector3(0, 0, 0);
+    };
+
     // Handle Match Start or Respawn (PREP status)
     useEffect(() => {
         if (status === GameStatus.PREP && mapData) {
-            // 3. Reset Camera & Controls
+            if (props.mode === GameMode.HIDE_AND_SEEK) {
+                // Choose player spawn quadrant randomly
+                const pQuad = (Math.floor(Math.random() * 4) + 1) as 1 | 2 | 3 | 4;
+                const aiQuad = oppositeQuadrant(pQuad);
+
+                const isWaterLogic = (lx: number, lz: number) => {
+                    const halfSize = Math.floor(settings.worldSize / 2);
+                    const startX = worldToIndex(lx, halfSize, settings.worldSize);
+                    const startZ = worldToIndex(lz, halfSize, settings.worldSize);
+                    return mapData.wGrid[startX]?.[startZ] === 1;
+                };
+
+                const halfSize = Math.floor(settings.worldSize / 2);
+                const pSpawn = findSpawnPos(settings.worldSize, halfSize, mapData.tGrid, mapData.collisionGrid, mapData.wGrid, isWaterLogic, pQuad);
+                const aiSpawn = findSpawnPos(settings.worldSize, halfSize, mapData.tGrid, mapData.collisionGrid, mapData.wGrid, isWaterLogic, aiQuad);
+
+                // Reset player physics state
+                playerPos.current.copy(pSpawn);
+                prevPlayerPos.current.copy(pSpawn);
+                playerVel.current.set(0, 0, 0);
+                isGrounded.current = true;
+                airTimeHighPoint.current = pSpawn.y;
+                stamina.current = 100;
+                stunTimer.current = 0;
+
+                // Reset AI physics state
+                aiPos.current.copy(aiSpawn);
+                aiPrevPos.current.copy(aiSpawn);
+                aiVel.current.set(0, 0, 0);
+                aiIsGrounded.current = true;
+                aiAirTimeHighPoint.current = aiSpawn.y;
+                aiStamina.current = 100;
+                aiStunTimer.current = 0;
+                aiStuckTimer.current = 0;
+                aiDetourTimer.current = 0;
+                aiJumpHoldTimer.current = 0;
+                aiLastProgressPos.current.copy(aiSpawn);
+                aiProgressCheckTimer.current = 0;
+                aiSearchLookTimer.current = 0;
+
+                // Reset AI target states
+                aiHasLastKnownPlayerPos.current = false;
+                aiHasWanderTarget.current = false;
+
+                // Select initial hiding spot if AI is Hider
+                const isAISeeker = props.match.currentRound % 2 !== 0;
+                if (!isAISeeker) {
+                    aiHidingSpot.current.copy(selectHidingSpot(pSpawn));
+                }
+            } else {
+                // Free Mode: reset player only
+                playerPos.current.copy(mapData.spawnPos);
+                prevPlayerPos.current.copy(mapData.spawnPos);
+                playerVel.current.set(0, 0, 0);
+                isGrounded.current = true;
+                airTimeHighPoint.current = mapData.spawnPos.y;
+                stamina.current = 100;
+                stunTimer.current = 0;
+            }
+
+            // Reset Camera & Controls
             if (controls) {
                 // @ts-expect-error - controls has no types for reset method
                 if (controls.reset) controls.reset();
@@ -1147,10 +1346,12 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
             camera.position.set(100, 100, 100);
             camera.lookAt(0, 0, 0);
 
-            // 4. Notify Prep Complete
-            onPrepComplete();
+            // In FREE mode, transition immediately
+            if (props.mode === GameMode.FREE) {
+                onPrepComplete();
+            }
         }
-    }, [status, mapData, camera, controls, onPrepComplete]); // Triggers on status change (Respawn/Iniciar) or Map change
+    }, [status, mapData, props.mode, props.match.currentRound, controls, camera, onPrepComplete]);
 
     // Handle Camera Free-Mode Zoom to Fit
     useEffect(() => {
@@ -1198,7 +1399,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
     useFrame((state, delta) => {
         if (!mapData) return;
         const dt = Math.min(delta, 0.1);
-        const playerCanMove = status === GameStatus.PLAYING || status === GameStatus.PREP;
+        const isPlayerSeeker = props.mode === GameMode.HIDE_AND_SEEK && props.match.currentRound % 2 === 0;
+        const playerIsFrozen = status === GameStatus.PREP && isPlayerSeeker;
+        const finalPlayerCanMove = (status === GameStatus.PLAYING || status === GameStatus.PREP) && !playerIsFrozen;
+        const playerCanMove = finalPlayerCanMove;
+
         const physicsOutput = updatePlayerPhysics(
             dt,
             playerPos.current,
@@ -1219,7 +1424,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
             mapData.bGrid,
             mapData.wGrid,
             settings.worldSize,
-            playerCanMove,
+            finalPlayerCanMove,
             rollTimer,
             jumpBufferTimer,
             isRolling,
@@ -1261,6 +1466,302 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
             }
         }
         
+        // --- START AI LOGIC ---
+        const isAISeeker = props.mode === GameMode.HIDE_AND_SEEK && props.match.currentRound % 2 !== 0;
+        const aiIsFrozen = status === GameStatus.PREP && isAISeeker;
+        const aiCanMove = (status === GameStatus.PLAYING || status === GameStatus.PREP) && !aiIsFrozen;
+
+        const aiInput = {
+            moveDir: new THREE.Vector3(0, 0, 0),
+            jump: false,
+            run: false,
+            ladderUp: false,
+            ladderDown: false
+        };
+
+        let targetPos = new THREE.Vector3().copy(aiPos.current);
+
+        if (props.mode === GameMode.HIDE_AND_SEEK && aiCanMove) {
+            const toPlayer = new THREE.Vector3().subVectors(playerPos.current, aiPos.current);
+            const distanceToPlayer = toPlayer.length();
+            const hasLOS = checkLineOfSight(aiPos.current, playerPos.current, mapData.collisionGrid);
+
+            // Update last seen position
+            if (hasLOS && status === GameStatus.PLAYING) {
+                aiLastKnownPlayerPos.current.copy(playerPos.current);
+                aiHasLastKnownPlayerPos.current = true;
+            }
+
+            // Hear player running/jumping
+            const playerNoise = physicsOutput.noiseLevel;
+            const canHearPlayer = playerNoise > 0 && distanceToPlayer < playerNoise * 1.5;
+            if (canHearPlayer && status === GameStatus.PLAYING) {
+                aiLastKnownPlayerPos.current.copy(playerPos.current);
+                aiHasLastKnownPlayerPos.current = true;
+            }
+
+            if (isAISeeker) {
+                // SEEKER AI
+                if (hasLOS || canHearPlayer) {
+                    targetPos.copy(playerPos.current);
+                    aiInput.run = true;
+                } else if (aiHasLastKnownPlayerPos.current) {
+                    targetPos.copy(aiLastKnownPlayerPos.current);
+                    aiInput.run = true;
+                    if (aiPos.current.distanceTo(aiLastKnownPlayerPos.current) < 2.0) {
+                        aiHasLastKnownPlayerPos.current = false;
+                    }
+                } else {
+                    // Wander search
+                    if (aiSearchLookTimer.current > 0) {
+                        aiSearchLookTimer.current -= dt;
+                        aiInput.run = false;
+                        // Slowly rotate to scan the area visually
+                        aiLastDir.current.rotateAround(new THREE.Vector2(0, 0), dt * 3.0);
+                    } else if (!aiHasWanderTarget.current || aiPos.current.distanceTo(aiWanderTarget.current) < 2.0) {
+                        const wasOnRoof = aiHasWanderTarget.current && aiWanderTarget.current.y > 2.0;
+                        if (aiHasWanderTarget.current && wasOnRoof) {
+                            aiSearchLookTimer.current = 2.5; // Look around for 2.5s
+                            aiHasWanderTarget.current = false;
+                        } else {
+                            // 50% chance to climb a building with a ladder, 50% chance of random street wander
+                            const buildingsWithLadders = mapData.objects.filter(obj => obj.ladders && obj.ladders.length > 0);
+                            if (buildingsWithLadders.length > 0 && Math.random() < 0.5) {
+                                const obj = buildingsWithLadders[Math.floor(Math.random() * buildingsWithLadders.length)];
+                                const roofY = obj.position[1] + obj.scale[1] / 2;
+                                aiWanderTarget.current.set(obj.position[0], roofY, obj.position[2]);
+                                aiHasWanderTarget.current = true;
+                            } else {
+                                const rx = (Math.random() - 0.5) * settings.worldSize;
+                                const rz = (Math.random() - 0.5) * settings.worldSize;
+                                const ry = getTerrainHeight(rx, rz, 0, mapData.collisionGrid, mapData.bGrid, mapData.wGrid, settings.worldSize);
+                                if (ry !== -Infinity && ry < 2.0) {
+                                    aiWanderTarget.current.set(rx, ry, rz);
+                                    aiHasWanderTarget.current = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (aiHasWanderTarget.current && aiSearchLookTimer.current <= 0) {
+                        targetPos.copy(aiWanderTarget.current);
+                        // Run if going to high roofs, walk otherwise
+                        aiInput.run = aiWanderTarget.current.y > 2.0;
+                    }
+                }
+            } else {
+                // HIDER AI
+                if (status === GameStatus.PREP) {
+                    targetPos.copy(aiHidingSpot.current);
+                    aiInput.run = true;
+                } else {
+                    // Playing
+                    const playerIsClose = distanceToPlayer < 12.0;
+                    if (playerIsClose || hasLOS) {
+                        // Fleeing: run to a new hiding spot
+                        aiFleeTimer.current -= dt;
+                        if (aiFleeTimer.current <= 0 || aiPos.current.distanceTo(aiHidingSpot.current) < 2.0) {
+                            aiHidingSpot.current.copy(selectHidingSpot(playerPos.current));
+                            aiFleeTimer.current = 1.5;
+                        }
+                        targetPos.copy(aiHidingSpot.current);
+                        aiInput.run = true;
+                    } else {
+                        // Safe, stay in hiding spot
+                        targetPos.copy(aiHidingSpot.current);
+                        aiInput.run = false;
+                    }
+                }
+            }
+
+            // Steering direction towards the target
+            let dir = new THREE.Vector3().subVectors(targetPos, aiPos.current);
+            dir.y = 0;
+            if (dir.lengthSq() > 0.05) {
+                dir.normalize();
+            } else {
+                dir.set(0, 0, 0);
+            }
+
+            // Stuck progress checking (every 0.3s)
+            aiProgressCheckTimer.current += dt;
+            const isTryingToMove = dir.lengthSq() > 0.1;
+            const isClimbingOrHanging = aiLadderState.current.isClimbing || aiLadderState.current.isLadderHanging;
+            const isNearHidingSpot = !isAISeeker && aiPos.current.distanceTo(aiHidingSpot.current) < 1.5;
+
+            if (aiProgressCheckTimer.current > 0.3) {
+                aiProgressCheckTimer.current = 0;
+                const distMoved = aiPos.current.distanceTo(aiLastProgressPos.current);
+                
+                if (isTryingToMove && !isClimbingOrHanging && aiStunTimer.current <= 0 && !isNearHidingSpot && distMoved < 0.25) {
+                    // AI is stuck on a wall! 
+                    // Hold jump for 0.8 seconds to allow wall-climbing/ledge-grabbing
+                    aiJumpHoldTimer.current = 0.8;
+                    
+                    // Choose detour perpendicular direction (sidestepping)
+                    const perp1 = new THREE.Vector3(-dir.z, 0, dir.x);
+                    const perp2 = new THREE.Vector3(dir.z, 0, -dir.x);
+                    
+                    const checkPoint1 = new THREE.Vector3().copy(aiPos.current).addScaledVector(perp1, 2.0);
+                    const checkPoint2 = new THREE.Vector3().copy(aiPos.current).addScaledVector(perp2, 2.0);
+                    
+                    const boxes1 = mapData.collisionGrid.query(checkPoint1.x, checkPoint1.z, 0.5);
+                    const boxes2 = mapData.collisionGrid.query(checkPoint2.x, checkPoint2.z, 0.5);
+                    
+                    // Steer towards the side with fewer obstacles
+                    if (boxes1.length <= boxes2.length) {
+                        aiDetourDir.current.copy(perp1);
+                    } else {
+                        aiDetourDir.current.copy(perp2);
+                    }
+                    aiDetourTimer.current = 1.2; // detouring duration
+                }
+                aiLastProgressPos.current.copy(aiPos.current);
+            }
+
+            // Blend target direction with detour if detouring is active
+            if (aiDetourTimer.current > 0) {
+                aiDetourTimer.current -= dt;
+                dir.addScaledVector(aiDetourDir.current, 1.2).normalize();
+            }
+
+            aiInput.moveDir.copy(dir);
+
+            // Apply held jump (vital for wall climbing / grabbing ledges in air)
+            if (aiJumpHoldTimer.current > 0) {
+                aiJumpHoldTimer.current -= dt;
+                aiInput.jump = true;
+            }
+
+            // Ladder climbing decision
+            if (mapData.ladderZones) {
+                const ax = aiPos.current.x;
+                const ay = aiPos.current.y;
+                const az = aiPos.current.z;
+                for (const zone of mapData.ladderZones) {
+                    if (ax >= zone.minX && ax <= zone.maxX && az >= zone.minZ && az <= zone.maxZ) {
+                        if (ay >= zone.minY - 1.0 && ay <= zone.maxY + 2.0) {
+                            if (targetPos.y > ay + 1.0) {
+                                aiInput.ladderUp = true;
+                                aiInput.jump = true;
+                            } else if (targetPos.y < ay - 1.0) {
+                                aiInput.ladderDown = true;
+                                aiInput.jump = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Run AI Physics
+        const dummyKeys = { current: {} };
+        const aiPhysicsOutput = updatePlayerPhysics(
+            dt,
+            aiPos.current,
+            aiVel.current,
+            aiIsGrounded,
+            aiIsCharging,
+            aiLandingAnimTimer,
+            aiJumpDelayTimer,
+            aiAirTimeHighPoint,
+            aiStamina,
+            aiStunTimer,
+            aiStunTimer.current > 0,
+            dummyKeys,
+            aiLastDir,
+            aiJumpPressedPrev,
+            settings.playerSpeed,
+            mapData.collisionGrid,
+            mapData.bGrid,
+            mapData.wGrid,
+            settings.worldSize,
+            aiCanMove,
+            aiRollTimer,
+            aiJumpBufferTimer,
+            aiIsRolling,
+            aiStumbleTimer,
+            aiStumbleVelocity,
+            camera,
+            aiLastFallDist,
+            mapData?.riverOrientation ?? -1,
+            settings.riverFlow,
+            mapData?.ladderZones ?? [],
+            aiInput,
+            aiLadderState
+        );
+
+        // Update AI Character Transform
+        if (aiCharacterGroup.current) {
+            aiCharacterGroup.current.position.copy(aiPos.current);
+            const isOnLadder = aiPhysicsOutput.isClimbing || aiPhysicsOutput.isLadderSliding || aiPhysicsOutput.isLadderHanging || aiPhysicsOutput.isLadderMounting;
+            if (isOnLadder) {
+                const targetAngle = aiPhysicsOutput.ladderFaceAngle;
+                const currentAngle = aiCharacterGroup.current.rotation.y;
+                let diff = targetAngle - currentAngle;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                aiCharacterGroup.current.rotation.y += diff * dt * 12;
+            } else if ((aiPhysicsOutput.pMoving || aiSearchLookTimer.current > 0) && !aiPhysicsOutput.effectiveStunned) {
+                const targetAngle = Math.atan2(aiPhysicsOutput.pDir.x, aiPhysicsOutput.pDir.z);
+                const currentAngle = aiCharacterGroup.current.rotation.y;
+                let diff = targetAngle - currentAngle;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                aiCharacterGroup.current.rotation.y += diff * dt * 10; // Rotate slightly slower for scan look
+            }
+        }
+
+        // Sync AI Visual State for animations
+        const aiDx = aiPos.current.x - aiPrevPos.current.x;
+        const aiDz = aiPos.current.z - aiPrevPos.current.z;
+        const aiRawMoveSpeed = dt > 0 ? Math.sqrt(aiDx * aiDx + aiDz * aiDz) / dt : 0;
+        aiSmoothedMoveSpeed.current = THREE.MathUtils.lerp(aiSmoothedMoveSpeed.current, aiRawMoveSpeed, dt * 10);
+        aiPrevPos.current.copy(aiPos.current);
+
+        let aiSurface = 0;
+        if (mapData) {
+            const halfSize = Math.floor(settings.worldSize / 2);
+            const ix = worldToIndex(aiPos.current.x, halfSize, settings.worldSize);
+            const iz = worldToIndex(aiPos.current.z, halfSize, settings.worldSize);
+            if (mapData.sGrid[ix]?.[iz] !== undefined) {
+                aiSurface = mapData.sGrid[ix][iz];
+            }
+        }
+
+        aiVisualStateRef.current = {
+            isCharging: aiPhysicsOutput.isCharging,
+            isRolling: aiPhysicsOutput.isRolling,
+            isGrounded: aiPhysicsOutput.isGrounded,
+            isRunning: aiPhysicsOutput.isRunning,
+            isStumbling: aiPhysicsOutput.isStumbling,
+            stunned: aiPhysicsOutput.effectiveStunned,
+            isMoving: aiPhysicsOutput.pMoving,
+            moveSpeed: aiSmoothedMoveSpeed.current,
+            landingFactor: aiPhysicsOutput.landingFactor,
+            currentSurface: aiSurface,
+            fallDistance: aiPhysicsOutput.fallDistance,
+            justLanded: aiPhysicsOutput.justLanded,
+            isHiding: props.mode === GameMode.HIDE_AND_SEEK && !isAISeeker && aiInput.moveDir.lengthSq() < 0.01 && aiPos.current.distanceTo(aiHidingSpot.current) < 1.5,
+            isClimbing: aiPhysicsOutput.isClimbing,
+            isLadderSliding: aiPhysicsOutput.isLadderSliding,
+            isNearLadder: aiPhysicsOutput.isNearLadder,
+            isLadderHanging: aiPhysicsOutput.isLadderHanging,
+            isLadderMounting: aiPhysicsOutput.isLadderMounting,
+            ladderFaceAngle: aiPhysicsOutput.ladderFaceAngle,
+            isWallClimbing: aiPhysicsOutput.isWallClimbing,
+            wallClimbProgress: aiPhysicsOutput.wallClimbProgress
+        };
+
+        // Catch Collision Check
+        if (status === GameStatus.PLAYING && props.mode === GameMode.HIDE_AND_SEEK) {
+            const dist = playerPos.current.distanceTo(aiPos.current);
+            if (dist < 1.8) {
+                const isPlayerSeeker = props.match.currentRound % 2 === 0;
+                props.onRoundEnd(isPlayerSeeker);
+            }
+        }
         // --- END AI LOGIC ---
         // Update Stamina Bar
         if (staminaFill.current && staminaGroup.current) {
@@ -1518,7 +2019,32 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo((props) => {
                     rollTimerRef={rollTimer}
                     staminaRef={stamina}
                     color="#3b82f6"
-                    overlayContent={null}
+                    overlayContent={
+                        props.mode === GameMode.HIDE_AND_SEEK && status === GameStatus.PLAYING ? (
+                            <div className="bg-black/75 px-2 py-0.5 rounded text-white text-[10px] pixel-font border border-white/20 select-none uppercase tracking-wider">
+                                {props.match.currentRound % 2 === 0 ? "PEGADOR (VOCÊ)" : "FUGITIVO (VOCÊ)"}
+                            </div>
+                        ) : null
+                    }
+                />
+            )}
+            {props.mode === GameMode.HIDE_AND_SEEK && status !== GameStatus.IDLE && (
+                <Character
+                    groupRef={aiCharacterGroup}
+                    staminaFillRef={aiStaminaFill}
+                    staminaGroupRef={aiStaminaGroup}
+                    visualStateRef={aiVisualStateRef}
+                    stunTimerRef={aiStunTimer}
+                    rollTimerRef={aiRollTimer}
+                    staminaRef={aiStamina}
+                    color="#ef4444"
+                    overlayContent={
+                        status === GameStatus.PLAYING ? (
+                            <div className="bg-black/75 px-2 py-0.5 rounded text-white text-[10px] pixel-font border border-white/20 select-none uppercase tracking-wider">
+                                {props.match.currentRound % 2 !== 0 ? "PEGADOR (IA)" : "FUGITIVO (IA)"}
+                            </div>
+                        ) : null
+                    }
                 />
             )}
         </group>

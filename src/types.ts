@@ -157,5 +157,16 @@ export interface VisualState {
   justLanded: boolean;
   isRolling: boolean;
   moveSpeed: number;
+  isCharging?: boolean;
+  isStumbling?: boolean;
+  isHiding?: boolean;
+  isClimbing?: boolean;
+  isLadderSliding?: boolean;
+  isNearLadder?: boolean;
+  isLadderHanging?: boolean;
+  isLadderMounting?: boolean;
+  ladderFaceAngle?: number;
+  isWallClimbing?: boolean;
+  wallClimbProgress?: number;
 }
 

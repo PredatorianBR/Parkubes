@@ -55,7 +55,7 @@ export const WheatField: React.FC<{ wheatObjects: VoxelObject[], playerPos: Reac
         meshRef.current.instanceMatrix.needsUpdate = true;
     }, [wheatObjects]);
 
-    const onBeforeCompile = (shader: THREE.Shader) => {
+    const onBeforeCompile = (shader: any) => {
         shader.uniforms.uTime = { value: 0 };
         shader.uniforms.uPlayerPos = { value: new THREE.Vector3() };
 

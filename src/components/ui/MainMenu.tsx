@@ -69,6 +69,14 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                         >
                             MODO LIVRE
                         </button>
+                        <button
+                            onClick={() => setGameMode(GameMode.HIDE_AND_SEEK)}
+                            className={`pixel-font text-xs px-4 py-2 border-b-4 transition-all ${
+                                gameState.mode === GameMode.HIDE_AND_SEEK ? 'bg-yellow-600 border-yellow-800 text-white' : 'bg-gray-800 border-gray-900 text-gray-400'
+                            }`}
+                        >
+                            ESCONDE-ESCONDE
+                        </button>
                     </div>
 
                     <button onClick={startGame} className="pixel-font bg-yellow-500 hover:bg-yellow-400 text-black px-10 py-5 transform hover:scale-105 transition-all shadow-xl shadow-yellow-500/20">

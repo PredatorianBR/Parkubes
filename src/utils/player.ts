@@ -75,7 +75,7 @@ export const updatePlayerPhysics = (
             camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
             // Analog Input Priority
-            const analogInput = keys.current.analog;
+            const analogInput = keys.current.analog as { x: number; y: number } | undefined;
             if (analogInput && (analogInput.x !== 0 || analogInput.y !== 0)) {
                 const joyX = analogInput.x;
                 const joyY = -analogInput.y; // Invert Y (Screen Y is down, World Z is forward/back)
