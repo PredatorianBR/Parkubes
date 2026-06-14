@@ -1,8 +1,10 @@
-
 import { useEffect, useRef } from 'react';
 
 export const useControls = () => {
-  const keys = useRef<{ [key: string]: boolean | { x: number; y: number } | undefined; analog?: { x: number; y: number } }>({});
+  const keys = useRef<{
+    [key: string]: boolean | { x: number; y: number } | undefined;
+    analog?: { x: number; y: number };
+  }>({});
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -25,7 +27,8 @@ export const useControls = () => {
     // Analog Joystick Events
     const joystickMove = (e: Event) => {
       const customEvent = e as CustomEvent<{ x: number; y: number }>;
-      if (customEvent.detail) keys.current.analog = { x: customEvent.detail.x, y: customEvent.detail.y };
+      if (customEvent.detail)
+        keys.current.analog = { x: customEvent.detail.x, y: customEvent.detail.y };
     };
     const joystickEnd = () => {
       keys.current.analog = { x: 0, y: 0 };

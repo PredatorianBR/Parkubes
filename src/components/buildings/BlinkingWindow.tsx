@@ -2,114 +2,139 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
-export const BlinkingWindow: React.FC<{ position: [number, number, number], rotation: [number, number, number], size: number, color: string, type: 'residential' | 'industrial', isCorner?: boolean, forceOn?: boolean }> = ({ position, rotation, size, type }) => {
-    const groupRef = useRef<THREE.Group>(null!);
-    
-    // FIXED: Material properties adjusted to allow emissive light to shine through
-    const [material] = useState(() => new THREE.MeshStandardMaterial({
+export const BlinkingWindow: React.FC<{
+  position: [number, number, number];
+  rotation: [number, number, number];
+  size: number;
+  color: string;
+  type: 'residential' | 'industrial';
+  isCorner?: boolean;
+  forceOn?: boolean;
+}> = ({ position, rotation, size, type }) => {
+  const groupRef = useRef<THREE.Group>(null!);
+
+  // FIXED: Material properties adjusted to allow emissive light to shine through
+  const [material] = useState(
+    () =>
+      new THREE.MeshStandardMaterial({
         color: new THREE.Color('#1e293b'),
         emissive: new THREE.Color(type === 'residential' ? '#fbbf24' : '#e2e8f0'),
         emissiveIntensity: 0,
         roughness: 0.1,
-        metalness: 0.1
-    }));
+        metalness: 0.1,
+      }),
+  );
 
-    // Independent Random Life Cycle
-    const schedule = useMemo(() => {
-        return {
-            offset: Math.random() * 1000,
-            speed: type === 'residential' ? 0.05 + Math.random() * 0.1 : 0.0,
-            threshold: Math.random() * 0.6
-        };
-    }, [type]);
+  // Independent Random Life Cycle
+  const schedule = useMemo(() => {
+    return {
+      offset: Math.random() * 1000,
+      speed: type === 'residential' ? 0.05 + Math.random() * 0.1 : 0.0,
+      threshold: Math.random() * 0.6,
+    };
+  }, [type]);
 
-    useFrame((state, delta) => {
-        if (material) {
-            let targetIntensity = 0;
-            const maxIntensity = 4.0;
+  useFrame((state, delta) => {
+    if (material) {
+      let targetIntensity = 0;
+      const maxIntensity = 4.0;
 
-            if (type === 'industrial') {
-                targetIntensity = maxIntensity;
-            } else {
-                const t = state.clock.elapsedTime;
-                const noise = Math.sin(t * schedule.speed + schedule.offset);
-                const isWindowOn = noise > schedule.threshold;
-                targetIntensity = isWindowOn ? maxIntensity : 0.0;
-            }
+      if (type === 'industrial') {
+        targetIntensity = maxIntensity;
+      } else {
+        const t = state.clock.elapsedTime;
+        const noise = Math.sin(t * schedule.speed + schedule.offset);
+        const isWindowOn = noise > schedule.threshold;
+        targetIntensity = isWindowOn ? maxIntensity : 0.0;
+      }
 
-            const speed = targetIntensity < 0.1 ? 20.0 : 2.0;
-            material.emissiveIntensity = THREE.MathUtils.lerp(material.emissiveIntensity, targetIntensity, delta * speed);
-        }
-    });
+      const speed = targetIntensity < 0.1 ? 20.0 : 2.0;
+      material.emissiveIntensity = THREE.MathUtils.lerp(
+        material.emissiveIntensity,
+        targetIntensity,
+        delta * speed,
+      );
+    }
+  });
 
-    useEffect(() => {
-        return () => {
-            material.dispose();
-        };
-    }, [material]);
+  useEffect(() => {
+    return () => {
+      material.dispose();
+    };
+  }, [material]);
 
+  const frameColor = type === 'residential' ? '#4a3018' : '#1f2937';
+  const grillColor = type === 'residential' ? '#4a3018' : '#334155';
 
+  const frameDepth = 0.05;
+  const frameThickness = 0.06;
+  const zPos = frameDepth / 2;
 
-    const frameColor = type === 'residential' ? '#4a3018' : '#1f2937';
-    const grillColor = type === 'residential' ? '#4a3018' : '#334155';
+  const w = type === 'residential' ? size : 2.0;
+  const h = type === 'residential' ? size : 1.0;
 
-    const frameDepth = 0.05;
-    const frameThickness = 0.06;
-    const zPos = frameDepth / 2;
-
-    const w = type === 'residential' ? size : 2.0;
-    const h = type === 'residential' ? size : 1.0;
-
-    return (
-        <group ref={groupRef} position={[position[0], position[1], position[2]]} rotation={rotation} scale={[2, 2, 2]} userData={{ ignoreRaycast: true, type: 'detail-fade' }}>
-            <group position={[0, 0, 0]}>
-                <group>
-                    <mesh position={[0, h / 2 + frameThickness / 2, zPos]} userData={{ type: 'detail-fade' }}>
-                        <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
-                        <meshStandardMaterial color={frameColor} />
-                    </mesh>
-                    <mesh position={[0, -h / 2 - frameThickness / 2, zPos]} userData={{ type: 'detail-fade' }}>
-                        <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
-                        <meshStandardMaterial color={frameColor} />
-                    </mesh>
-                    <mesh position={[-w / 2 - frameThickness / 2, 0, zPos]} userData={{ type: 'detail-fade' }}>
-                        <boxGeometry args={[frameThickness, h, frameDepth]} />
-                        <meshStandardMaterial color={frameColor} />
-                    </mesh>
-                    <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} userData={{ type: 'detail-fade' }}>
-                        <boxGeometry args={[frameThickness, h, frameDepth]} />
-                        <meshStandardMaterial color={frameColor} />
-                    </mesh>
-                </group>
-                <mesh material={material} position={[0, 0, 0.01]} userData={{ type: 'detail-fade' }}>
-                    <boxGeometry args={[w, h, 0.02]} />
-                </mesh>
-                <group position={[0, 0, 0.022]}>
-                    {type === 'residential' ? (
-                        <>
-                            <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
-                                <boxGeometry args={[0.04, h, 0.02]} />
-                                <meshStandardMaterial color={grillColor} />
-                            </mesh>
-                            <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
-                                <boxGeometry args={[w, 0.04, 0.02]} />
-                                <meshStandardMaterial color={grillColor} />
-                            </mesh>
-                        </>
-                    ) : (
-                        <>
-                            <mesh position={[0, h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
-                                <boxGeometry args={[w, 0.04, 0.02]} />
-                                <meshStandardMaterial color={grillColor} />
-                            </mesh>
-                            <mesh position={[0, -h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
-                                <boxGeometry args={[w, 0.04, 0.02]} />
-                                <meshStandardMaterial color={grillColor} />
-                            </mesh>
-                        </>
-                    )}
-                </group>
-            </group>
+  return (
+    <group
+      ref={groupRef}
+      position={[position[0], position[1], position[2]]}
+      rotation={rotation}
+      scale={[2, 2, 2]}
+      userData={{ ignoreRaycast: true, type: 'detail-fade' }}
+    >
+      <group position={[0, 0, 0]}>
+        <group>
+          <mesh position={[0, h / 2 + frameThickness / 2, zPos]} userData={{ type: 'detail-fade' }}>
+            <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
+            <meshStandardMaterial color={frameColor} />
+          </mesh>
+          <mesh
+            position={[0, -h / 2 - frameThickness / 2, zPos]}
+            userData={{ type: 'detail-fade' }}
+          >
+            <boxGeometry args={[w + frameThickness * 2, frameThickness, frameDepth]} />
+            <meshStandardMaterial color={frameColor} />
+          </mesh>
+          <mesh
+            position={[-w / 2 - frameThickness / 2, 0, zPos]}
+            userData={{ type: 'detail-fade' }}
+          >
+            <boxGeometry args={[frameThickness, h, frameDepth]} />
+            <meshStandardMaterial color={frameColor} />
+          </mesh>
+          <mesh position={[w / 2 + frameThickness / 2, 0, zPos]} userData={{ type: 'detail-fade' }}>
+            <boxGeometry args={[frameThickness, h, frameDepth]} />
+            <meshStandardMaterial color={frameColor} />
+          </mesh>
         </group>
-    );
+        <mesh material={material} position={[0, 0, 0.01]} userData={{ type: 'detail-fade' }}>
+          <boxGeometry args={[w, h, 0.02]} />
+        </mesh>
+        <group position={[0, 0, 0.022]}>
+          {type === 'residential' ? (
+            <>
+              <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
+                <boxGeometry args={[0.04, h, 0.02]} />
+                <meshStandardMaterial color={grillColor} />
+              </mesh>
+              <mesh position={[0, 0, 0]} userData={{ type: 'detail-fade' }}>
+                <boxGeometry args={[w, 0.04, 0.02]} />
+                <meshStandardMaterial color={grillColor} />
+              </mesh>
+            </>
+          ) : (
+            <>
+              <mesh position={[0, h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
+                <boxGeometry args={[w, 0.04, 0.02]} />
+                <meshStandardMaterial color={grillColor} />
+              </mesh>
+              <mesh position={[0, -h * 0.25, 0]} userData={{ type: 'detail-fade' }}>
+                <boxGeometry args={[w, 0.04, 0.02]} />
+                <meshStandardMaterial color={grillColor} />
+              </mesh>
+            </>
+          )}
+        </group>
+      </group>
+    </group>
+  );
 };

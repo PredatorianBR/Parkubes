@@ -3,7 +3,13 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GRID_SCALE, GROUND_DEPTH } from '../../utils/physics';
 
-export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid?: number[][]; debugMode?: boolean; showGrid?: boolean }> = React.memo(({ size, waterGrid, sGrid, showGrid }) => {
+export const VoxelGround: React.FC<{
+  size: number;
+  waterGrid?: number[][];
+  sGrid?: number[][];
+  debugMode?: boolean;
+  showGrid?: boolean;
+}> = React.memo(({ size, waterGrid, sGrid, showGrid }) => {
   const halfSize = Math.floor(size / 2);
   const scaleFactor = showGrid ? 0.95 : 1.0;
 
@@ -16,11 +22,15 @@ export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid
     const colors = {
       grass: new THREE.Color('#22c55e'),
       street: new THREE.Color('#334155'),
-      hard: new THREE.Color('#475569')
+      hard: new THREE.Color('#475569'),
     };
 
     const geometries: THREE.BufferGeometry[] = [];
-    const baseBox = new THREE.BoxGeometry(cellSize * scaleFactor, GROUND_DEPTH, cellSize * scaleFactor);
+    const baseBox = new THREE.BoxGeometry(
+      cellSize * scaleFactor,
+      GROUND_DEPTH,
+      cellSize * scaleFactor,
+    );
 
     for (let x = 0; x < gridSize; x++) {
       for (let z = 0; z < gridSize; z++) {
@@ -57,7 +67,7 @@ export const VoxelGround: React.FC<{ size: number; waterGrid?: number[][]; sGrid
 
     const merged = BufferGeometryUtils.mergeGeometries(geometries, false);
     // Dispose individual geometries to free memory
-    geometries.forEach(g => g.dispose());
+    geometries.forEach((g) => g.dispose());
     baseBox.dispose();
 
     return merged;

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
@@ -10,32 +9,19 @@ import { MatchState } from './types';
 
 import { MatchContext } from './MatchContext';
 const getRandomSettings = () => {
-  // Randomize Ratios (Sum to 100)
-  const keys = ['farm', 'house', 'highrise', 'factory', 'ruins', 'foliage'] as const;
-  const rawValues = keys.map(() => Math.random());
-  const sum = rawValues.reduce((a, b) => a + b, 0);
-  const normalized = rawValues.map(v => Math.round((v / sum) * 100));
-
-  // Fix potential rounding issues to ensure sum is exactly 100
-  const currentSum = normalized.reduce((a, b) => a + b, 0);
-  if (currentSum !== 100) {
-    normalized[0] += (100 - currentSum);
-  }
-
   return {
     ratios: {
-      farm: normalized[0],
-      house: normalized[1],
-      highrise: normalized[2],
-      factory: normalized[3],
-      ruins: normalized[4],
-      foliage: Math.floor(Math.random() * 40) // Foliage is density 0-40% independently or part of it
+      farm: 0,
+      house: 45,
+      highrise: 0,
+      factory: 0,
+      ruins: 0,
+      foliage: 0,
     },
-    riverWidth: Math.floor(Math.random() * 6), // 0 to 5
-    riverFlow: Math.floor(Math.random() * 5) + 1 // 1 to 5
+    riverWidth: 0,
+    riverFlow: 3,
   };
 };
-
 
 const GameLayout: React.FC<{
   status: GameStatus;
@@ -47,105 +33,144 @@ const GameLayout: React.FC<{
   showCollision: boolean;
   showWireframe: boolean;
   showOcclusion: boolean;
+  showAIPath: boolean;
   isEditing: boolean;
   mapId: number;
   handleRoundEnd: (playerWon: boolean) => void;
   handlePrepComplete: () => void;
   gameInterfaceProps: Omit<GameInterfaceProps, 'matchTimer'>;
-}> = React.memo(({ 
-  status, mode, match, settings, debugMode, showGrid, showCollision, showWireframe, showOcclusion, isEditing, mapId,
-  handleRoundEnd, handlePrepComplete, gameInterfaceProps
-}) => {
-  const [matchTimer, setMatchTimer] = useState(0);
+}> = React.memo(
+  ({
+    status,
+    mode,
+    match,
+    settings,
+    debugMode,
+    showGrid,
+    showCollision,
+    showWireframe,
+    showOcclusion,
+    showAIPath,
+    isEditing,
+    mapId,
+    handleRoundEnd,
+    handlePrepComplete,
+    gameInterfaceProps,
+  }) => {
+    const [matchTimer, setMatchTimer] = useState(0);
 
-  useEffect(() => {
-    if (status === GameStatus.PREP) {
-      setMatchTimer(3);
-    }
-  }, [status, match.currentRound]);
+    useEffect(() => {
+      if (status === GameStatus.PREP) {
+        setMatchTimer(3);
+      }
+    }, [status, match.currentRound]);
 
-  // Timer decrement: simple interval that only updates local matchTimer
-  useEffect(() => {
-    if (mode !== GameMode.HIDE_AND_SEEK) return;
-    if (status !== GameStatus.PLAYING && status !== GameStatus.PREP) return;
-    
-    const interval = setInterval(() => {
-      setMatchTimer(t => {
-        if (status === GameStatus.PREP) {
-          if (t <= 1) {
-            handlePrepComplete();
-            return 30; // Start playing timer at 30
+    // Timer decrement: simple interval that only updates local matchTimer
+    useEffect(() => {
+      if (mode !== GameMode.HIDE_AND_SEEK) return;
+      if (status !== GameStatus.PLAYING && status !== GameStatus.PREP) return;
+
+      const interval = setInterval(() => {
+        setMatchTimer((t) => {
+          if (status === GameStatus.PREP) {
+            if (t <= 1) {
+              handlePrepComplete();
+              return 30; // Start playing timer at 30
+            }
+            return t - 1;
+          } else {
+            // PLAYING
+            if (debugMode) {
+              return t; // Freeze/ignore timer in debug mode
+            }
+            if (t <= 1) {
+              // Hider wins if time runs out.
+              // Odd round: Player is hider (1, 3). Even round: AI is hider (2, 4).
+              const isPlayerHider = match.currentRound % 2 !== 0;
+              handleRoundEnd(isPlayerHider);
+              return 0;
+            }
+            return t - 1;
           }
-          return t - 1;
-        } else {
-          // PLAYING
-          if (t <= 1) {
-            // Hider wins if time runs out.
-            // Odd round: Player is hider (1, 3). Even round: AI is hider (2, 4).
-            const isPlayerHider = match.currentRound % 2 !== 0;
-            handleRoundEnd(isPlayerHider);
-            return 0;
-          }
-          return t - 1;
-        }
-      });
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, [status, mode, match.currentRound, handleRoundEnd, handlePrepComplete]);
+        });
+      }, 1000);
 
-  const shadowSize = settings.worldSize * 1.5;
+      return () => clearInterval(interval);
+    }, [status, mode, match.currentRound, handleRoundEnd, handlePrepComplete, debugMode]);
 
-  return (
-    <>
-      <MatchContext.Provider value={{ timer: matchTimer }}>
-        <Canvas shadows gl={{ antialias: true }} onCreated={({ gl }) => {
-          const canvas = gl.domElement;
-          canvas.addEventListener('webglcontextlost', (e) => {
-            e.preventDefault();
-            console.warn('WebGL context lost. Attempting recovery...');
-          });
-          canvas.addEventListener('webglcontextrestored', () => {
-            console.log('WebGL context restored.');
-          });
-        }}>
-          <OrthographicCamera
-            makeDefault
-            position={[100, 100, 100]}
-            near={0.1}
-            far={5000}
-          />
-          <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
-          <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
-          <ambientLight intensity={0.4} />
-          <directionalLight castShadow position={[60, 120, 40]} intensity={2.0} shadow-mapSize={[2048, 2048]} shadow-camera-left={-shadowSize} shadow-camera-right={shadowSize} shadow-camera-top={shadowSize} shadow-camera-bottom={-shadowSize} shadow-camera-near={0.1} shadow-camera-far={500} shadow-bias={-0.0005} />
-          <OrbitControls makeDefault enabled={true} />
-          <VoxelSeek
-            status={status}
-            mode={mode}
-            match={match}
-            settings={settings}
-            onRoundEnd={handleRoundEnd}
-            onPrepComplete={handlePrepComplete}
-            debugMode={debugMode}
-            showGrid={showGrid}
-            showCollision={showCollision}
-            showWireframe={showWireframe}
-            showOcclusion={showOcclusion}
-            isEditing={isEditing}
-            mapId={mapId}
-          />
-          <ContactShadows position={[0, -0.01, 0]} opacity={0.5} scale={150} blur={2.5} far={10} color="#000000" />
-        </Canvas>
-      </MatchContext.Provider>
+    const shadowSize = settings.worldSize * 1.5;
 
-      <GameInterface
-        {...gameInterfaceProps}
-        matchTimer={matchTimer}
-      />
-    </>
-  );
-});
+    return (
+      <>
+        <MatchContext.Provider value={{ timer: matchTimer }}>
+          <Canvas
+            shadows
+            gl={{ antialias: true }}
+            onCreated={({ gl }) => {
+              const canvas = gl.domElement;
+              canvas.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+                console.warn('WebGL context lost. Attempting recovery...');
+              });
+              canvas.addEventListener('webglcontextrestored', () => {
+                console.log('WebGL context restored.');
+              });
+            }}
+          >
+            <OrthographicCamera makeDefault position={[100, 100, 100]} near={0.1} far={5000} />
+            <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
+            <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
+            <ambientLight intensity={0.4} />
+            <directionalLight
+              castShadow
+              position={[60, 120, 40]}
+              intensity={2.0}
+              shadow-mapSize={[2048, 2048]}
+              shadow-camera-left={-shadowSize}
+              shadow-camera-right={shadowSize}
+              shadow-camera-top={shadowSize}
+              shadow-camera-bottom={-shadowSize}
+              shadow-camera-near={0.1}
+              shadow-camera-far={500}
+              shadow-bias={-0.0005}
+            />
+            <OrbitControls makeDefault enabled={true} />
+            <VoxelSeek
+              status={status}
+              mode={mode}
+              match={match}
+              settings={settings}
+              onRoundEnd={handleRoundEnd}
+              onPrepComplete={handlePrepComplete}
+              debugMode={debugMode}
+              showGrid={showGrid}
+              showCollision={showCollision}
+              showWireframe={showWireframe}
+              showOcclusion={showOcclusion}
+              showAIPath={showAIPath}
+              isEditing={isEditing}
+              mapId={mapId}
+            />
+            <ContactShadows
+              position={[0, -0.01, 0]}
+              opacity={0.5}
+              scale={150}
+              blur={2.5}
+              far={10}
+              color="#000000"
+            />
+          </Canvas>
+        </MatchContext.Provider>
+
+        <GameInterface
+          {...gameInterfaceProps}
+          matchTimer={matchTimer}
+          handleRoundEnd={handleRoundEnd}
+        />
+      </>
+    );
+  },
+);
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>({
@@ -155,10 +180,10 @@ const App: React.FC = () => {
       currentRound: 1,
       maxRounds: 4,
       scorePlayer: 0,
-      timer: 0 
+      timer: 0,
     },
-    taunt: "Pratique seu parkour!",
-    hint: "Use obstáculos para ganhar altura.",
+    taunt: 'Pratique seu parkour!',
+    hint: 'Use obstáculos para ganhar altura.',
     settings: {
       worldSize: 50,
       playerSpeed: 0.85,
@@ -167,16 +192,17 @@ const App: React.FC = () => {
       cameraFollow: false,
       ratios: {
         farm: 0,
-        house: 0,
+        house: 45,
         highrise: 0,
         factory: 0,
         ruins: 0,
-        foliage: 0
+        foliage: 0,
       },
       riverWidth: 0,
-      riverFlow: 3
+      riverFlow: 3,
     },
-    mapId: 0
+    mapId: 0,
+    lastRoundResult: '',
   });
 
   const [debugMode, setDebugMode] = useState(true);
@@ -184,129 +210,149 @@ const App: React.FC = () => {
   const [showCollision, setShowCollision] = useState(false);
   const [showWireframe, setShowWireframe] = useState(true);
   const [showOcclusion, setShowOcclusion] = useState(false);
+  const [showAIPath, setShowAIPath] = useState(true);
   const [showMission, setShowMission] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
   const startGame = () => {
-    setGameState(prev => ({
+    setGameState((prev) => ({
       ...prev,
       status: GameStatus.PREP,
-      match: { 
-        ...prev.match, 
-        currentRound: 1, 
-        scorePlayer: 0, 
-        timer: 3 
-      }
+      lastRoundResult: '',
+      match: {
+        ...prev.match,
+        currentRound: 1,
+        scorePlayer: 0,
+        timer: 3,
+      },
     }));
   };
 
   const playAgain = () => {
-    setGameState(prev => ({
+    setGameState((prev) => ({
       ...prev,
       status: GameStatus.PREP,
-      match: { 
-        ...prev.match, 
-        currentRound: 1, 
-        scorePlayer: 0, 
-        timer: 3
+      lastRoundResult: '',
+      match: {
+        ...prev.match,
+        currentRound: 1,
+        scorePlayer: 0,
+        timer: 3,
       },
-      mapId: prev.mapId + 1
+      mapId: prev.mapId + 1,
     }));
   };
 
   const togglePause = useCallback(() => {
-    setGameState(prev => {
-      if (prev.status === GameStatus.PLAYING || prev.status === GameStatus.PREP) return { ...prev, status: GameStatus.PAUSED };
+    setGameState((prev) => {
+      if (prev.status === GameStatus.PLAYING || prev.status === GameStatus.PREP)
+        return { ...prev, status: GameStatus.PAUSED };
       if (prev.status === GameStatus.PAUSED) return { ...prev, status: GameStatus.PLAYING };
       return prev;
     });
   }, []);
 
   const restartRound = () => {
-    setGameState(prev => ({ 
-      ...prev, 
+    setGameState((prev) => ({
+      ...prev,
       status: GameStatus.PREP,
+      lastRoundResult: '',
       match: {
         ...prev.match,
-        timer: 3
-      }
+        timer: 3,
+      },
     }));
   };
 
   const resetToMenu = () => {
-    setGameState(prev => ({
+    setGameState((prev) => ({
       ...prev,
-      status: GameStatus.IDLE
+      lastRoundResult: '',
+      status: GameStatus.IDLE,
     }));
   };
 
   const updateSetting = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
-    setGameState(prev => {
+    setGameState((prev) => {
       const shouldRegen = key === 'worldSize' || key === 'riverWidth';
       return {
         ...prev,
         settings: { ...prev.settings, [key]: value },
-        mapId: shouldRegen ? prev.mapId + 1 : prev.mapId
+        mapId: shouldRegen ? prev.mapId + 1 : prev.mapId,
       };
     });
   };
 
   const resetRatios = () => {
-    setGameState(prev => {
+    setGameState((prev) => {
       const newRandom = getRandomSettings();
       return {
         ...prev,
         settings: { ...prev.settings, ...newRandom },
-        mapId: prev.mapId + 1
+        mapId: prev.mapId + 1,
       };
     });
   };
 
   const updateRatio = (changedKey: keyof GameSettings['ratios'], newValue: number) => {
-    setGameState(prev => {
+    setGameState((prev) => {
       const ratios = { ...prev.settings.ratios, [changedKey]: newValue };
       return {
         ...prev,
         settings: { ...prev.settings, ratios },
-        mapId: prev.mapId + 1
+        mapId: prev.mapId + 1,
       };
     });
   };
 
   const nextRound = useCallback(() => {
-    setGameState(prev => {
+    setGameState((prev) => {
       const nextRound = prev.match.currentRound + 1;
       if (nextRound > prev.match.maxRounds) {
         return { ...prev, status: GameStatus.GAME_OVER };
       }
       return {
-        ...prev, status: GameStatus.PREP,
-        match: { 
-          ...prev.match, 
+        ...prev,
+        status: GameStatus.PREP,
+        lastRoundResult: '',
+        match: {
+          ...prev.match,
           currentRound: nextRound,
-          timer: 3
-        }
+          timer: 3,
+        },
       };
     });
   }, []);
 
   const handleRoundEnd = useCallback((playerWon: boolean) => {
-    setGameState(prev => {
+    setGameState((prev) => {
       const newScorePlayer = playerWon ? prev.match.scorePlayer + 1 : prev.match.scorePlayer;
       const isGameOver = prev.match.currentRound >= prev.match.maxRounds;
-      return {
-        ...prev, 
-        status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
-        match: { 
-          ...prev.match, 
-          scorePlayer: newScorePlayer
+
+      let lastRoundResult = '';
+      if (prev.mode === GameMode.HIDE_AND_SEEK) {
+        const wasPlayerHider = prev.match.currentRound % 2 !== 0;
+        if (wasPlayerHider) {
+          lastRoundResult = playerWon ? 'Você escapou!' : 'Você foi pego';
+        } else {
+          lastRoundResult = playerWon ? 'Você pegou!' : 'A IA escapou!';
         }
+      }
+
+      return {
+        ...prev,
+        status: isGameOver ? GameStatus.GAME_OVER : GameStatus.ROUND_OVER,
+        lastRoundResult,
+        match: {
+          ...prev.match,
+          scorePlayer: newScorePlayer,
+        },
       };
     });
   }, []);
 
   const handlePrepComplete = useCallback(() => {
-    setGameState(prev => ({ ...prev, status: GameStatus.PLAYING }));
+    setGameState((prev) => ({ ...prev, status: GameStatus.PLAYING }));
   }, []);
 
   useEffect(() => {
@@ -315,13 +361,16 @@ const App: React.FC = () => {
     } else {
       setShowGrid(false);
       setShowCollision(false);
+      setShowAIPath(false);
     }
   }, [debugMode]);
 
   useEffect(() => {
     if (gameState.status === GameStatus.PREP) {
       setShowMission(true);
-      const timeout = setTimeout(() => { setShowMission(false); }, 3000);
+      const timeout = setTimeout(() => {
+        setShowMission(false);
+      }, 3000);
       return () => clearTimeout(timeout);
     } else {
       setShowMission(false);
@@ -329,12 +378,15 @@ const App: React.FC = () => {
   }, [gameState.status, gameState.match.currentRound]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') togglePause(); };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') togglePause();
+    };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePause]);
 
-  const showVirtualControls = gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.PREP;
+  const showVirtualControls =
+    gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.PREP;
 
   return (
     <div className="relative w-full h-screen bg-gray-950 select-none overflow-hidden">
@@ -348,20 +400,37 @@ const App: React.FC = () => {
         showCollision={showCollision}
         showWireframe={showWireframe}
         showOcclusion={showOcclusion}
+        showAIPath={showAIPath}
         isEditing={isEditing}
         mapId={gameState.mapId}
         handleRoundEnd={handleRoundEnd}
         handlePrepComplete={handlePrepComplete}
         gameInterfaceProps={{
           gameState,
-          debugMode, setDebugMode,
-          showGrid, setShowGrid,
-          showCollision, setShowCollision,
-          showWireframe, setShowWireframe,
-          showOcclusion, setShowOcclusion,
-          togglePause, startGame, playAgain, restartRound, nextRound, resetToMenu,
-          updateSetting, updateRatio, resetRatios, showMission, setIsEditing,
-          setGameMode: (mode: GameMode) => setGameState(prev => ({ ...prev, mode }))
+          debugMode,
+          setDebugMode,
+          showGrid,
+          setShowGrid,
+          showCollision,
+          setShowCollision,
+          showWireframe,
+          setShowWireframe,
+          showOcclusion,
+          setShowOcclusion,
+          showAIPath,
+          setShowAIPath,
+          togglePause,
+          startGame,
+          playAgain,
+          restartRound,
+          nextRound,
+          resetToMenu,
+          updateSetting,
+          updateRatio,
+          resetRatios,
+          showMission,
+          setIsEditing,
+          setGameMode: (mode: GameMode) => setGameState((prev) => ({ ...prev, mode })),
         }}
       />
       <OnScreenControls visible={showVirtualControls} />

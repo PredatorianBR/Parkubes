@@ -19,15 +19,13 @@ export enum GameStatus {
   PLAYING = 'PLAYING',
   PAUSED = 'PAUSED',
   ROUND_OVER = 'ROUND_OVER',
-  GAME_OVER = 'GAME_OVER'
+  GAME_OVER = 'GAME_OVER',
 }
 
 export enum GameMode {
   FREE = 'FREE',
-  HIDE_AND_SEEK = 'HIDE_AND_SEEK'
+  HIDE_AND_SEEK = 'HIDE_AND_SEEK',
 }
-
-
 
 export interface PhysicsState {
   pos: THREE.Vector3;
@@ -69,7 +67,20 @@ export interface GameSettings {
 export interface VoxelObject {
   id: string;
   position: Position;
-  type: 'box' | 'wheat' | 'fence' | 'chimney' | 'chimney-house' | 'ruin' | 'factory' | 'highrise' | 'roof-ac' | 'wall-ac' | 'industrial-ac' | 'residential-ac' | 'foliage';
+  type:
+    | 'box'
+    | 'wheat'
+    | 'fence'
+    | 'chimney'
+    | 'chimney-house'
+    | 'ruin'
+    | 'factory'
+    | 'highrise'
+    | 'roof-ac'
+    | 'wall-ac'
+    | 'industrial-ac'
+    | 'residential-ac'
+    | 'foliage';
   color: string;
   scale: [number, number, number];
   rotation?: number;
@@ -144,6 +155,7 @@ export interface GameState {
   hint: string;
   settings: GameSettings;
   mapId: number; // Force map regeneration
+  lastRoundResult?: string;
 }
 
 export interface VisualState {
@@ -169,4 +181,3 @@ export interface VisualState {
   isWallClimbing?: boolean;
   wallClimbProgress?: number;
 }
-
