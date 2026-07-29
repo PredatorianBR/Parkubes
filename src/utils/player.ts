@@ -14,6 +14,7 @@ const globalLadderState: LadderState = {
   wallClimbProgress: 0,
   wallClimbDir: new THREE.Vector2(0, 0),
 };
+const playerDirScratch = new THREE.Vector3();
 
 export const updatePlayerPhysics = (
   dt: number,
@@ -311,7 +312,7 @@ export const updatePlayerPhysics = (
     isCharging: nextState.isCharging || isVisualPreJumping,
     isRolling: nextState.isRolling,
     pMoving: inputDir.lengthSq() > 0,
-    pDir: new THREE.Vector3(nextState.lastDir.x, 0, nextState.lastDir.y),
+    pDir: playerDirScratch.set(nextState.lastDir.x, 0, nextState.lastDir.y),
     effectiveStunned,
     isStumbling: stumbleTimer.current > 0,
     isGrounded: nextState.isGrounded,

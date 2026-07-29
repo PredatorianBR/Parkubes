@@ -68,8 +68,9 @@ export class NavigationGraph {
     collisionGrid: SpatialHashGrid;
     bGrid: number[][];
     wGrid: number[][];
+    ladderZones?: { minX: number; minZ: number; maxX: number; maxZ: number; minY: number; maxY: number }[];
   }) {
-    const { collisionGrid, bGrid, wGrid } = mapData;
+    const { collisionGrid, bGrid, wGrid, ladderZones } = mapData;
 
     // 1. Probing nodes across the grid XZ coordinates
     for (let gx = 0; gx < this.worldSize; gx++) {
@@ -115,17 +116,37 @@ export class NavigationGraph {
             worldZ <= box.maxZ
           ) {
             const topY = box.maxY;
-            // Check headroom
-            const ceil = getCeilingHeight(
-              worldX,
-              worldZ,
-              topY,
-              collisionGrid,
-              bGrid,
-              this.worldSize,
-            );
-            if (ceil === Infinity || ceil - topY >= PLAYER_HEIGHT) {
-              uniqueHeights.add(topY);
+            
+            // 1-story low buildings (topY <= 6.5) can be climbed by jumping/scaling the ledge.
+            // Tall buildings (topY > 6.5) MUST contain a ladder to be accessible.
+            let allowRooftop = false;
+            if (topY <= 6.5) {
+              allowRooftop = true; // 1-story low building
+            } else if (ladderZones) {
+              // Check if tall building has a ladder near its footprint
+              const hasLadder = ladderZones.some(
+                (zone) =>
+                  worldX >= zone.minX - 2.5 &&
+                  worldX <= zone.maxX + 2.5 &&
+                  worldZ >= zone.minZ - 2.5 &&
+                  worldZ <= zone.maxZ + 2.5,
+              );
+              if (hasLadder) allowRooftop = true;
+            }
+
+            if (allowRooftop) {
+              // Check headroom
+              const ceil = getCeilingHeight(
+                worldX,
+                worldZ,
+                topY,
+                collisionGrid,
+                bGrid,
+                this.worldSize,
+              );
+              if (ceil === Infinity || ceil - topY >= PLAYER_HEIGHT) {
+                uniqueHeights.add(topY);
+              }
             }
           }
         }
@@ -140,18 +161,46 @@ export class NavigationGraph {
             return; // Out of bounds, cannot walk here
           }
 
-          // Check if position itself is blocked (cylinder collision)
-          if (!isPositionBlocked(worldX, y, worldZ, collisionGrid, PLAYER_RADIUS - 0.36)) {
+          // Check if position itself is inside or overlapping any building structure
+          const checkBoxes = collisionGrid.query(worldX, worldZ, PLAYER_RADIUS);
+          let isInsideBuilding = false;
+
+          for (const box of checkBoxes) {
+            // Check if Y height is below the building top (inside building interior/ground footprint)
+            if (
+              y < box.maxY - 0.1 &&
+              worldX >= box.minX - 0.1 &&
+              worldX <= box.maxX + 0.1 &&
+              worldZ >= box.minZ - 0.1 &&
+              worldZ <= box.maxZ + 0.1
+            ) {
+              isInsideBuilding = true;
+              break;
+            }
+          }
+
+          if (isInsideBuilding) {
+            return; // Skip node inside building interior!
+          }
+
+          // Check if position itself is blocked (cylinder collision with 0.7m radius clearance)
+          if (!isPositionBlocked(worldX, y, worldZ, collisionGrid, PLAYER_RADIUS - 0.1)) {
             const isWaterVal = wGrid[gx]?.[gz] === 1 && y < 0;
             const id = `${gx},${gz},${y.toFixed(2)}`;
+
+            // Clamp node world coordinates so they remain physically reachable by the AI
+            const reachMin = -this.halfSize + PLAYER_RADIUS + 0.12;
+            const reachMax = this.halfSize - PLAYER_RADIUS - 0.12;
+            const nodeX = Math.max(reachMin, Math.min(reachMax, worldX));
+            const nodeZ = Math.max(reachMin, Math.min(reachMax, worldZ));
 
             this.nodes.set(id, {
               id,
               gx,
               gz,
-              x: worldX,
+              x: nodeX,
               y,
-              z: worldZ,
+              z: nodeZ,
               isWater: isWaterVal,
               isCorner: false, // will compute next
               isEdge: false, // will compute next
@@ -277,7 +326,7 @@ export class NavigationGraph {
             const midZ = (node.z + other.z) / 2;
             const midY = (node.y + other.y) / 2;
 
-            if (!isPositionBlocked(midX, midY, midZ, collisionGrid, PLAYER_RADIUS - 0.36)) {
+            if (!isPositionBlocked(midX, midY, midZ, collisionGrid, PLAYER_RADIUS - 0.1)) {
               const dist = Math.sqrt((node.x - other.x) ** 2 + (node.z - other.z) ** 2);
               let cost = dist;
 
@@ -287,13 +336,13 @@ export class NavigationGraph {
 
               edgeList.push({ target: other, type: 'walk', cost });
             }
-          } else if (heightDiff > CLIMB_THRESHOLD && heightDiff <= PLAYER_HEIGHT) {
-            // CLIMBING transition (climbing low obstacles / ledges)
+          } else if (heightDiff > CLIMB_THRESHOLD && heightDiff <= 6.0) {
+            // CLIMBING transition (climbing low 1-story obstacles / ledges)
             // Make sure we have a clear path to the ledge
             const midX = (node.x + other.x) / 2;
             const midZ = (node.z + other.z) / 2;
             // Check at destination height
-            if (!isPositionBlocked(midX, other.y, midZ, collisionGrid, PLAYER_RADIUS - 0.36)) {
+            if (!isPositionBlocked(midX, other.y, midZ, collisionGrid, PLAYER_RADIUS - 0.1)) {
               const dist =
                 Math.sqrt((node.x - other.x) ** 2 + (node.z - other.z) ** 2) + heightDiff;
               // Add extra cost penalty so the AI prefers flat ground but will climb if much shorter
@@ -304,7 +353,7 @@ export class NavigationGraph {
             // DROPPING transition (safe drops)
             const midX = (node.x + other.x) / 2;
             const midZ = (node.z + other.z) / 2;
-            if (!isPositionBlocked(midX, node.y, midZ, collisionGrid, PLAYER_RADIUS - 0.36)) {
+            if (!isPositionBlocked(midX, node.y, midZ, collisionGrid, PLAYER_RADIUS - 0.1)) {
               const dist =
                 Math.sqrt((node.x - other.x) ** 2 + (node.z - other.z) ** 2) + Math.abs(heightDiff);
               const cost = dist + 2.0; // minor penalty for dropping down

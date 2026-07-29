@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
 import { VoxelSeek } from './components/VoxelSeek';
@@ -214,7 +214,7 @@ const App: React.FC = () => {
   const [showMission, setShowMission] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
-  const startGame = () => {
+  const startGame = useCallback(() => {
     setGameState((prev) => ({
       ...prev,
       status: GameStatus.PREP,
@@ -226,9 +226,9 @@ const App: React.FC = () => {
         timer: 3,
       },
     }));
-  };
+  }, []);
 
-  const playAgain = () => {
+  const playAgain = useCallback(() => {
     setGameState((prev) => ({
       ...prev,
       status: GameStatus.PREP,
@@ -241,7 +241,7 @@ const App: React.FC = () => {
       },
       mapId: prev.mapId + 1,
     }));
-  };
+  }, []);
 
   const togglePause = useCallback(() => {
     setGameState((prev) => {
@@ -252,7 +252,7 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const restartRound = () => {
+  const restartRound = useCallback(() => {
     setGameState((prev) => ({
       ...prev,
       status: GameStatus.PREP,
@@ -262,28 +262,31 @@ const App: React.FC = () => {
         timer: 3,
       },
     }));
-  };
+  }, []);
 
-  const resetToMenu = () => {
+  const resetToMenu = useCallback(() => {
     setGameState((prev) => ({
       ...prev,
       lastRoundResult: '',
       status: GameStatus.IDLE,
     }));
-  };
+  }, []);
 
-  const updateSetting = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
-    setGameState((prev) => {
-      const shouldRegen = key === 'worldSize' || key === 'riverWidth';
-      return {
-        ...prev,
-        settings: { ...prev.settings, [key]: value },
-        mapId: shouldRegen ? prev.mapId + 1 : prev.mapId,
-      };
-    });
-  };
+  const updateSetting = useCallback(
+    <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
+      setGameState((prev) => {
+        const shouldRegen = key === 'worldSize' || key === 'riverWidth';
+        return {
+          ...prev,
+          settings: { ...prev.settings, [key]: value },
+          mapId: shouldRegen ? prev.mapId + 1 : prev.mapId,
+        };
+      });
+    },
+    [],
+  );
 
-  const resetRatios = () => {
+  const resetRatios = useCallback(() => {
     setGameState((prev) => {
       const newRandom = getRandomSettings();
       return {
@@ -292,18 +295,21 @@ const App: React.FC = () => {
         mapId: prev.mapId + 1,
       };
     });
-  };
+  }, []);
 
-  const updateRatio = (changedKey: keyof GameSettings['ratios'], newValue: number) => {
-    setGameState((prev) => {
-      const ratios = { ...prev.settings.ratios, [changedKey]: newValue };
-      return {
-        ...prev,
-        settings: { ...prev.settings, ratios },
-        mapId: prev.mapId + 1,
-      };
-    });
-  };
+  const updateRatio = useCallback(
+    (changedKey: keyof GameSettings['ratios'], newValue: number) => {
+      setGameState((prev) => {
+        const ratios = { ...prev.settings.ratios, [changedKey]: newValue };
+        return {
+          ...prev,
+          settings: { ...prev.settings, ratios },
+          mapId: prev.mapId + 1,
+        };
+      });
+    },
+    [],
+  );
 
   const nextRound = useCallback(() => {
     setGameState((prev) => {
@@ -388,6 +394,67 @@ const App: React.FC = () => {
   const showVirtualControls =
     gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.PREP;
 
+  const setGameMode = useCallback((mode: GameMode) => {
+    setGameState((prev) => ({ ...prev, mode }));
+  }, []);
+
+  const gameInterfaceProps = useMemo(
+    () => ({
+      gameState,
+      debugMode,
+      setDebugMode,
+      showGrid,
+      setShowGrid,
+      showCollision,
+      setShowCollision,
+      showWireframe,
+      setShowWireframe,
+      showOcclusion,
+      setShowOcclusion,
+      showAIPath,
+      setShowAIPath,
+      togglePause,
+      startGame,
+      playAgain,
+      restartRound,
+      nextRound,
+      resetToMenu,
+      updateSetting,
+      updateRatio,
+      resetRatios,
+      showMission,
+      setIsEditing,
+      setGameMode,
+    }),
+    [
+      gameState,
+      debugMode,
+      setDebugMode,
+      showGrid,
+      setShowGrid,
+      showCollision,
+      setShowCollision,
+      showWireframe,
+      setShowWireframe,
+      showOcclusion,
+      setShowOcclusion,
+      showAIPath,
+      setShowAIPath,
+      togglePause,
+      startGame,
+      playAgain,
+      restartRound,
+      nextRound,
+      resetToMenu,
+      updateSetting,
+      updateRatio,
+      resetRatios,
+      showMission,
+      setIsEditing,
+      setGameMode,
+    ],
+  );
+
   return (
     <div className="relative w-full h-screen bg-gray-950 select-none overflow-hidden">
       <GameLayout
@@ -405,33 +472,7 @@ const App: React.FC = () => {
         mapId={gameState.mapId}
         handleRoundEnd={handleRoundEnd}
         handlePrepComplete={handlePrepComplete}
-        gameInterfaceProps={{
-          gameState,
-          debugMode,
-          setDebugMode,
-          showGrid,
-          setShowGrid,
-          showCollision,
-          setShowCollision,
-          showWireframe,
-          setShowWireframe,
-          showOcclusion,
-          setShowOcclusion,
-          showAIPath,
-          setShowAIPath,
-          togglePause,
-          startGame,
-          playAgain,
-          restartRound,
-          nextRound,
-          resetToMenu,
-          updateSetting,
-          updateRatio,
-          resetRatios,
-          showMission,
-          setIsEditing,
-          setGameMode: (mode: GameMode) => setGameState((prev) => ({ ...prev, mode })),
-        }}
+        gameInterfaceProps={gameInterfaceProps}
       />
       <OnScreenControls visible={showVirtualControls} />
     </div>

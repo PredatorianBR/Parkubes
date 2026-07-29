@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 
 const originalLog = console.log;
-console.log = (...args: any[]) => {
+console.log = (...args: unknown[]) => {
   originalLog(...args);
   const msg = args
     .map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : String(arg)))

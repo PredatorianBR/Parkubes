@@ -31,11 +31,14 @@ export const STAMINA_RECOVERY_WALK = 5.0;
 
 // Noise Levels
 export const NOISE_IDLE = 0;
-export const NOISE_WALK = 0;
-export const NOISE_CLIMB = 6.0;
-export const NOISE_RUN = 14.0;
-export const NOISE_JUMP = 10.0;
-export const NOISE_LAND = 12.0;
+export const NOISE_WALK = 0; // Walking makes zero noise
+export const NOISE_CLIMB = 0;
+export const NOISE_RUN = 14.0; // Running makes noise
+export const NOISE_JUMP = 10.0; // Jumping makes noise
+export const NOISE_LAND = 12.0; // Landing/falling makes noise
+export const NOISE_WATER_ENTER = 12.0; // Splash when entering water
+export const NOISE_SWIM = 10.0; // Swimming in water makes noise
+export const NOISE_WATER_EXIT = 10.0; // Exiting water onto shore makes noise
 
 // --- 3D COLLISION BOX ---
 export interface CollisionBox {
@@ -49,6 +52,9 @@ export interface CollisionBox {
 
 // --- SPATIAL HASH GRID ---
 const CELL_SIZE = 4; // Each spatial cell covers 4x4 world units (XZ)
+const staticQuerySet = new Set<CollisionBox>();
+const scratchVec1 = new THREE.Vector3();
+const scratchVec2 = new THREE.Vector3();
 
 export class SpatialHashGrid {
   private cells: Map<number, CollisionBox[]> = new Map();
@@ -93,35 +99,39 @@ export class SpatialHashGrid {
     const x1 = Math.floor((x + r + this.worldHalf) / CELL_SIZE);
     const z0 = Math.floor((z - r + this.worldHalf) / CELL_SIZE);
     const z1 = Math.floor((z + r + this.worldHalf) / CELL_SIZE);
-    const seen = new Set<CollisionBox>();
+    staticQuerySet.clear();
     const result: CollisionBox[] = [];
     for (let cx = x0; cx <= x1; cx++) {
       for (let cz = z0; cz <= z1; cz++) {
         const list = this.cells.get(this.key(cx, cz));
         if (!list) continue;
-        for (const box of list) {
-          if (!seen.has(box)) {
-            seen.add(box);
+        for (let i = 0; i < list.length; i++) {
+          const box = list[i];
+          if (!staticQuerySet.has(box)) {
+            staticQuerySet.add(box);
             result.push(box);
           }
         }
       }
     }
+    staticQuerySet.clear();
     return result;
   }
 
   /** Return all boxes stored in the grid (for debug visualization) */
   getAllBoxes(): CollisionBox[] {
-    const seen = new Set<CollisionBox>();
+    staticQuerySet.clear();
     const result: CollisionBox[] = [];
     this.cells.forEach((list) => {
-      for (const box of list) {
-        if (!seen.has(box)) {
-          seen.add(box);
+      for (let i = 0; i < list.length; i++) {
+        const box = list[i];
+        if (!staticQuerySet.has(box)) {
+          staticQuerySet.add(box);
           result.push(box);
         }
       }
     });
+    staticQuerySet.clear();
     return result;
   }
 }
@@ -244,13 +254,14 @@ export const checkLineOfSight = (
   if (dist <= 0) return true;
 
   const stepSize = 0.5;
-  const dir = new THREE.Vector3().subVectors(end, start).normalize();
-  const probe = new THREE.Vector3();
+  const dir = scratchVec1.subVectors(end, start).normalize();
+  const probe = scratchVec2;
 
   for (let d = stepSize; d < dist; d += stepSize) {
     probe.copy(start).addScaledVector(dir, d);
     const boxes = collisionGrid.query(probe.x, probe.z, 0.1);
-    for (const box of boxes) {
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i];
       if (probe.y >= box.minY && probe.y <= box.maxY) {
         if (
           probe.x >= box.minX &&
@@ -389,6 +400,7 @@ interface PhysicsState {
   isWallClimbing: boolean;
   wallClimbProgress: number;
   wallClimbDir: THREE.Vector2;
+  isInWater?: boolean;
 }
 
 interface PhysicsInput {
@@ -459,6 +471,18 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
 
   const waterRatio = pointsInWater / checkPoints.length;
   const isInWater = waterRatio > 0 && next.pos.y < -0.3;
+  const wasInWater = !!current.isInWater;
+  next.isInWater = isInWater;
+
+  // Water Noise Events (Entering, Exiting, Swimming)
+  if (!wasInWater && isInWater) {
+    next.noiseLevel = Math.max(next.noiseLevel, NOISE_WATER_ENTER);
+  } else if (wasInWater && !isInWater) {
+    next.noiseLevel = Math.max(next.noiseLevel, NOISE_WATER_EXIT);
+  } else if (isInWater && (moveDir.lengthSq() > 0.05 || actions.jump)) {
+    next.noiseLevel = Math.max(next.noiseLevel, NOISE_SWIM);
+  }
+
   const cGrid = world.collisionGrid;
 
   // --- CURRENT FLOW (MOVED TO END) ---
@@ -665,8 +689,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
 
       // --- MOVEMENT INTENT ---
       const isMovingUp =
-        (actions.ladderUp || (actions.grabLadder && !alreadyOnLadder && !isOnRoof)) &&
-        next.stamina > 0 &&
+        (actions.ladderUp || actions.grabLadder) &&
         (alreadyOnLadder || autoGrab);
       const canMoveDown = actions.ladderDown && next.pos.y > ladderMinY + 0.1;
       const isMovingDown = canMoveDown && !isMovingUp && (alreadyOnLadder || autoGrab);

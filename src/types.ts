@@ -43,6 +43,7 @@ export interface PhysicsState {
   isNearLadder?: boolean;
   isLadderHanging?: boolean;
   isLadderMounting?: boolean;
+  isInWater?: boolean;
 }
 
 export interface GameSettings {
