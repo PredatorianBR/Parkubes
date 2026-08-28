@@ -2324,7 +2324,7 @@ export const generateCityLevel = (
         minY: buildingBottom,
         minZ: absZ - zoneRadius,
         maxX: absX + zoneRadius,
-        maxY: buildingTop + 1.0, // Allow climbing slightly past the top
+        maxY: buildingTop,
         maxZ: absZ + zoneRadius,
         faceAngle,
         railX: absX,

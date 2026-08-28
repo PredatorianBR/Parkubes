@@ -601,7 +601,8 @@ export const Character: React.FC<CharacterProps> = ({
   const wallClimbRecoveryTimer = useRef(0);
 
   useFrame((state, delta) => {
-    const vs = visualStateRef?.current || {};
+    try {
+      const vs = visualStateRef?.current || {};
     const stunned = vs.stunned ?? _stunned;
     const isCharging = vs.isCharging ?? _isCharging;
     const isRolling = vs.isRolling ?? _isRolling;
@@ -1472,6 +1473,9 @@ export const Character: React.FC<CharacterProps> = ({
     if (stunIndicatorRef.current) {
       stunIndicatorRef.current.style.display = stunned ? 'block' : 'none';
     }
+  } catch (err) {
+    console.error('Error in Character useFrame:', err);
+  }
   });
 
   return (

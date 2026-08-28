@@ -1,24 +1,13 @@
 import React from 'react';
 import { GameStatus, GameState, GameSettings, GameMode } from '../../types';
 import { MainMenu } from './MainMenu';
-import { InGameMenu } from './InGameMenu';
 import { HUD } from './HUD';
 
 export interface GameInterfaceProps {
   gameState: GameState;
   matchTimer: number;
-  debugMode: boolean;
-  setDebugMode: (val: boolean) => void;
-  showGrid?: boolean;
-  setShowGrid?: (val: boolean) => void;
-  showCollision?: boolean;
-  setShowCollision?: (val: boolean) => void;
-  showWireframe?: boolean;
-  setShowWireframe?: (val: boolean) => void;
-  showOcclusion?: boolean;
-  setShowOcclusion?: (val: boolean) => void;
-  showAIPath?: boolean;
-  setShowAIPath?: (val: boolean) => void;
+  godMode?: boolean;
+  freezeTimer?: boolean;
   togglePause: () => void;
   startGame: () => void;
   playAgain: () => void;
@@ -38,18 +27,8 @@ export interface GameInterfaceProps {
 export const GameInterface: React.FC<GameInterfaceProps> = ({
   gameState,
   matchTimer,
-  debugMode,
-  setDebugMode,
-  showGrid,
-  setShowGrid,
-  showCollision,
-  setShowCollision,
-  showWireframe,
-  setShowWireframe,
-  showOcclusion,
-  setShowOcclusion,
-  showAIPath,
-  setShowAIPath,
+  godMode,
+  freezeTimer,
   togglePause,
   startGame,
   playAgain,
@@ -62,36 +41,13 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
   showMission,
   setIsEditing,
   setGameMode,
-  handleRoundEnd,
 }) => {
   return (
     <>
-      <InGameMenu
-        gameState={gameState}
-        debugMode={debugMode}
-        setDebugMode={setDebugMode}
-        showGrid={showGrid}
-        setShowGrid={setShowGrid}
-        showCollision={showCollision}
-        setShowCollision={setShowCollision}
-        showWireframe={showWireframe}
-        setShowWireframe={setShowWireframe}
-        showOcclusion={showOcclusion}
-        setShowOcclusion={setShowOcclusion}
-        showAIPath={showAIPath}
-        setShowAIPath={setShowAIPath}
-        togglePause={togglePause}
-        restartRound={restartRound}
-        resetToMenu={resetToMenu}
-        updateSetting={updateSetting}
-        setIsEditing={setIsEditing}
-        handleRoundEnd={handleRoundEnd}
-      />
-
-      {debugMode && gameState.status === GameStatus.PLAYING && (
+      {godMode && gameState.status === GameStatus.PLAYING && (
         <div className="absolute top-20 right-56 pointer-events-none">
-          <div className="bg-red-900/80 border border-red-500 text-red-100 text-[10px] pixel-font p-2 rounded animate-pulse">
-            INVINCIBLE
+          <div className="bg-red-900/80 border border-red-500 text-red-100 text-[10px] pixel-font p-2 rounded animate-pulse shadow-lg">
+            MODO DEUS (INVENCÍVEL)
           </div>
         </div>
       )}
@@ -102,13 +58,14 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
         match={gameState.match}
         timer={matchTimer}
         showMission={showMission}
-        debugMode={debugMode}
+        freezeTimer={freezeTimer}
+        togglePause={togglePause}
+        restartRound={restartRound}
+        resetToMenu={resetToMenu}
       />
 
       <MainMenu
         gameState={gameState}
-        debugMode={debugMode}
-        setDebugMode={setDebugMode}
         startGame={startGame}
         playAgain={playAgain}
         nextRound={nextRound}
@@ -116,8 +73,6 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({
         updateSetting={updateSetting}
         updateRatio={updateRatio}
         resetRatios={resetRatios}
-        showWireframe={showWireframe}
-        setShowWireframe={setShowWireframe}
         setIsEditing={setIsEditing}
         setGameMode={setGameMode}
       />

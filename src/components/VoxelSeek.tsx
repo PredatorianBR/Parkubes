@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
+import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { GameStatus, VoxelObject, GameSettings, Position, GameMode, MatchState } from '../types';
 import { Character } from './Character';
@@ -17,182 +18,12 @@ import {
   PLAYER_RADIUS,
   CLIMB_THRESHOLD,
   isPositionBlocked,
+  CLIMB_SPEED,
+  STAMINA_CLIMB_COST,
 } from '../utils/physics';
-import { NavigationGraph, NavNode } from '../utils/navigation';
+import { NavigationGraph, NavNode, EdgeType } from '../utils/navigation';
 
-// Helper to check wall height and blockages for AI pathfinding
-const getWallHeightAt = (
-  pos: THREE.Vector3,
-  dir: THREE.Vector3,
-  collisionGrid: SpatialHashGrid,
-  probeDist: number,
-  checkRadius: number = PLAYER_RADIUS,
-): { isBlocked: boolean; maxY: number } => {
-  const probeX = pos.x + dir.x * probeDist;
-  const probeZ = pos.z + dir.z * probeDist;
 
-  // Query nearby collision boxes
-  const boxes = collisionGrid.query(probeX, probeZ, checkRadius);
-  let isBlocked = false;
-  let maxY = -Infinity;
-
-  for (const box of boxes) {
-    // A box is blocking if it overlaps vertically with the AI's standard height span.
-    if (pos.y + CLIMB_THRESHOLD < box.maxY && pos.y + PLAYER_HEIGHT > box.minY) {
-      // Check horizontal overlap with probe cylinder
-      const closeX = Math.max(box.minX, Math.min(probeX, box.maxX));
-      const closeZ = Math.max(box.minZ, Math.min(probeZ, box.maxZ));
-      const dx = probeX - closeX;
-      const dz = probeZ - closeZ;
-
-      if (dx * dx + dz * dz < checkRadius * checkRadius) {
-        isBlocked = true;
-        if (box.maxY > maxY) {
-          maxY = box.maxY;
-        }
-      }
-    }
-  }
-
-  return { isBlocked, maxY };
-};
-
-// Whisker collision check for AI pathfinding/steering (Cat's Whiskers system)
-// Note: Map boundaries and any non-climbable obstacles (taller than head height) are treated as obstacles.
-const checkWhiskerCollision = (
-  pos: THREE.Vector3,
-  wDir: THREE.Vector3,
-  wLen: number,
-  collisionGrid: SpatialHashGrid,
-  worldSize: number,
-  isCenter: boolean = false,
-): {
-  isBlocked: boolean;
-  hitPoint: THREE.Vector3;
-  normal: THREE.Vector3;
-  dist: number;
-  box?: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
-} | null => {
-  const halfSize = worldSize / 2;
-  const stepSize = 0.2; // fine sampling
-  const steps = Math.ceil(wLen / stepSize);
-
-  // Start probing from PLAYER_RADIUS to avoid self-colliding at center
-  const startDist = PLAYER_RADIUS;
-
-  for (let i = 0; i <= steps; i++) {
-    const d = startDist + (wLen - startDist) * (i / steps);
-    const probeX = pos.x + wDir.x * d;
-    const probeZ = pos.z + wDir.z * d;
-    const probeY = pos.y;
-
-    // 1. Check map boundaries (external area) - only for center whisker to avoid side-pushing when walking parallel
-    if (isCenter) {
-      const boundaryMargin = PLAYER_RADIUS + 0.02;
-      if (probeX < -halfSize + boundaryMargin) {
-        return {
-          isBlocked: true,
-          hitPoint: new THREE.Vector3(-halfSize + boundaryMargin, probeY, probeZ),
-          normal: new THREE.Vector3(1, 0, 0),
-          dist: d,
-        };
-      }
-      if (probeX > halfSize - boundaryMargin) {
-        return {
-          isBlocked: true,
-          hitPoint: new THREE.Vector3(halfSize - boundaryMargin, probeY, probeZ),
-          normal: new THREE.Vector3(-1, 0, 0),
-          dist: d,
-        };
-      }
-      if (probeZ < -halfSize + boundaryMargin) {
-        return {
-          isBlocked: true,
-          hitPoint: new THREE.Vector3(probeX, probeY, -halfSize + boundaryMargin),
-          normal: new THREE.Vector3(0, 0, 1),
-          dist: d,
-        };
-      }
-      if (probeZ > halfSize - boundaryMargin) {
-        return {
-          isBlocked: true,
-          hitPoint: new THREE.Vector3(probeX, probeY, halfSize - boundaryMargin),
-          normal: new THREE.Vector3(0, 0, -1),
-          dist: d,
-        };
-      }
-    }
-
-    // 2. Check collision grid for high walls (non-climbable)
-    const whiskerRadius = 0.25;
-    const boxes = collisionGrid.query(probeX, probeZ, whiskerRadius);
-    for (const box of boxes) {
-      // Check vertical overlap with a non-climbable high obstacle
-      if (probeY + PLAYER_HEIGHT < box.maxY && probeY + PLAYER_HEIGHT > box.minY) {
-        // Check horizontal overlap with probe sphere/cylinder
-        const closeX = Math.max(box.minX, Math.min(probeX, box.maxX));
-        const closeZ = Math.max(box.minZ, Math.min(probeZ, box.maxZ));
-        const dx = probeX - closeX;
-        const dz = probeZ - closeZ;
-
-        if (dx * dx + dz * dz < whiskerRadius * whiskerRadius) {
-          // Collision! Find closest face to compute normal
-          const distToMinX = Math.abs(probeX - box.minX);
-          const distToMaxX = Math.abs(probeX - box.maxX);
-          const distToMinZ = Math.abs(probeZ - box.minZ);
-          const distToMaxZ = Math.abs(probeZ - box.maxZ);
-
-          const minDist = Math.min(distToMinX, distToMaxX, distToMinZ, distToMaxZ);
-          const normal = new THREE.Vector3(0, 0, 0);
-          if (minDist === distToMinX) normal.set(-1, 0, 0);
-          else if (minDist === distToMaxX) normal.set(1, 0, 0);
-          else if (minDist === distToMinZ) normal.set(0, 0, -1);
-          else normal.set(0, 0, 1);
-
-          return {
-            isBlocked: true,
-            hitPoint: new THREE.Vector3(probeX, probeY, probeZ),
-            normal,
-            dist: d,
-            box: {
-              minX: box.minX,
-              maxX: box.maxX,
-              minY: box.minY,
-              maxY: box.maxY,
-              minZ: box.minZ,
-              maxZ: box.maxZ,
-            },
-          };
-        }
-      }
-    }
-  }
-
-  return null;
-};
-
-// Helper to calculate shortest distance from point p to line segment ab
-const distToSegment = (p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number => {
-  const ab = new THREE.Vector3().subVectors(b, a);
-  const ap = new THREE.Vector3().subVectors(p, a);
-  const abLenSq = ab.lengthSq();
-  if (abLenSq === 0) return p.distanceTo(a);
-
-  // Project ap onto ab, clamp to segment bounds [0, 1]
-  let t = ap.dot(ab) / abLenSq;
-  t = Math.max(0, Math.min(1, t));
-
-  const closestPoint = new THREE.Vector3().copy(a).addScaledVector(ab, t);
-  return p.distanceTo(closestPoint);
-};
-
-// Helper to get quadrant of a position
-const getQuadrant = (x: number, z: number): number => {
-  if (x >= 0 && z >= 0) return 1;
-  if (x < 0 && z >= 0) return 2;
-  if (x < 0 && z < 0) return 3;
-  return 4;
-};
 import { VoxelGround } from './environment/VoxelGround';
 import { VoxelWater } from './environment/VoxelWater';
 import { WheatField } from './environment/WheatField';
@@ -213,6 +44,7 @@ interface VoxelSeekProps {
   onRoundEnd: (playerWon: boolean) => void;
   onPrepComplete: () => void;
   debugMode?: boolean;
+  godMode?: boolean;
   showGrid?: boolean;
   showCollision?: boolean;
   showWireframe?: boolean; // NEW PROP
@@ -1460,6 +1292,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     const [aiEmoji, setAiEmoji] = useState('❓');
     const aiEmojiRef = useRef('❓');
     const aiDebugPathLineRef = useRef<THREE.Line>(null);
+    const aiDebugNodesMeshRef = useRef<THREE.InstancedMesh>(null);
+    const aiDebugTargetMarkerRef = useRef<THREE.Mesh>(null);
     const aiDebugLastPosMarkerRef = useRef<THREE.Mesh>(null);
     const aiDebugLastDirLineRef = useRef<THREE.Line>(null);
     const aiDebugWhiskerCenterRef = useRef<THREE.Line>(null);
@@ -1495,6 +1329,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     const aiIsCharging = useRef(false);
     const aiIsRolling = useRef(false);
     const aiStamina = useRef(100);
+    const aiIsExhausted = useRef(false);
     const aiStunTimer = useRef(0);
     const aiJumpDelayTimer = useRef(0);
     const aiAirTimeHighPoint = useRef(0);
@@ -1508,6 +1343,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     const aiPrevPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiSmoothedMoveSpeed = useRef(0);
     const aiStuckTimer = useRef(0);
+    const aiWaypointTimer = useRef(0);
     const aiDetourTimer = useRef(0);
     const aiDetourDir = useRef(new THREE.Vector3(0, 0, 0));
     const aiLateralDetourDir = useRef(new THREE.Vector3(0, 0, 0));
@@ -1551,6 +1387,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       wallClimbProgress: 0,
       wallClimbDir: new THREE.Vector2(0, 0),
     });
+    const aiLadderStuckTimer = useRef(0);
+    const aiLadderReleaseCooldown = useRef(0);
+    const aiPrevLadderY = useRef(0);
 
     // AI Character Group & UI Refs
     const aiCharacterGroup = useRef<THREE.Group>(null!);
@@ -1630,11 +1469,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       worldSize: number;
     } | null>(null);
 
-    const navGraph = useMemo(() => (mapData ? new NavigationGraph(mapData) : null), [mapData]);
-    useEffect(() => {
-      (window as any).__PARKUBES_NAV_GRAPH = navGraph;
-    }, [navGraph]);
-    const aiPath = useRef<NavNode[]>([]);
+    const aiPath = useRef<{ id?: string; x: number; y: number; z: number; edgeType?: EdgeType | null }[]>([]);
     const aiPathIndex = useRef<number>(0);
     const aiPathRecalcTimer = useRef<number>(0);
     const aiLastPathTarget = useRef<THREE.Vector3>(new THREE.Vector3(Infinity, Infinity, Infinity));
@@ -1777,109 +1612,46 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       return penalty;
     };
 
-    const getFurthestWaypointFrom = React.useCallback(
+    const navGraph = useMemo(() => {
+      if (!mapData) return null;
+      return new NavigationGraph(mapData);
+    }, [mapData]);
+
+    const getRandomWaypoint = React.useCallback(
       (
-        origin: THREE.Vector3,
-        currentAiPos?: THREE.Vector3,
-        playerDir?: THREE.Vector3 | null,
+        currentPos: THREE.Vector3,
         graph?: NavigationGraph | null,
+        minDist: number = 8.0,
       ): THREE.Vector3 => {
         if (!graph || !graph.nodes || graph.nodes.size === 0) {
           return new THREE.Vector3(0, 0, 0);
         }
 
-        const furthestSpot = new THREE.Vector3(0, 0, 0);
-        let bestScore = -Infinity;
-
-        // Vector direction from AI to player position
-        const dirToPlayerPos = currentAiPos
-          ? new THREE.Vector3().subVectors(origin, currentAiPos).normalize()
-          : null;
-        const currentDistToPlayer = currentAiPos ? currentAiPos.distanceTo(origin) : 0;
-
-        const candidates: { pos: THREE.Vector3; score: number }[] = [];
-
-        graph.nodes.forEach((node) => {
-          const pos = new THREE.Vector3(node.x, node.y, node.z);
-          const distToPlayer = pos.distanceTo(origin);
-
-          let score = distToPlayer;
-
-          if (currentAiPos) {
-            const dirToCand = new THREE.Vector3().subVectors(pos, currentAiPos).normalize();
-
-            // 1. Evade player's position
-            if (dirToPlayerPos) {
-              const dotPos = dirToPlayerPos.dot(dirToCand);
-              if (dotPos > 0.3) {
-                score -= 2000;
-              } else if (dotPos > 0.0) {
-                score -= 1000;
-              } else {
-                score += (1.0 - dotPos) * 50.0;
-              }
-            }
-
-            // 2. Flee OPPOSITE to player's heading vector (if player was moving)
-            if (playerDir && playerDir.lengthSq() > 0.1) {
-              const dotVel = playerDir.dot(dirToCand);
-              // If candidate is in the direction player was heading (dotVel > 0), penalize!
-              // If candidate is OPPOSITE to player's heading (dotVel < 0), bonus!
-              if (dotVel > 0.2) {
-                score -= 1500;
-              } else if (dotVel < -0.2) {
-                score += Math.abs(dotVel) * 100.0; // Bonus for fleeing opposite to player's heading!
-              }
-            }
-
-            // 3. Heavy penalty if candidate brings AI closer to player
-            if (distToPlayer < currentDistToPlayer) {
-              score -= (currentDistToPlayer - distToPlayer) * 100.0;
-            }
-
-            // 4. Penalty if candidate is too close to player
-            if (distToPlayer < 8.0) {
-              score -= (8.0 - distToPlayer) * 200.0;
-            }
-          }
-
-          candidates.push({ pos, score });
+        const nodesArray: NavNode[] = Array.from(graph.nodes.values());
+        // Filter nodes that are at least minDist away from current position
+        const validNodes = nodesArray.filter((node) => {
+          const d = Math.hypot(node.x - currentPos.x, node.z - currentPos.z);
+          if (d < minDist) return false;
+          // Filter out isolated nodes without connections
+          const edges = graph.edges.get(node.id);
+          if (!edges || edges.length === 0) return false;
+          return true;
         });
 
-        // Sort candidates by score descending
-        candidates.sort((a, b) => b.score - a.score);
+        const pool = validNodes.length > 0 ? validNodes : nodesArray;
 
-        // Select the highest scoring reachable candidate whose path avoids running past the player
-        for (const cand of candidates) {
-          if (currentAiPos) {
-            const path = graph.findPath(currentAiPos, cand.pos);
-            if (!path || path.length === 0) {
-              continue; // Skip unreachable node
-            }
-
-            // Path safety check: ensure no step along the path runs past/into the player
-            let pathPassesThroughPlayer = false;
-            for (const node of path) {
-              const nodePos = new THREE.Vector3(node.x, node.y, node.z);
-              const nodeDistToPlayer = nodePos.distanceTo(origin);
-              // If path forces running within 4.0 meters of player when AI was further away, reject path
-              if (nodeDistToPlayer < 4.0 && currentDistToPlayer > 5.0) {
-                pathPassesThroughPlayer = true;
-                break;
-              }
-            }
-
-            if (pathPassesThroughPlayer) {
-              continue; // Skip path that runs into the player
-            }
+        // Try up to 10 candidates to ensure findPath finds a valid accessible route
+        for (let i = 0; i < 10; i++) {
+          const randomNode = pool[Math.floor(Math.random() * pool.length)];
+          const target = new THREE.Vector3(randomNode.x, randomNode.y, randomNode.z);
+          const testPath = graph.findPath(currentPos, target);
+          if (testPath && testPath.length > 0) {
+            return target;
           }
-
-          furthestSpot.copy(cand.pos);
-          bestScore = cand.score;
-          break;
         }
 
-        return bestScore !== -Infinity ? furthestSpot : new THREE.Vector3(0, 0, 0);
+        const fallback = pool[Math.floor(Math.random() * pool.length)];
+        return new THREE.Vector3(fallback.x, fallback.y, fallback.z);
       },
       [],
     );
@@ -1987,6 +1759,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           aiIsGrounded.current = true;
           aiAirTimeHighPoint.current = aiSpawn.y;
           aiStamina.current = 100;
+          aiIsExhausted.current = false;
           aiStunTimer.current = 0;
           aiStuckTimer.current = 0;
           aiDetourTimer.current = 0;
@@ -2005,10 +1778,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           aiHasWanderTarget.current = false;
           aiWanderTargetTimer.current = 0;
 
-          // Select initial hiding spot if AI is Hider
-          const isAISeeker = props.match.currentRound % 2 !== 0;
-          if (!isAISeeker) {
-            aiHidingSpot.current.copy(getFurthestWaypointFrom(pSpawn, aiSpawn, null, navGraph));
+          // Select initial random target spot for AI at start of round
+          if (navGraph) {
+            const aiTargetSpot = getRandomWaypoint(aiSpawn, navGraph, 10.0);
+            aiHidingSpot.current.copy(aiTargetSpot);
           }
         } else {
           // Free Mode: reset player only
@@ -2035,8 +1808,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       props.mode,
       props.match.currentRound,
       onPrepComplete,
-      getFurthestWaypointFrom,
+      getRandomWaypoint,
       fitCameraToMap,
+      navGraph,
     ]);
 
     // Handle Camera Fitting on App Load (IDLE), Prep Phase & Window Resize
@@ -2054,6 +1828,75 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
     }, [fitCameraToMap, settings.cameraFollow, status, mapData]);
+
+    const [isAddingDestination, setIsAddingDestination] = useState(false);
+    const isAddingDestinationRef = useRef(false);
+    const isCustomDestination = useRef(false);
+
+    // Listen to DevTools AI Waypath actions
+    useEffect(() => {
+      const handleAddDestinationClick = () => {
+        isAddingDestinationRef.current = true;
+        setIsAddingDestination(true);
+      };
+
+      const handleClearPath = () => {
+        isAddingDestinationRef.current = false;
+        setIsAddingDestination(false);
+        if (navGraph) {
+          const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
+          if (newRandomTarget.lengthSq() > 0.1) {
+            aiHidingSpot.current.copy(newRandomTarget);
+            const computedPath = navGraph.findPath(aiPos.current, newRandomTarget);
+            if (computedPath && computedPath.length > 0) {
+              const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
+              aiPath.current = smoothed.map((n, idx) => {
+                const nextNode = smoothed[idx + 1];
+                const edgeType = nextNode ? navGraph.getEdgeType(n, nextNode) : null;
+                return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
+              });
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.copy(newRandomTarget);
+            } else {
+              aiPath.current = [];
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.set(-9999, -9999, -9999);
+            }
+          }
+        } else {
+          aiPath.current = [];
+          aiPathIndex.current = 0;
+          aiLastPathTarget.current.set(-9999, -9999, -9999);
+        }
+        aiPathRecalcTimer.current = 0;
+        aiWaypointTimer.current = 0;
+        aiStuckTimer.current = 0;
+      };
+
+      const handleRemoveNextNode = () => {
+        if (aiPath.current.length > 0) {
+          if (aiPathIndex.current < aiPath.current.length - 1) {
+            aiPathIndex.current++;
+          } else {
+            // Already at last waypoint, clear path so it reaches or recalculates
+            aiPath.current = [];
+            aiPathIndex.current = 0;
+          }
+          aiWaypointTimer.current = 0;
+          aiStuckTimer.current = 0;
+        }
+      };
+
+      window.addEventListener('ai-add-destination-click', handleAddDestinationClick);
+      window.addEventListener('ai-clear-path', handleClearPath);
+      window.addEventListener('ai-remove-next-node', handleRemoveNextNode);
+
+      return () => {
+        window.removeEventListener('ai-add-destination-click', handleAddDestinationClick);
+        window.removeEventListener('ai-clear-path', handleClearPath);
+        window.removeEventListener('ai-remove-next-node', handleRemoveNextNode);
+      };
+    }, [navGraph, getRandomWaypoint]);
 
     useFrame((state, delta) => {
       if (!mapData) return;
@@ -2150,840 +1993,340 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         attemptRoll: false,
       };
 
-      let isAIChasing = false;
       const targetPos = new THREE.Vector3().copy(aiPos.current);
 
-      if (props.mode === GameMode.HIDE_AND_SEEK && aiCanMove) {
-        const toPlayer = new THREE.Vector3().subVectors(playerPos.current, aiPos.current);
-        const distanceToPlayer = toPlayer.length();
-        const hasLOS = checkLineOfSight(aiPos.current, playerPos.current, mapData.collisionGrid);
+      if (props.mode === GameMode.HIDE_AND_SEEK && aiCanMove && navGraph) {
+        // AI Autonomous Target & Pathfinding logic
 
-        // Update last seen position
-        if (hasLOS && status === GameStatus.PLAYING) {
-          aiLastKnownPlayerPos.current.copy(playerPos.current);
-          aiPlayerLastVel.current.copy(playerVel.current);
-          const pVelXZ = Math.sqrt(playerVel.current.x * playerVel.current.x + playerVel.current.z * playerVel.current.z);
-          if (pVelXZ > 0.3) {
-            aiLastKnownPlayerDir.current.set(playerVel.current.x, 0, playerVel.current.z).normalize();
-          } else if (physicsOutput.pDir && physicsOutput.pDir.lengthSq() > 0.1) {
-            aiLastKnownPlayerDir.current.set(physicsOutput.pDir.x, 0, physicsOutput.pDir.z).normalize();
-          }
-          aiHasLastKnownPlayerPos.current = true;
-          aiLocalSearchCount.current = 0; // Reset local search count while chasing
-        }
+        // If no valid target or destination reached, pick a new random target
+        const destinationReached =
+          aiPath.current.length > 0 && aiPathIndex.current >= aiPath.current.length;
+        const closeToTarget = aiPos.current.distanceTo(aiHidingSpot.current) < 1.5;
 
-        // Hear player running
-        const playerNoise = physicsOutput.noiseLevel;
-        const canHearPlayer = playerNoise > 0 && distanceToPlayer < playerNoise * 1.5;
-        if (aiLastHeardUpdateTimer.current > 0) {
-          aiLastHeardUpdateTimer.current -= dt;
-        }
-        if (aiHeardEmojiTimer.current > 0) {
-          aiHeardEmojiTimer.current -= dt;
-        }
-        if (canHearPlayer && status === GameStatus.PLAYING) {
-          aiHeardEmojiTimer.current = 1.5; // Show ear emoji 👂 for 1.5s when heard
-          if (!aiHasLastKnownPlayerPos.current || aiLastHeardUpdateTimer.current <= 0) {
-            aiLastKnownPlayerPos.current.copy(playerPos.current);
-            aiPlayerLastVel.current.copy(playerVel.current);
-            const pVelXZ = Math.sqrt(playerVel.current.x * playerVel.current.x + playerVel.current.z * playerVel.current.z);
-            if (pVelXZ > 0.3) {
-              aiLastKnownPlayerDir.current.set(playerVel.current.x, 0, playerVel.current.z).normalize();
-            } else if (physicsOutput.pDir && physicsOutput.pDir.lengthSq() > 0.1) {
-              aiLastKnownPlayerDir.current.set(physicsOutput.pDir.x, 0, physicsOutput.pDir.z).normalize();
-            }
-            aiHasLastKnownPlayerPos.current = true;
-            aiLocalSearchCount.current = 0; // Reset local search count while chasing
-            aiLastHeardUpdateTimer.current = 1.5; // Cooldown of 1.5 seconds
-            console.log('[AI Hearing] Registered new player position at:', playerPos.current.toArray());
+        if (aiHidingSpot.current.lengthSq() < 0.1 || (!isCustomDestination.current && (destinationReached || closeToTarget))) {
+          isCustomDestination.current = false;
+          const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
+          if (newRandomTarget.lengthSq() > 0.1) {
+            aiHidingSpot.current.copy(newRandomTarget);
+            aiPath.current = [];
+            aiPathIndex.current = 0;
           }
         }
 
-        isAIChasing = isAISeeker && (hasLOS || aiHasLastKnownPlayerPos.current);
+        targetPos.copy(aiHidingSpot.current);
 
-        if (isAISeeker) {
-          // SEEKER AI
-          if (hasLOS) {
-            // Visual contact: run directly to player's current position + small lead in player heading direction
-            targetPos.copy(playerPos.current);
-            if (aiLastKnownPlayerDir.current.lengthSq() > 0.1) {
-              targetPos.addScaledVector(aiLastKnownPlayerDir.current, 2.0);
-            }
-            aiInput.run = true;
-          } else if (aiHasLastKnownPlayerPos.current) {
-            // No visual contact: project target in the direction player was heading when last seen/heard!
-            targetPos.copy(aiLastKnownPlayerPos.current);
-            if (aiLastKnownPlayerDir.current.lengthSq() > 0.1) {
-              targetPos.addScaledVector(aiLastKnownPlayerDir.current, 6.0); // lead 6m in player vector direction
-            }
-            // Run with urgency (always run, ignore stamina threshold)
-            aiInput.run = true;
-
-            // Clear tracking once we arrive at the last known position, or if we reached the end of the path and are blocked
-            const arrived = aiPos.current.distanceTo(aiLastKnownPlayerPos.current) < 2.0;
-            const pathCompleted =
-              aiPath.current.length === 0 || aiPathIndex.current >= aiPath.current.length;
-            const currentSpeedXZ = Math.sqrt(
-              aiVel.current.x * aiVel.current.x + aiVel.current.z * aiVel.current.z,
-            );
-            const isBlockedAtEnd =
-              pathCompleted && currentSpeedXZ < 0.3 && aiStunTimer.current <= 0;
-
-            const isAIOnLadder = mapData.ladderZones?.some(
-              (zone) =>
-                aiPos.current.x >= zone.minX - 1.2 &&
-                aiPos.current.x <= zone.maxX + 1.2 &&
-                aiPos.current.z >= zone.minZ - 1.2 &&
-                aiPos.current.z <= zone.maxZ + 1.2 &&
-                aiPos.current.y >= zone.minY - 0.5 &&
-                aiPos.current.y < zone.maxY - 0.2,
-            );
-
-            if (!isAIOnLadder && (arrived || isBlockedAtEnd) && !canHearPlayer && !aiWasDirect.current) {
-              console.log(
-                '[AI Chase] Desistiu/Arrived. Arrived:',
-                arrived,
-                'BlockedAtEnd:',
-                isBlockedAtEnd,
-                'Dist:',
-                aiPos.current.distanceTo(aiLastKnownPlayerPos.current),
-                'canHear:',
-                canHearPlayer,
-                'wasDirect:',
-                aiWasDirect.current,
-              );
-              aiHasLastKnownPlayerPos.current = false;
-              aiHasWanderTarget.current = false; // Trigger immediate search in a different quadrant
-              aiLocalSearchCount.current = 0;
-            }
-          } else {
-            // Wander search: continuously move from waypoint to waypoint across quadrants
-            if (aiHasWanderTarget.current) {
-              aiWanderTargetTimer.current -= dt;
-              if (aiWanderTargetTimer.current <= 0) {
-                aiHasWanderTarget.current = false; // Abandon target
-              }
-            }
-
-            if (
-              !aiHasWanderTarget.current ||
-              aiPos.current.distanceTo(aiWanderTarget.current) < 2.0
-            ) {
-              aiHasWanderTarget.current = false;
-              // Determine current quadrant and filter out both current and last searched quadrant
-              const currentQuad = getQuadrant(aiPos.current.x, aiPos.current.z);
-              let validQuads = [1, 2, 3, 4].filter(
-                (q) => q !== currentQuad && q !== aiLastSearchedQuadrant.current,
-              );
-              if (validQuads.length === 0) {
-                validQuads = [1, 2, 3, 4].filter((q) => q !== currentQuad);
-              }
-              const targetQuad =
-                validQuads[Math.floor(Math.random() * validQuads.length)] || 1;
-              aiLastSearchedQuadrant.current = targetQuad;
-
-              // 50% chance to climb a building with a ladder in target quadrant, 50% chance of street wander in target quadrant
-              const buildingsWithLadders = mapData.objects.filter((obj) => {
-                if (!obj.ladders || obj.ladders.length === 0) return false;
-                return getQuadrant(obj.position[0], obj.position[2]) === targetQuad;
-              });
-
-              if (buildingsWithLadders.length > 0 && Math.random() < 0.5) {
-                const obj =
-                  buildingsWithLadders[
-                    Math.floor(Math.random() * buildingsWithLadders.length)
-                  ];
-                // Target the base of the ladder so the AI routes to ladder base -> ladder top -> roof
-                const ladderZone = mapData.ladderZones.find(
-                  (z) =>
-                    obj.position[0] >= z.minX - 2.5 &&
-                    obj.position[0] <= z.maxX + 2.5 &&
-                    obj.position[2] >= z.minZ - 2.5 &&
-                    obj.position[2] <= z.maxZ + 2.5,
-                );
-                if (ladderZone) {
-                  const ladderBasePos = new THREE.Vector3(
-                    (ladderZone.minX + ladderZone.maxX) / 2,
-                    ladderZone.minY,
-                    (ladderZone.minZ + ladderZone.maxZ) / 2,
-                  );
-                  aiWanderTarget.current.copy(ladderBasePos);
-                } else {
-                  const roofY = obj.position[1] + obj.scale[1] / 2;
-                  aiWanderTarget.current.set(obj.position[0], roofY, obj.position[2]);
-                }
-                aiHasWanderTarget.current = true;
-                aiWanderTargetTimer.current = 12.0; // 12 seconds for roof climb
-              } else {
-                // Generate random coordinates bounded to the target quadrant
-                const halfSize = settings.worldSize / 2;
-                const margin = PLAYER_RADIUS + 0.1;
-                let minX = 0,
-                  maxX = 0,
-                  minZ = 0,
-                  maxZ = 0;
-                if (targetQuad === 1) {
-                  minX = 0;
-                  maxX = halfSize - margin;
-                  minZ = 0;
-                  maxZ = halfSize - margin;
-                } else if (targetQuad === 2) {
-                  minX = -halfSize + margin;
-                  maxX = 0;
-                  minZ = 0;
-                  maxZ = halfSize - margin;
-                } else if (targetQuad === 3) {
-                  minX = -halfSize + margin;
-                  maxX = 0;
-                  minZ = -halfSize + margin;
-                  maxZ = 0;
-                } else {
-                  minX = 0;
-                  maxX = halfSize - margin;
-                  minZ = -halfSize + margin;
-                  maxZ = 0;
-                }
-
-                let rx = 0;
-                let rz = 0;
-                let ry = -Infinity;
-                let found = false;
-                for (let attempt = 0; attempt < 50; attempt++) {
-                  rx = minX + Math.random() * (maxX - minX);
-                  rz = minZ + Math.random() * (maxZ - minZ);
-                  ry = getTerrainHeight(
-                    rx,
-                    rz,
-                    0,
-                    mapData.collisionGrid,
-                    mapData.bGrid,
-                    mapData.wGrid,
-                    settings.worldSize,
-                  );
-                  if (ry !== -Infinity && ry < 2.0) {
-                    if (
-                      !isPositionBlocked(
-                        rx,
-                        ry,
-                        rz,
-                        mapData.collisionGrid,
-                        PLAYER_RADIUS - 0.25,
-                      )
-                    ) {
-                      found = true;
-                      break;
-                    }
-                  }
-                }
-                if (found) {
-                  aiWanderTarget.current.set(rx, ry, rz);
-                  aiHasWanderTarget.current = true;
-                  aiWanderTargetTimer.current = 10.0; // 10 seconds for street wander
-                }
-              }
-            }
-
-            if (aiHasWanderTarget.current) {
-              targetPos.copy(aiWanderTarget.current);
-              // Maintain continuous movement forward
-              aiInput.run = true;
-            }
-          }
+        // Stuck detection: if trying to move but no progress for > 1.5s, trigger recalculation
+        const distFromLastCheck = aiPos.current.distanceTo(aiLastProgressPos.current);
+        if (aiInput.moveDir.lengthSq() > 0.01 && distFromLastCheck < 0.2) {
+          aiStuckTimer.current += dt;
         } else {
-          // HIDER AI
-          if (status === GameStatus.PREP) {
-            targetPos.copy(aiHidingSpot.current);
-            aiInput.run = true;
+          aiStuckTimer.current = 0;
+          aiLastProgressPos.current.copy(aiPos.current);
+        }
+
+        const isStuck = aiStuckTimer.current > 1.5;
+        if (isStuck) {
+          aiStuckTimer.current = 0;
+        }
+
+        // Calculate path if empty, reached end, target moved, or stuck
+        if (
+          aiPath.current.length === 0 ||
+          aiPathIndex.current >= aiPath.current.length ||
+          aiLastPathTarget.current.distanceTo(targetPos) > 1.0 ||
+          isStuck
+        ) {
+          aiPathRecalcTimer.current = 0;
+          aiLastPathTarget.current.copy(targetPos);
+
+          const computedPath = navGraph.findPath(aiPos.current, targetPos);
+          if (computedPath && computedPath.length > 0) {
+            const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
+            aiPath.current = smoothed.map((n, idx) => {
+              const nextNode = smoothed[idx + 1];
+              const edgeType = nextNode
+                ? (navGraph.getEdgeType(n, nextNode) ??
+                  (nextNode.y < n.y - 1.0 ? 'drop' : nextNode.y > n.y + 1.0 ? 'climb' : 'walk'))
+                : null;
+              return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
+            });
+            aiPathIndex.current = 0;
           } else {
-            // Playing: decisions are made EXCLUSIVELY based on aiLastKnownPlayerPos
-            const distToLastKnownPlayer = aiHasLastKnownPlayerPos.current
-              ? aiPos.current.distanceTo(aiLastKnownPlayerPos.current)
-              : Infinity;
-
-            const isPlayerDangerouslyClose = distToLastKnownPlayer < 10.0;
-            const inImmediateDanger = hasLOS || canHearPlayer || isPlayerDangerouslyClose;
-
-            if (inImmediateDanger && aiHasLastKnownPlayerPos.current) {
-              // Fleeing: run to a reachable hiding spot away from the player's last known position
-              const spotDistToLastKnown = aiHidingSpot.current.distanceTo(aiLastKnownPlayerPos.current);
-              const spotHasLOS = checkLineOfSight(aiLastKnownPlayerPos.current, aiHidingSpot.current, mapData.collisionGrid);
-              const isSpotCompromised = spotDistToLastKnown < 8.0 || spotHasLOS;
-              const arrivedAtSpot = aiPos.current.distanceTo(aiHidingSpot.current) < 2.0;
-
-              aiFleeTimer.current -= dt;
-              if (aiFleeTimer.current <= 0) {
-                if (isSpotCompromised || arrivedAtSpot) {
-                  const bestSpot = getFurthestWaypointFrom(
-                    aiLastKnownPlayerPos.current,
-                    aiPos.current,
-                    aiLastKnownPlayerDir.current,
-                    navGraph,
-                  );
-                  if (bestSpot && bestSpot.lengthSq() > 0) {
-                    aiHidingSpot.current.copy(bestSpot);
-                  }
-                }
-                aiFleeTimer.current = 1.0; // Throttle hiding spot re-evaluation to once per second
-              }
-              targetPos.copy(aiHidingSpot.current);
-              aiInput.run = true;
-            } else {
-              // Safe, stay in hiding spot
-              targetPos.copy(aiHidingSpot.current);
-              aiInput.run = false;
-            }
+            aiPath.current = [];
+            aiPathIndex.current = 0;
           }
         }
 
-        // --- AI WAYPOINT / A* PATHFINDING UPDATE ---
-        const currentWaypointPos = targetPos.clone(); // fallback to direct target
+        // Follow path node by node
+        if (aiPath.current.length > 0 && aiPathIndex.current < aiPath.current.length) {
+          const activeNode = aiPath.current[aiPathIndex.current];
+          const prevNode = aiPathIndex.current > 0 ? aiPath.current[aiPathIndex.current - 1] : null;
+          const isClimbNode = activeNode.edgeType === 'climb';
 
-        if (navGraph) {
-          aiPathRecalcTimer.current -= dt;
-          const targetMovedThreshold = isAIChasing && hasLOS ? 0.8 : 1.5;
-          const targetMoved = aiLastPathTarget.current.distanceTo(targetPos) > targetMovedThreshold;
+          // Distance to current node
+          const distXZ = Math.hypot(aiPos.current.x - activeNode.x, aiPos.current.z - activeNode.z);
+          const distY = Math.abs(aiPos.current.y - activeNode.y);
 
-          const isAIOnLadder = mapData.ladderZones?.some(
-            (zone) =>
-              aiPos.current.x >= zone.minX - 1.2 &&
-              aiPos.current.x <= zone.maxX + 1.2 &&
-              aiPos.current.z >= zone.minZ - 1.2 &&
-              aiPos.current.z <= zone.maxZ + 1.2 &&
-              aiPos.current.y >= zone.minY - 0.5 &&
-              aiPos.current.y < zone.maxY - 0.2,
-          );
-
-          const needsRecalc =
-            !isAIOnLadder &&
-            (aiPath.current.length === 0 ||
-              aiPathIndex.current >= aiPath.current.length ||
-              targetMoved ||
-              (isAIChasing && aiPathRecalcTimer.current <= 0));
-
-          if (needsRecalc) {
-            aiPathRecalcTimer.current = isAIChasing ? 0.1 : 0.3; // Throttle to 100ms when chasing, 300ms otherwise
-            aiLastPathTarget.current.copy(targetPos);
-            const computedPath = navGraph.findPath(aiPos.current, targetPos);
-            console.log(
-              '[AI Path] Recalculado A* para:',
-              targetPos.toArray(),
-              'Encontrado:',
-              !!computedPath,
-              'Tamanho:',
-              computedPath ? computedPath.length : 0,
-            );
-            if (computedPath && computedPath.length > 0) {
-              aiPath.current = computedPath;
-              // If node 0 is close to current AI position, start at node 1 to maintain smooth forward momentum
-              if (computedPath.length > 1) {
-                const distToNode0 = Math.sqrt(
-                  (aiPos.current.x - computedPath[0].x) ** 2 +
-                  (aiPos.current.z - computedPath[0].z) ** 2
-                );
-                aiPathIndex.current = distToNode0 < 1.5 ? 1 : 0;
-              } else {
-                aiPathIndex.current = 0;
-              }
-            } else {
-              aiPath.current = [];
-              aiPathIndex.current = 0;
-            }
-          }
-
-          if (aiPath.current.length > 0 && aiPathIndex.current < aiPath.current.length) {
-            // Path smoothing: lookahead to shortcut straight path segments
-            let shortcutIndex = aiPathIndex.current;
-            const maxLookAhead = Math.min(aiPath.current.length - 1, aiPathIndex.current + 4);
-            for (let i = maxLookAhead; i > aiPathIndex.current; i--) {
-              const wpAhead = aiPath.current[i];
-              const distXZ = Math.sqrt((aiPos.current.x - wpAhead.x) ** 2 + (aiPos.current.z - wpAhead.z) ** 2);
-              const distY = Math.abs(aiPos.current.y - wpAhead.y);
-              
-              if (distY < 0.6 && distXZ < 12.0) {
-                let pathIsClear = true;
-                // Check that no intermediate node requires a ladder/high vertical transition
-                for (let k = aiPathIndex.current; k <= i; k++) {
-                  if (Math.abs(aiPath.current[k].y - aiPos.current.y) > 1.5) {
-                    pathIsClear = false;
-                    break;
-                  }
-                }
-
-                if (pathIsClear) {
-                  const steps = Math.ceil(distXZ / 0.5);
-                  for (let step = 1; step < steps; step++) {
-                    const t = step / steps;
-                    const px = aiPos.current.x + (wpAhead.x - aiPos.current.x) * t;
-                    const pz = aiPos.current.z + (wpAhead.z - aiPos.current.z) * t;
-                    
-                    if (isPositionBlocked(px, wpAhead.y, pz, mapData.collisionGrid, PLAYER_RADIUS - 0.2)) {
-                      pathIsClear = false;
-                      break;
-                    }
-                    
-                    const h = getTerrainHeight(
-                      px,
-                      pz,
-                      0,
-                      mapData.collisionGrid,
-                      mapData.bGrid,
-                      mapData.wGrid,
-                      settings.worldSize
-                    );
-                    if (h === -Infinity || Math.abs(h - wpAhead.y) > 0.6) {
-                      pathIsClear = false;
-                      break;
-                    }
-                  }
-                  if (pathIsClear) {
-                    shortcutIndex = i;
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (shortcutIndex > aiPathIndex.current) {
-              aiPathIndex.current = shortcutIndex;
-            }
-
-            const wp = aiPath.current[aiPathIndex.current];
-            currentWaypointPos.set(wp.x, wp.y, wp.z);
-
-            // Obstacle-repelled waypoint shifting to centralize paths in narrow passages/streets
-            const repulsion = new THREE.Vector3(0, 0, 0);
-            const checkRadius = 1.2;
-            const boxes = mapData.collisionGrid.query(wp.x, wp.z, checkRadius);
-            for (const box of boxes) {
-              if (wp.y + 0.1 < box.maxY && wp.y + PLAYER_HEIGHT - 0.1 > box.minY) {
-                const closeX = Math.max(box.minX, Math.min(wp.x, box.maxX));
-                const closeZ = Math.max(box.minZ, Math.min(wp.z, box.maxZ));
-                const dx = wp.x - closeX;
-                const dz = wp.z - closeZ;
-                const distSq = dx * dx + dz * dz;
-                if (distSq < checkRadius * checkRadius) {
-                  const dist = Math.sqrt(distSq);
-                  if (dist > 0.01) {
-                    const pushForce = (checkRadius - dist) / checkRadius;
-                    repulsion.add(new THREE.Vector3(dx / dist, 0, dz / dist).multiplyScalar(pushForce * 0.7));
-                  }
-                }
-              }
-            }
-            if (repulsion.lengthSq() > 0.01) {
-              const shiftedPos = new THREE.Vector3().copy(currentWaypointPos).add(repulsion);
-              if (!isPositionBlocked(shiftedPos.x, shiftedPos.y, shiftedPos.z, mapData.collisionGrid, PLAYER_RADIUS - 0.3)) {
-                currentWaypointPos.copy(shiftedPos);
-              }
-            }
-
-            const distXZ = Math.sqrt((aiPos.current.x - currentWaypointPos.x) ** 2 + (aiPos.current.z - currentWaypointPos.z) ** 2);
-            const distY = Math.abs(aiPos.current.y - currentWaypointPos.y);
-
-            // Check if current waypoint is in a narrow passage (walls on opposite sides within 1.6m)
-            let isNarrowPassage = false;
-            if (wp.isCorner) {
-              const testDist = 1.6;
-              const blockedLeft = isPositionBlocked(wp.x - testDist, wp.y, wp.z, mapData.collisionGrid, 0.2);
-              const blockedRight = isPositionBlocked(wp.x + testDist, wp.y, wp.z, mapData.collisionGrid, 0.2);
-              const blockedForward = isPositionBlocked(wp.x, wp.y, wp.z - testDist, mapData.collisionGrid, 0.2);
-              const blockedBackward = isPositionBlocked(wp.x, wp.y, wp.z + testDist, mapData.collisionGrid, 0.2);
-              if ((blockedLeft && blockedRight) || (blockedForward && blockedBackward)) {
-                isNarrowPassage = true;
-              }
-            }
-
-            const arrivalThreshold = isNarrowPassage ? 0.8 : (wp.isCorner ? 2.0 : 1.2);
-
-            if (distXZ < arrivalThreshold && distY < 1.0) {
-              aiPathIndex.current++;
-              if (aiPathIndex.current < aiPath.current.length) {
-                const nextWp = aiPath.current[aiPathIndex.current];
-                currentWaypointPos.set(nextWp.x, nextWp.y, nextWp.z);
-              }
-            }
-
-            // Jump climb trigger for low obstacles (suppress jump when near a ladder)
-            const heightDiffToWp = wp.y - aiPos.current.y;
-            const isNearLadder = mapData.ladderZones?.some(
+          // Find relevant ladder zone if target node is ladder-related or AI is near a ladder zone
+          let activeLadderZone = null;
+          if (mapData.ladderZones && mapData.ladderZones.length > 0) {
+            activeLadderZone = mapData.ladderZones.find(
               (z) =>
-                aiPos.current.x >= z.minX - 1.2 &&
-                aiPos.current.x <= z.maxX + 1.2 &&
-                aiPos.current.z >= z.minZ - 1.2 &&
-                aiPos.current.z <= z.maxZ + 1.2,
+                Math.hypot(activeNode.x - z.railX, activeNode.z - z.railZ) < 2.5 ||
+                (Math.hypot(aiPos.current.x - z.railX, aiPos.current.z - z.railZ) < 2.5 &&
+                  aiPos.current.y >= z.minY - 1.0 &&
+                  aiPos.current.y <= z.maxY + 2.0),
             );
+          }
+
+          // Stamina management
+          if (aiStamina.current <= 0.1) {
+            aiIsExhausted.current = true;
+          } else if (aiStamina.current >= 50.0) {
+            aiIsExhausted.current = false;
+          }
+          const isLowStamina = aiStamina.current <= 30.0;
+
+          if (!aiIsExhausted.current) {
             if (
-              heightDiffToWp > 0.6 &&
-              heightDiffToWp <= PLAYER_HEIGHT &&
-              distXZ < 2.2 &&
-              !isNearLadder
+              activeLadderZone &&
+              (activeNode.edgeType === 'ladder' || activeNode.id?.includes('ladder'))
             ) {
-              aiJumpHoldTimer.current = Math.max(aiJumpHoldTimer.current, 0.6);
-            }
-          }
-        }
+              const zone = activeLadderZone;
+              const distToRail = Math.hypot(
+                aiPos.current.x - zone.railX,
+                aiPos.current.z - zone.railZ,
+              );
+              const forwardX = Math.sin(zone.faceAngle);
+              const forwardZ = Math.cos(zone.faceAngle);
 
-        // Ladder climbing decision: ONLY grab if current path/target intends to climb UP (target height > current height + 1.0)
-        if (mapData.ladderZones) {
-          const ax = aiPos.current.x;
-          const ay = aiPos.current.y;
-          const az = aiPos.current.z;
+              // Check ladder traversal direction
+              const isGoingUp =
+                activeNode.id?.includes('top') ||
+                activeNode.id?.includes('roof') ||
+                activeNode.y > aiPos.current.y + 0.5 ||
+                (prevNode?.id?.includes('foot') && activeNode.id?.includes('top'));
 
-          // Check if the path or final target destination intends to reach an elevated position (e.g. rooftop or ladder top)
-          const finalWp = aiPath.current.length > 0 ? aiPath.current[aiPath.current.length - 1] : null;
-          const targetIsElevated =
-            (finalWp && finalWp.y > ay + 1.5) ||
-            targetPos.y > ay + 1.5 ||
-            currentWaypointPos.y > ay + 1.0;
+              const isGoingDown =
+                activeNode.id?.includes('foot') ||
+                activeNode.id?.includes('ground') ||
+                activeNode.y < aiPos.current.y - 0.5 ||
+                (prevNode?.id?.includes('top') && activeNode.id?.includes('foot'));
 
-          if (targetIsElevated) {
-            for (const zone of mapData.ladderZones) {
-              const nearLadderXZ =
-                ax >= zone.minX - 1.2 &&
-                ax <= zone.maxX + 1.2 &&
-                az >= zone.minZ - 1.2 &&
-                az <= zone.maxZ + 1.2;
-
-              const inLadderYRange = ay >= zone.minY - 1.5 && ay <= zone.maxY + 1.0;
-
-              if (nearLadderXZ && inLadderYRange) {
-                if (ay < zone.maxY - 0.2) {
-                  // Below ladder top: climb up smoothly to ladder top
-                  aiInput.ladderUp = true;
-                  aiInput.grabLadder = true;
-                  aiInput.jump = false;
-
-                  // Target top of ladder rail directly
-                  currentWaypointPos.set(zone.railX, zone.maxY, zone.railZ);
-                  break;
-                } else if (ay >= zone.maxY - 0.2) {
-                  // At or above ladder top: dismount onto roof! Clear ladder inputs so AI steps cleanly onto the roof
-                  aiInput.ladderUp = false;
-                  aiInput.ladderDown = false;
-                  aiInput.grabLadder = false;
-                  aiInput.jump = false;
-                  break;
+              if (activeNode.id?.includes('ladder_ground')) {
+                // Moving towards or away from ground approach
+                const dir = new THREE.Vector3(
+                  activeNode.x - aiPos.current.x,
+                  0,
+                  activeNode.z - aiPos.current.z,
+                );
+                if (dir.lengthSq() > 0.01) {
+                  dir.normalize();
+                  aiInput.moveDir.copy(dir);
+                  // Don't sprint when approaching a ladder to preserve stamina
+                  aiInput.run = false;
                 }
-              }
-            }
-          }
-        }
+                if (distXZ < 0.65 && distY < 1.2) {
+                  aiPathIndex.current++;
+                }
+              } else if (activeNode.id?.includes('ladder_roof')) {
+                // Moving towards or away from roof dismount
+                const dir = new THREE.Vector3(
+                  activeNode.x - aiPos.current.x,
+                  0,
+                  activeNode.z - aiPos.current.z,
+                );
+                if (dir.lengthSq() > 0.01) {
+                  dir.normalize();
+                  aiInput.moveDir.copy(dir);
+                  aiInput.run = !isLowStamina;
+                }
+                if (distXZ < 0.65 && distY < 1.2) {
+                  aiPathIndex.current++;
+                }
+              } else if (isGoingUp) {
+                // --- CLIMBING UP ---
+                // Calculate required stamina for the full ladder ascent with safety margin
+                const climbHeight = Math.max(1.0, zone.maxY - zone.minY);
+                const baseStaminaNeeded = ((climbHeight / CLIMB_SPEED) + 0.8) * STAMINA_CLIMB_COST * 1.35;
+                const requiredStamina = Math.min(
+                  100.0,
+                  Math.max(zone.maxY > 6.0 ? 85.0 : 45.0, baseStaminaNeeded),
+                );
 
-        // Steering direction towards the current waypoint
-        const dir = new THREE.Vector3().subVectors(currentWaypointPos, aiPos.current);
-        dir.y = 0;
-        if (dir.lengthSq() > 0.05) {
-          dir.normalize();
-        } else {
-          dir.set(0, 0, 0);
-        }
+                if (activeNode.id?.includes('ladder_foot')) {
+                  // Approach ladder foot
+                  const dir = new THREE.Vector3(
+                    zone.railX - aiPos.current.x,
+                    0,
+                    zone.railZ - aiPos.current.z,
+                  );
+                  if (distToRail > 0.4 && dir.lengthSq() > 0.01) {
+                    dir.normalize();
+                    aiInput.moveDir.copy(dir);
+                    aiInput.run = false;
+                  }
 
-        // Stuck progress checking (every 0.3s)
-        aiProgressCheckTimer.current += dt;
-        aiLongStuckTimer.current += dt;
-        const isTryingToMove = dir.lengthSq() > 0.1;
-
-        // Reset progress tracking if we just started trying to move to prevent false positives when starting to run
-        if (isTryingToMove && !aiWasTryingToMove.current) {
-          aiProgressCheckTimer.current = 0;
-          aiLastProgressPos.current.copy(aiPos.current);
-          aiLongStuckTimer.current = 0;
-          aiLongStuckPos.current.copy(aiPos.current);
-        }
-        aiWasTryingToMove.current = isTryingToMove;
-
-        const isClimbingOrHanging =
-          aiLadderState.current.isClimbing || aiLadderState.current.isLadderHanging;
-        const isNearHidingSpot =
-          !isAISeeker && aiPos.current.distanceTo(aiHidingSpot.current) < 1.5;
-        const isActivelyUsingLadder = isClimbingOrHanging || aiInput.ladderUp || aiInput.ladderDown;
-
-        if (aiProgressCheckTimer.current > 0.3) {
-          aiProgressCheckTimer.current = 0;
-          const distMoved = aiPos.current.distanceTo(aiLastProgressPos.current);
-
-          if (
-            isTryingToMove &&
-            !isActivelyUsingLadder &&
-            aiStunTimer.current <= 0 &&
-            !isNearHidingSpot &&
-            distMoved < 0.25
-          ) {
-            // AI is stuck on a wall! Check wall height in front of the AI
-            const wallCheck = getWallHeightAt(
-              aiPos.current,
-              dir,
-              mapData.collisionGrid,
-              PLAYER_RADIUS + 0.4,
-              PLAYER_RADIUS * 0.4,
-            );
-
-            if (wallCheck.isBlocked && wallCheck.maxY <= aiPos.current.y + PLAYER_HEIGHT) {
-              // Stuck on a low wall: jump to scale/climb it
-              aiJumpHoldTimer.current = 0.8;
-              aiDetourTimer.current = 0; // Clear any detour
-            } else {
-              // Stuck on a high wall or complex collision: detour around it (sidestepping)
-              const perp1 = new THREE.Vector3(-dir.z, 0, dir.x);
-              const perp2 = new THREE.Vector3(dir.z, 0, -dir.x);
-
-              const checkPoint1 = new THREE.Vector3()
-                .copy(aiPos.current)
-                .addScaledVector(perp1, 1.1);
-              const checkPoint2 = new THREE.Vector3()
-                .copy(aiPos.current)
-                .addScaledVector(perp2, 1.1);
-
-              const boxes1 = mapData.collisionGrid.query(checkPoint1.x, checkPoint1.z, 0.5);
-              const boxes2 = mapData.collisionGrid.query(checkPoint2.x, checkPoint2.z, 0.5);
-
-              const dirToPlayer = new THREE.Vector3()
-                .subVectors(playerPos.current, aiPos.current)
-                .normalize();
-              const dot1 = dirToPlayer.dot(perp1);
-              const dot2 = dirToPlayer.dot(perp2);
-
-              // Scored evaluation: penalize obstacles (-15 each), penalize going towards the player (-80 * dot), and penalize out of bounds (-9999)
-              const halfSize = settings.worldSize / 2;
-              const margin = PLAYER_RADIUS + 0.02;
-              const outOfBounds1 =
-                checkPoint1.x < -halfSize + margin ||
-                checkPoint1.x > halfSize - margin ||
-                checkPoint1.z < -halfSize + margin ||
-                checkPoint1.z > halfSize - margin;
-              const outOfBounds2 =
-                checkPoint2.x < -halfSize + margin ||
-                checkPoint2.x > halfSize - margin ||
-                checkPoint2.z < -halfSize + margin ||
-                checkPoint2.z > halfSize - margin;
-
-              const isBlocked1 = isPositionBlocked(
-                checkPoint1.x,
-                aiPos.current.y,
-                checkPoint1.z,
-                mapData.collisionGrid,
-                PLAYER_RADIUS,
-              );
-              const isBlocked2 = isPositionBlocked(
-                checkPoint2.x,
-                aiPos.current.y,
-                checkPoint2.z,
-                mapData.collisionGrid,
-                PLAYER_RADIUS,
-              );
-
-              if (isBlocked1 && isBlocked2) {
-                // Both side detours are blocked! Back out of the corner/pocket
-                aiDetourDir.current.copy(dir).multiplyScalar(-1);
-                aiDetourTimer.current = 1.0; // Back out for 1 second
-              } else {
-                const score1 =
-                  -boxes1.length * 15 -
-                  (isAISeeker ? 0 : dot1 * 80) -
-                  (outOfBounds1 ? 9999 : 0) -
-                  (isBlocked1 ? 9999 : 0);
-                const score2 =
-                  -boxes2.length * 15 -
-                  (isAISeeker ? 0 : dot2 * 80) -
-                  (outOfBounds2 ? 9999 : 0) -
-                  (isBlocked2 ? 9999 : 0);
-
-                if (score1 >= score2) {
-                  aiDetourDir.current.copy(perp1);
+                  if (distToRail < 0.8) {
+                    if (aiStamina.current < requiredStamina && aiIsGrounded.current) {
+                      // Insufficient stamina for full climb: wait at ladder foot until fully recovered
+                      aiInput.moveDir.set(0, 0, 0);
+                      aiInput.run = false;
+                      aiInput.grabLadder = false;
+                      aiInput.ladderUp = false;
+                      aiStuckTimer.current = 0; // Don't trigger stuck recalculation while waiting for stamina
+                    } else {
+                      // Stamina is ready: mount and climb!
+                      aiInput.grabLadder = true;
+                      aiInput.ladderUp = true;
+                      aiInput.ladderDown = false;
+                      aiPathIndex.current++;
+                    }
+                  }
                 } else {
-                  aiDetourDir.current.copy(perp2);
+                  // Actively climbing up the ladder towards roof
+                  // If stamina somehow runs low (< 5.0) in mid-air, hold on and rest on ladder to recover
+                  if (aiStamina.current < 5.0 && !aiIsGrounded.current) {
+                    aiInput.grabLadder = true;
+                    aiInput.ladderUp = false;
+                    aiInput.ladderDown = false;
+                    aiInput.moveDir.set(0, 0, 0);
+                  } else {
+                    aiInput.grabLadder = true;
+                    aiInput.ladderUp = true;
+                    aiInput.ladderDown = false;
+                    aiInput.moveDir.set(forwardX, 0, forwardZ).normalize();
+                  }
+
+                  // Dismount on roof when high enough and grounded or near top
+                  if (
+                    (aiPos.current.y >= zone.maxY - 0.1 && aiIsGrounded.current) ||
+                    aiPos.current.y >= zone.maxY + 0.1
+                  ) {
+                    aiInput.grabLadder = false;
+                    aiInput.ladderUp = false;
+                    aiPathIndex.current++;
+                  }
                 }
-                aiDetourTimer.current = 1.2; // detouring duration
-              }
-            }
-          }
-          aiLastProgressPos.current.copy(aiPos.current);
-        }
+              } else if (isGoingDown) {
+                // --- SLIDING / CLIMBING DOWN ---
+                if (activeNode.id?.includes('ladder_top')) {
+                  // Approach ladder top edge from roof
+                  const dir = new THREE.Vector3(
+                    zone.railX - aiPos.current.x,
+                    0,
+                    zone.railZ - aiPos.current.z,
+                  );
+                  if (dir.lengthSq() > 0.01) {
+                    dir.normalize();
+                    aiInput.moveDir.copy(dir);
+                  }
+                  if (distToRail < 0.8) {
+                    aiInput.grabLadder = true;
+                    aiInput.ladderDown = true;
+                    aiInput.ladderUp = false;
+                    aiPathIndex.current++;
+                  }
+                } else {
+                  // Actively sliding down the ladder towards ground
+                  aiInput.grabLadder = true;
+                  aiInput.ladderDown = true;
+                  aiInput.ladderUp = false;
+                  aiInput.moveDir.set(forwardX, 0, forwardZ).normalize();
 
-        // Long-term stuck check (every 1.2s) to detect oscillations
-        if (aiLongStuckTimer.current > 1.2) {
-          aiLongStuckTimer.current = 0;
-          const distMovedLong = aiPos.current.distanceTo(aiLongStuckPos.current);
-
-          if (
-            isTryingToMove &&
-            !isActivelyUsingLadder &&
-            aiStunTimer.current <= 0 &&
-            !isNearHidingSpot &&
-            distMovedLong < 1.2
-          ) {
-            // Trigger a detour!
-            const perp1 = new THREE.Vector3(-dir.z, 0, dir.x);
-            const perp2 = new THREE.Vector3(dir.z, 0, -dir.x);
-
-            const checkPoint1 = new THREE.Vector3().copy(aiPos.current).addScaledVector(perp1, 1.1);
-            const checkPoint2 = new THREE.Vector3().copy(aiPos.current).addScaledVector(perp2, 1.1);
-
-            const boxes1 = mapData.collisionGrid.query(checkPoint1.x, checkPoint1.z, 0.5);
-            const boxes2 = mapData.collisionGrid.query(checkPoint2.x, checkPoint2.z, 0.5);
-
-            const dirToPlayer = new THREE.Vector3()
-              .subVectors(playerPos.current, aiPos.current)
-              .normalize();
-            const dot1 = dirToPlayer.dot(perp1);
-            const dot2 = dirToPlayer.dot(perp2);
-
-            const halfSize = settings.worldSize / 2;
-            const margin = PLAYER_RADIUS + 0.02;
-            const outOfBounds1 =
-              checkPoint1.x < -halfSize + margin ||
-              checkPoint1.x > halfSize - margin ||
-              checkPoint1.z < -halfSize + margin ||
-              checkPoint1.z > halfSize - margin;
-            const outOfBounds2 =
-              checkPoint2.x < -halfSize + margin ||
-              checkPoint2.x > halfSize - margin ||
-              checkPoint2.z < -halfSize + margin ||
-              checkPoint2.z > halfSize - margin;
-
-            const isBlocked1 = isPositionBlocked(
-              checkPoint1.x,
-              aiPos.current.y,
-              checkPoint1.z,
-              mapData.collisionGrid,
-              PLAYER_RADIUS,
-            );
-            const isBlocked2 = isPositionBlocked(
-              checkPoint2.x,
-              aiPos.current.y,
-              checkPoint2.z,
-              mapData.collisionGrid,
-              PLAYER_RADIUS,
-            );
-
-            if (isBlocked1 && isBlocked2) {
-              // Both side detours are blocked! Back out of the corner/pocket
-              aiDetourDir.current.copy(dir).multiplyScalar(-1);
-              aiDetourTimer.current = 1.5; // Back out for 1.5 seconds
-            } else {
-              const score1 =
-                -boxes1.length * 15 -
-                (isAISeeker ? 0 : dot1 * 80) -
-                (outOfBounds1 ? 9999 : 0) -
-                (isBlocked1 ? 9999 : 0);
-              const score2 =
-                -boxes2.length * 15 -
-                (isAISeeker ? 0 : dot2 * 80) -
-                (outOfBounds2 ? 9999 : 0) -
-                (isBlocked2 ? 9999 : 0);
-
-              if (score1 >= score2) {
-                aiDetourDir.current.copy(perp1);
+                  // Touchdown on ground
+                  if (
+                    (aiPos.current.y <= zone.minY + 0.3 && aiIsGrounded.current) ||
+                    aiPos.current.y <= zone.minY
+                  ) {
+                    aiInput.grabLadder = false;
+                    aiInput.ladderDown = false;
+                    aiPathIndex.current++;
+                  }
+                }
               } else {
-                aiDetourDir.current.copy(perp2);
+                // Fallback direct movement
+                const dir = new THREE.Vector3(
+                  activeNode.x - aiPos.current.x,
+                  0,
+                  activeNode.z - aiPos.current.z,
+                );
+                if (dir.lengthSq() > 0.01) {
+                  dir.normalize();
+                  aiInput.moveDir.copy(dir);
+                }
+                if (distXZ < 0.65 && distY < 1.2) {
+                  aiPathIndex.current++;
+                }
               }
-              aiDetourTimer.current = 2.0; // detouring duration (longer detour to clear the obstacle)
-            }
-          }
-          aiLongStuckPos.current.copy(aiPos.current);
-        }
-
-        // Proactive obstacle avoidance using Cat's Whiskers (Bigodes de Gato) system
-        let centerHit = null;
-        let leftHit = null;
-        let rightHit = null;
-        let L_center = 2.5;
-        let L_side = 1.5;
-        const speedXZ = Math.sqrt(
-          aiVel.current.x * aiVel.current.x + aiVel.current.z * aiVel.current.z,
-        );
-
-        // Calculate base desired movement direction (strictly follow A* path)
-        // Movement direction strictly follows A* path waypoints
-        if (dir.lengthSq() > 0.05) {
-          dir.normalize();
-        } else {
-          dir.set(0, 0, 0);
-        }
-
-        // Clear whisker debug info
-        aiWhiskerCenterHit.current = null;
-        aiWhiskerLeftHit.current = null;
-        aiWhiskerRightHit.current = null;
-
-        // Close-range wall climb check (climb automatically when close to a low wall)
-        if (dir.lengthSq() > 0.01 && !isActivelyUsingLadder) {
-          const closeWallCheck = getWallHeightAt(
-            aiPos.current,
-            dir,
-            mapData.collisionGrid,
-            PLAYER_RADIUS + 0.4,
-            PLAYER_RADIUS * 0.4,
-          );
-          if (closeWallCheck.isBlocked && closeWallCheck.maxY <= aiPos.current.y + PLAYER_HEIGHT) {
-            aiJumpHoldTimer.current = 0.6;
-            aiDetourTimer.current = 0;
-          }
-        }
-
-        // Blend target direction with stuck detour if active
-        if (aiDetourTimer.current > 0) {
-          aiDetourTimer.current -= dt;
-          dir.copy(aiDetourDir.current);
-        }
-
-        aiInput.moveDir.copy(dir);
-
-        // Apply held jump (vital for wall climbing / grabbing ledges in air)
-        if (aiJumpHoldTimer.current > 0) {
-          aiJumpHoldTimer.current -= dt;
-          aiInput.jump = true;
-        }
-
-        // Determine AI Emoji based on its actions
-        let currentEmoji = '❓';
-        if (aiStunTimer.current > 0) {
-          currentEmoji = '💫';
-        } else if (aiLadderState.current.isWallClimbing) {
-          currentEmoji = '🧗‍♀️';
-        } else if (aiLadderState.current.isClimbing) {
-          currentEmoji = '🧗‍♂️';
-        } else if (aiRollTimer.current > 0) {
-          currentEmoji = '🤸‍♂️';
-        } else if (aiHeardEmojiTimer.current > 0 && !hasLOS) {
-          currentEmoji = '👂'; // Show ear emoji when player running is heard!
-        } else {
-          if (isAISeeker) {
-            if (hasLOS) {
-              currentEmoji = '🎯'; // actively chasing player in visual contact
-            } else if (aiHasLastKnownPlayerPos.current) {
-              currentEmoji = '🔎'; // going to predicted position
             } else {
-              currentEmoji = '🚶‍♂️'; // wandering/searching
+              // Standard node movement (walking, jumping, low obstacle climb)
+              const dir = new THREE.Vector3(
+                activeNode.x - aiPos.current.x,
+                0,
+                activeNode.z - aiPos.current.z,
+              );
+              if (dir.lengthSq() > 0.01) {
+                dir.normalize();
+                aiInput.moveDir.copy(dir);
+                aiInput.run = !isLowStamina;
+              }
+
+              // Climb low obstacles if edge type is climb
+              if (isClimbNode) {
+                const wallClimbHeight = Math.max(1.0, activeNode.y - aiPos.current.y);
+                const requiredStamina = Math.min(
+                  100.0,
+                  (wallClimbHeight / CLIMB_SPEED) * STAMINA_CLIMB_COST + 5.0,
+                );
+                if (aiStamina.current >= requiredStamina) {
+                  aiInput.climb = true;
+                } else {
+                  aiInput.moveDir.set(0, 0, 0);
+                  aiInput.run = false;
+                  aiInput.climb = false;
+                  aiStuckTimer.current = 0;
+                }
+              } else if (activeNode.edgeType === 'drop' || activeNode.y < aiPos.current.y - 1.0) {
+                // Dropping off a ledge towards next ground node: run forward and prepare roll landing
+                aiInput.attemptRoll = true;
+                aiInput.climb = false;
+                aiInput.grabLadder = false;
+              }
+
+              // Advance node when close (or when landed on ground for drop transitions)
+              const isDropLanding = (activeNode.edgeType === 'drop' || activeNode.y < aiPos.current.y - 1.0) && aiIsGrounded.current;
+              if ((distXZ < 0.65 && distY < 1.2) || (isDropLanding && distXZ < 1.2 && distY < 1.5)) {
+                aiPathIndex.current++;
+              }
             }
           } else {
-            // Hider: Despair emoji 😱 ONLY if AI has seen (hasLOS), heard (canHearPlayer), or has close last known player position
-            const distToLastKnown = aiHasLastKnownPlayerPos.current
-              ? aiPos.current.distanceTo(aiLastKnownPlayerPos.current)
-              : Infinity;
-            const sawOrHeardPlayer = hasLOS || canHearPlayer || (aiHasLastKnownPlayerPos.current && distToLastKnown < 10.0);
+            // Exhausted: stop and recover
+            const isMidAirLadder =
+              !aiIsGrounded.current &&
+              activeLadderZone !== null &&
+              aiPos.current.y > (activeLadderZone?.minY ?? 0) + 0.5;
 
-            if (sawOrHeardPlayer) {
-              currentEmoji = '😱'; // Fleeing in despair because player was seen/heard
-            } else {
-              currentEmoji = '🤫'; // Hiding quietly
-            }
+            aiInput.moveDir.set(0, 0, 0);
+            aiInput.run = false;
+            aiInput.jump = false;
+            aiInput.climb = false;
+            // NEVER let go of ladder in mid-air when exhausted; hang and recover instead
+            aiInput.grabLadder = isMidAirLadder;
+            aiInput.ladderUp = false;
+            aiInput.ladderDown = false;
           }
         }
 
-        // Update emoji state only if it changed to prevent excessive re-renders
-        if (aiEmojiRef.current !== currentEmoji) {
-          aiEmojiRef.current = currentEmoji;
-          setAiEmoji(currentEmoji);
+        if (aiEmojiRef.current !== '🤖') {
+          aiEmojiRef.current = '🤖';
+          setAiEmoji('🤖');
         }
-
-        isAIChasing = isAISeeker && (hasLOS || aiHasLastKnownPlayerPos.current);
-        aiWasDirect.current = false;
       }
 
       // Run AI Physics
       const dummyKeys = { current: {} };
-      const aiSpeed = settings.playerSpeed * (isAIChasing ? 1.15 : 1.0);
+      const aiSpeed = settings.playerSpeed;
       const aiPhysicsOutput = updatePlayerPhysics(
         dt,
         aiPos.current,
@@ -3100,6 +2443,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       if (
         status === GameStatus.PLAYING &&
         props.mode === GameMode.HIDE_AND_SEEK &&
+        !props.godMode &&
         !props.debugMode
       ) {
         const dist = playerPos.current.distanceTo(aiPos.current);
@@ -3314,26 +2658,70 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         occludedBuildingIdsRef.current = currentIntersectedIds;
 
         // --- AI PATH & TARGET DEBUG VISUALIZATION ---
-        if (debugMode && showAIPath) {
-          // Update pathway line
+        if (showAIPath) {
+          const hasCalculatedPath = aiPath.current.length > 0;
+
+          // Update pathway line (only if path is calculated)
           if (aiDebugPathLineRef.current) {
-            const points: THREE.Vector3[] = [];
-            points.push(aiPos.current.clone());
+            if (hasCalculatedPath) {
+              const points: THREE.Vector3[] = [];
+              points.push(aiPos.current.clone());
 
-            if (aiPath.current.length > 0) {
-              for (let i = aiPathIndex.current; i < aiPath.current.length; i++) {
-                const wp = aiPath.current[i];
-                points.push(new THREE.Vector3(wp.x, wp.y, wp.z));
+              if (aiPathIndex.current < aiPath.current.length) {
+                for (let i = aiPathIndex.current; i < aiPath.current.length; i++) {
+                  const wp = aiPath.current[i];
+                  points.push(new THREE.Vector3(wp.x, wp.y, wp.z));
+                }
               }
+
+              // Lift all points slightly off the ground to prevent clipping/z-fighting
+              points.forEach((p) => (p.y += 0.25));
+
+              aiDebugPathLineRef.current.geometry.setFromPoints(points);
+              aiDebugPathLineRef.current.visible = true;
             } else {
-              points.push(targetPos.clone());
+              aiDebugPathLineRef.current.visible = false;
             }
+          }
 
-            // Lift all points slightly off the ground to prevent clipping/z-fighting
-            points.forEach((p) => (p.y += 0.25));
+          // Update nodes along the calculated route (Waypoints / Nodes)
+          if (aiDebugNodesMeshRef.current) {
+            if (hasCalculatedPath && aiPathIndex.current < aiPath.current.length) {
+              const remainingNodes = aiPath.current.slice(aiPathIndex.current);
+              const count = Math.min(remainingNodes.length, 100);
+              const dummyObj = new THREE.Object3D();
 
-            aiDebugPathLineRef.current.geometry.setFromPoints(points);
-            aiDebugPathLineRef.current.visible = true;
+              for (let i = 0; i < count; i++) {
+                const node = remainingNodes[i];
+                dummyObj.position.set(node.x, node.y + 0.3, node.z);
+                dummyObj.scale.set(1, 1, 1);
+                dummyObj.updateMatrix();
+                aiDebugNodesMeshRef.current.setMatrixAt(i, dummyObj.matrix);
+              }
+
+              // Hide unused instances
+              dummyObj.scale.set(0, 0, 0);
+              dummyObj.updateMatrix();
+              for (let i = count; i < 100; i++) {
+                aiDebugNodesMeshRef.current.setMatrixAt(i, dummyObj.matrix);
+              }
+
+              aiDebugNodesMeshRef.current.instanceMatrix.needsUpdate = true;
+              aiDebugNodesMeshRef.current.visible = true;
+            } else {
+              aiDebugNodesMeshRef.current.visible = false;
+            }
+          }
+
+          // Update target destination marker (only if path is calculated)
+          if (aiDebugTargetMarkerRef.current) {
+            if (hasCalculatedPath) {
+              aiDebugTargetMarkerRef.current.position.copy(targetPos);
+              aiDebugTargetMarkerRef.current.position.y += 0.5;
+              aiDebugTargetMarkerRef.current.visible = true;
+            } else {
+              aiDebugTargetMarkerRef.current.visible = false;
+            }
           }
 
           // Update last known position marker and direction vector line
@@ -3351,7 +2739,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             if (aiHasLastKnownPlayerPos.current && aiLastKnownPlayerDir.current.lengthSq() > 0.01) {
               const start = aiLastKnownPlayerPos.current.clone();
               start.y += 0.5;
-              const end = start.clone().addScaledVector(aiLastKnownPlayerDir.current, 4.0);
+              const end = start.clone().addScaledVector(aiLastKnownPlayerDir.current, 6.0);
               aiDebugLastDirLineRef.current.geometry.setFromPoints([start, end]);
               aiDebugLastDirLineRef.current.visible = true;
             } else {
@@ -3407,6 +2795,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           }
         } else {
           if (aiDebugPathLineRef.current) aiDebugPathLineRef.current.visible = false;
+          if (aiDebugTargetMarkerRef.current) aiDebugTargetMarkerRef.current.visible = false;
           if (aiDebugLastPosMarkerRef.current) aiDebugLastPosMarkerRef.current.visible = false;
           if (aiDebugLastDirLineRef.current) aiDebugLastDirLineRef.current.visible = false;
           if (aiDebugWhiskerCenterRef.current) aiDebugWhiskerCenterRef.current.visible = false;
@@ -3483,9 +2872,43 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     if (!mapData) return null;
 
     return (
-      <group>
+      <group
+        onPointerDown={(e) => {
+          if (isAddingDestinationRef.current && navGraph && e.point) {
+            e.stopPropagation();
+            const clickedPoint = e.point.clone();
+            aiHidingSpot.current.copy(clickedPoint);
+            isCustomDestination.current = true;
+            isAddingDestinationRef.current = false;
+            setIsAddingDestination(false);
+
+            // Compute path immediately towards the clicked target
+            const computedPath = navGraph.findPath(aiPos.current, clickedPoint);
+            if (computedPath && computedPath.length > 0) {
+              const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
+              aiPath.current = smoothed.map((n, idx) => {
+                const nextNode = smoothed[idx + 1];
+                const edgeType = nextNode
+                  ? (navGraph.getEdgeType(n, nextNode) ??
+                    (nextNode.y < n.y - 1.0 ? 'drop' : nextNode.y > n.y + 1.0 ? 'climb' : 'walk'))
+                  : null;
+                return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
+              });
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.copy(clickedPoint);
+            } else {
+              aiPath.current = [];
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.set(-9999, -9999, -9999);
+            }
+            aiPathRecalcTimer.current = 0;
+            aiWaypointTimer.current = 0;
+            aiStuckTimer.current = 0;
+          }
+        }}
+      >
         {mapElements}
-        {debugMode && mapData && (
+        {mapData && (
           <>
             <CollisionDebug
               collisionGrid={mapData.collisionGrid}
@@ -3510,10 +2933,26 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
                     opacity={0.8}
                   />
                 </line>
+                {/* Route Nodes (Spheres along the path) */}
+                <instancedMesh
+                  ref={aiDebugNodesMeshRef}
+                  args={[undefined, undefined, 100]}
+                  frustumCulled={false}
+                >
+                  <sphereGeometry args={[0.25, 12, 12]} />
+                  <meshBasicMaterial color="#00ffff" depthTest={false} transparent opacity={0.9} />
+                </instancedMesh>
+                {/* Target Destination Marker (Magenta) */}
+                <mesh ref={aiDebugTargetMarkerRef}>
+                  <sphereGeometry args={[0.7, 16, 16]} />
+                  <meshBasicMaterial color="#ff00ff" depthTest={false} transparent opacity={0.85} />
+                </mesh>
+                {/* Last Known Position Marker (Yellow) */}
                 <mesh ref={aiDebugLastPosMarkerRef}>
                   <sphereGeometry args={[0.6, 16, 16]} />
-                  <meshBasicMaterial color="yellow" depthTest={false} transparent opacity={0.8} />
+                  <meshBasicMaterial color="#ffee00" depthTest={false} transparent opacity={0.85} />
                 </mesh>
+                {/* Last Known Velocity/Heading Line (Orange) */}
                 <line ref={aiDebugLastDirLineRef as unknown as React.Ref<SVGLineElement>}>
                   <bufferGeometry />
                   <lineBasicMaterial
@@ -3618,6 +3057,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       prev.match === next.match && // match.timer might change, but we care about phase/currentRound
       prev.settings === next.settings &&
       prev.mapId === next.mapId &&
+      prev.godMode === next.godMode &&
       prev.debugMode === next.debugMode &&
       prev.showGrid === next.showGrid &&
       prev.showCollision === next.showCollision &&

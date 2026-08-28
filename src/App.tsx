@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
+import { Perf } from 'r3f-perf';
+import { Leva, useControls as useLevaControls, folder, button } from 'leva';
+import { useGameStore } from './store/gameStore';
 import { VoxelSeek } from './components/VoxelSeek';
 import { GameInterface, GameInterfaceProps } from './components/ui/GameInterface';
 import { OnScreenControls } from './components/ui/OnScreenControls';
@@ -28,16 +31,12 @@ const GameLayout: React.FC<{
   mode: GameMode;
   match: MatchState;
   settings: GameSettings;
-  debugMode: boolean;
-  showGrid: boolean;
-  showCollision: boolean;
-  showWireframe: boolean;
-  showOcclusion: boolean;
-  showAIPath: boolean;
   isEditing: boolean;
   mapId: number;
   handleRoundEnd: (playerWon: boolean) => void;
   handlePrepComplete: () => void;
+  restartRound: () => void;
+  nextRound: () => void;
   gameInterfaceProps: Omit<GameInterfaceProps, 'matchTimer'>;
 }> = React.memo(
   ({
@@ -45,25 +44,184 @@ const GameLayout: React.FC<{
     mode,
     match,
     settings,
-    debugMode,
-    showGrid,
-    showCollision,
-    showWireframe,
-    showOcclusion,
-    showAIPath,
     isEditing,
     mapId,
     handleRoundEnd,
     handlePrepComplete,
+    restartRound,
+    nextRound,
     gameInterfaceProps,
   }) => {
     const [matchTimer, setMatchTimer] = useState(0);
+    const { devSettings } = useGameStore();
+
+    const handleRoundEndRef = useRef(handleRoundEnd);
+    handleRoundEndRef.current = handleRoundEnd;
+    const restartRoundRef = useRef(restartRound);
+    restartRoundRef.current = restartRound;
+    const nextRoundRef = useRef(nextRound);
+    nextRoundRef.current = nextRound;
+
+    // Centralized DevTools controls via Leva
+    const [
+      {
+        ambientIntensity,
+        sunIntensity,
+        showPerfMonitor,
+        showGrid,
+        showCollision,
+        showOcclusion,
+        showAIPath,
+        showWireframe,
+        godMode,
+        freezeTimer,
+        cameraZoom,
+        cameraFollow,
+        devToolsWidth,
+        devToolsOpacity,
+      },
+      setLeva,
+    ] = useLevaControls(() => ({
+      'Ambiente & Performance': folder(
+        {
+          ambientIntensity: {
+            value: devSettings.ambientIntensity,
+            min: 0,
+            max: 2,
+            step: 0.05,
+            label: 'Luz Ambiente',
+          },
+          sunIntensity: {
+            value: devSettings.sunIntensity,
+            min: 0,
+            max: 5,
+            step: 0.1,
+            label: 'Luz Solar',
+          },
+          showPerfMonitor: {
+            value: true,
+            label: 'Monitor FPS/GPU',
+          },
+        },
+        { collapsed: false },
+      ),
+      'Câmera': folder(
+        {
+          cameraZoom: {
+            value: settings.cameraZoom,
+            min: 10,
+            max: 100,
+            step: 5,
+            label: 'Zoom da Câmera',
+          },
+          cameraFollow: {
+            value: settings.cameraFollow,
+            label: 'Seguir Jogador',
+          },
+        },
+        { collapsed: false },
+      ),
+      'Depuração Visual': folder(
+        {
+          showGrid: {
+            value: true,
+            label: 'Grade do Mapa',
+          },
+          showCollision: {
+            value: false,
+            label: 'Caixas de Colisão',
+          },
+          showOcclusion: {
+            value: false,
+            label: 'Pontos de Visão (Rua)',
+          },
+          showAIPath: {
+            value: true,
+            label: 'Rota e Alvo da IA',
+          },
+          showWireframe: {
+            value: true,
+            label: 'Wireframe ao Ocultar',
+          },
+        },
+        { collapsed: false },
+      ),
+      'Waypath da IA': folder(
+        {
+          'Adicionar Destino': button(() => {
+            window.dispatchEvent(new CustomEvent('ai-add-destination-click'));
+          }),
+          'Limpar Caminho': button(() => {
+            window.dispatchEvent(new CustomEvent('ai-clear-path'));
+          }),
+          'Remover Próximo Nó': button(() => {
+            window.dispatchEvent(new CustomEvent('ai-remove-next-node'));
+          }),
+        },
+        { collapsed: false },
+      ),
+      'Legenda Navegação IA': folder(
+        {
+          _rota: { value: 'Ciano (🔵)', editable: false, label: 'Rota / Waypoints' },
+          _alvo: { value: 'Magenta (🟣)', editable: false, label: 'Alvo Atual' },
+          _pos: { value: 'Amarelo (🟡)', editable: false, label: 'Última Posição' },
+          _vetor: { value: 'Laranja (🟠)', editable: false, label: 'Vetor Movimento' },
+          _sensores: { value: 'Verde (🟢)', editable: false, label: 'Sensores Whiskers' },
+        },
+        { collapsed: true },
+      ),
+      'Jogabilidade & Trapaças': folder(
+        {
+          godMode: {
+            value: true,
+            label: 'Modo Deus (Invencível)',
+          },
+          freezeTimer: {
+            value: true,
+            label: 'Congelar Tempo',
+          },
+        },
+        { collapsed: false },
+      ),
+      'Interface DevTools': folder(
+        {
+          devToolsWidth: {
+            value: 380,
+            min: 280,
+            max: 600,
+            step: 10,
+            label: 'Largura Painel (px)',
+          },
+          devToolsOpacity: {
+            value: 1.0,
+            min: 0.15,
+            max: 1.0,
+            step: 0.05,
+            label: 'Opacidade / Transp.',
+          },
+        },
+        { collapsed: false },
+      ),
+      'Controles de Partida': folder(
+        {
+          'Forçar Vitória': button(() => handleRoundEndRef.current(true)),
+          'Forçar Derrota': button(() => handleRoundEndRef.current(false)),
+          'Reiniciar / Respawn': button(() => restartRoundRef.current()),
+          'Próxima Rodada': button(() => nextRoundRef.current()),
+        },
+        { collapsed: false },
+      ),
+    }));
 
     useEffect(() => {
       if (status === GameStatus.PREP) {
-        setMatchTimer(3);
+        if (mode === GameMode.FREE) {
+          handlePrepComplete();
+        } else {
+          setMatchTimer(3);
+        }
       }
-    }, [status, match.currentRound]);
+    }, [status, match.currentRound, mode, handlePrepComplete]);
 
     // Timer decrement: simple interval that only updates local matchTimer
     useEffect(() => {
@@ -80,8 +238,8 @@ const GameLayout: React.FC<{
             return t - 1;
           } else {
             // PLAYING
-            if (debugMode) {
-              return t; // Freeze/ignore timer in debug mode
+            if (freezeTimer) {
+              return t; // Freeze/ignore timer in debug freeze mode
             }
             if (t <= 1) {
               // Hider wins if time runs out.
@@ -96,12 +254,47 @@ const GameLayout: React.FC<{
       }, 1000);
 
       return () => clearInterval(interval);
-    }, [status, mode, match.currentRound, handleRoundEnd, handlePrepComplete, debugMode]);
+    }, [status, mode, match.currentRound, handleRoundEnd, handlePrepComplete, freezeTimer]);
 
     const shadowSize = settings.worldSize * 1.5;
 
+    const effectiveSettings = useMemo(
+      () => ({
+        ...settings,
+        cameraZoom,
+        cameraFollow,
+      }),
+      [settings, cameraZoom, cameraFollow],
+    );
+
     return (
       <>
+        <Leva
+          collapsed={true}
+          titleBar={{ title: 'Parkubes DevTools', drag: true }}
+          theme={{
+            sizes: {
+              rootWidth: `${devToolsWidth}px`,
+              controlWidth: '110px',
+              numberInputMinWidth: '40px',
+              scrubberWidth: '12px',
+              rowHeight: '26px',
+            },
+            space: {
+              rowGap: '4px',
+              colGap: '8px',
+            },
+            fontSizes: {
+              root: '11px',
+            },
+            colors: {
+              elevation1: `rgba(18, 18, 22, ${devToolsOpacity})`,
+              elevation2: `rgba(30, 30, 36, ${devToolsOpacity})`,
+              elevation3: `rgba(10, 10, 14, ${devToolsOpacity})`,
+              toolTipBackground: `rgba(10, 10, 14, ${devToolsOpacity})`,
+            },
+          }}
+        />
         <MatchContext.Provider value={{ timer: matchTimer }}>
           <Canvas
             shadows
@@ -117,14 +310,15 @@ const GameLayout: React.FC<{
               });
             }}
           >
+            {showPerfMonitor && <Perf position="bottom-left" />}
             <OrthographicCamera makeDefault position={[100, 100, 100]} near={0.1} far={5000} />
             <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
             <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
-            <ambientLight intensity={0.4} />
+            <ambientLight intensity={ambientIntensity} />
             <directionalLight
               castShadow
               position={[60, 120, 40]}
-              intensity={2.0}
+              intensity={sunIntensity}
               shadow-mapSize={[2048, 2048]}
               shadow-camera-left={-shadowSize}
               shadow-camera-right={shadowSize}
@@ -139,10 +333,10 @@ const GameLayout: React.FC<{
               status={status}
               mode={mode}
               match={match}
-              settings={settings}
+              settings={effectiveSettings}
               onRoundEnd={handleRoundEnd}
               onPrepComplete={handlePrepComplete}
-              debugMode={debugMode}
+              godMode={godMode}
               showGrid={showGrid}
               showCollision={showCollision}
               showWireframe={showWireframe}
@@ -165,6 +359,8 @@ const GameLayout: React.FC<{
         <GameInterface
           {...gameInterfaceProps}
           matchTimer={matchTimer}
+          godMode={godMode}
+          freezeTimer={freezeTimer}
           handleRoundEnd={handleRoundEnd}
         />
       </>
@@ -205,12 +401,6 @@ const App: React.FC = () => {
     lastRoundResult: '',
   });
 
-  const [debugMode, setDebugMode] = useState(true);
-  const [showGrid, setShowGrid] = useState(true);
-  const [showCollision, setShowCollision] = useState(false);
-  const [showWireframe, setShowWireframe] = useState(true);
-  const [showOcclusion, setShowOcclusion] = useState(false);
-  const [showAIPath, setShowAIPath] = useState(true);
   const [showMission, setShowMission] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
@@ -362,16 +552,6 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (debugMode) {
-      setShowGrid(true);
-    } else {
-      setShowGrid(false);
-      setShowCollision(false);
-      setShowAIPath(false);
-    }
-  }, [debugMode]);
-
-  useEffect(() => {
     if (gameState.status === GameStatus.PREP) {
       setShowMission(true);
       const timeout = setTimeout(() => {
@@ -401,18 +581,6 @@ const App: React.FC = () => {
   const gameInterfaceProps = useMemo(
     () => ({
       gameState,
-      debugMode,
-      setDebugMode,
-      showGrid,
-      setShowGrid,
-      showCollision,
-      setShowCollision,
-      showWireframe,
-      setShowWireframe,
-      showOcclusion,
-      setShowOcclusion,
-      showAIPath,
-      setShowAIPath,
       togglePause,
       startGame,
       playAgain,
@@ -428,18 +596,6 @@ const App: React.FC = () => {
     }),
     [
       gameState,
-      debugMode,
-      setDebugMode,
-      showGrid,
-      setShowGrid,
-      showCollision,
-      setShowCollision,
-      showWireframe,
-      setShowWireframe,
-      showOcclusion,
-      setShowOcclusion,
-      showAIPath,
-      setShowAIPath,
       togglePause,
       startGame,
       playAgain,
@@ -462,16 +618,12 @@ const App: React.FC = () => {
         mode={gameState.mode}
         match={gameState.match}
         settings={gameState.settings}
-        debugMode={debugMode}
-        showGrid={showGrid}
-        showCollision={showCollision}
-        showWireframe={showWireframe}
-        showOcclusion={showOcclusion}
-        showAIPath={showAIPath}
         isEditing={isEditing}
         mapId={gameState.mapId}
         handleRoundEnd={handleRoundEnd}
         handlePrepComplete={handlePrepComplete}
+        restartRound={restartRound}
+        nextRound={nextRound}
         gameInterfaceProps={gameInterfaceProps}
       />
       <OnScreenControls visible={showVirtualControls} />

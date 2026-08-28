@@ -61,8 +61,12 @@ export const updatePlayerPhysics = (
     moveDir: THREE.Vector3;
     jump: boolean;
     run: boolean;
+    climb?: boolean;
+    charge?: boolean;
     ladderUp?: boolean;
     ladderDown?: boolean;
+    grabLadder?: boolean;
+    attemptRoll?: boolean;
   },
   ladderStateRef?: React.MutableRefObject<LadderState>,
 ) => {
@@ -213,25 +217,27 @@ export const updatePlayerPhysics = (
     moveDir: inputDir,
     actions: {
       jump:
-        (performJump &&
-          !currentState.isClimbing &&
-          !currentState.isLadderSliding &&
-          !currentState.isLadderHanging) ||
-        (justPressedJump &&
-          (currentState.isClimbing ||
-            currentState.isLadderSliding ||
-            currentState.isLadderHanging)),
-      charge: isVisualPreJumping,
-      climb: !!isJumpDown,
+        currentState.isGrounded
+          ? ((performJump &&
+              !currentState.isClimbing &&
+              !currentState.isLadderSliding &&
+              !currentState.isLadderHanging) ||
+             (justPressedJump &&
+              (currentState.isClimbing ||
+                currentState.isLadderSliding ||
+                currentState.isLadderHanging)))
+          : isJumpDown,
+      charge: !!(aiInput ? aiInput.charge : keys.current['c']),
+      climb: !!(aiInput ? aiInput.climb : isJumpDown),
       run: !!((keys.current['shift'] && !aiInput) || isAnalogRunning || (aiInput && aiInput.run)),
-      attemptRoll: jumpBufferTimer.current > 0,
+      attemptRoll: jumpBufferTimer.current > 0 || !!(aiInput && aiInput.attemptRoll),
       ladderUp:
         !!(!aiInput && (keys.current['w'] || keys.current['arrowup'] || isJoyUp)) ||
         !!(aiInput && aiInput.ladderUp),
       ladderDown:
         !!(!aiInput && (keys.current['s'] || keys.current['arrowdown'] || isJoyDown)) ||
         !!(aiInput && aiInput.ladderDown),
-      grabLadder: justPressedJump,
+      grabLadder: !!(aiInput ? (aiInput.grabLadder ?? isJumpDown) : isJumpDown),
     },
     stats: { speed: speedSettings, climbSpeed: 2.5 },
     world: {

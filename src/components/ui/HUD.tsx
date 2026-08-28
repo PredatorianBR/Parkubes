@@ -7,25 +7,49 @@ interface HUDProps {
   match: MatchState;
   timer: number;
   showMission: boolean;
-  debugMode?: boolean;
+  freezeTimer?: boolean;
+  togglePause?: () => void;
+  restartRound?: () => void;
+  resetToMenu?: () => void;
 }
 
-export const HUD: React.FC<HUDProps> = ({ status, mode, match, timer, showMission, debugMode }) => {
+export const HUD: React.FC<HUDProps> = ({
+  status,
+  mode,
+  match,
+  timer,
+  showMission,
+  freezeTimer,
+  togglePause,
+  restartRound,
+  resetToMenu,
+}) => {
   return (
     <>
       {/* HUD PRINCIPAL */}
-      {(status === GameStatus.PLAYING || status === GameStatus.PREP) && (
+      {(status === GameStatus.PLAYING || status === GameStatus.PREP || status === GameStatus.PAUSED) && (
         <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-start pointer-events-none z-20">
-          <div className="bg-black/70 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white min-w-[180px] shadow-2xl">
+          <div className="bg-black/70 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white min-w-[200px] shadow-2xl pointer-events-auto">
             <div className="flex justify-between items-center mb-1">
               <span className="pixel-font text-[10px] text-yellow-400">
                 {mode === GameMode.HIDE_AND_SEEK
                   ? `RODADA ${match.currentRound}/${match.maxRounds}`
                   : 'TREINO'}
               </span>
-              <span className="pixel-font text-[10px] text-blue-400">
-                {mode === GameMode.HIDE_AND_SEEK ? 'ESCONDE-ESCONDE' : 'MODO LIVRE'}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="pixel-font text-[10px] text-blue-400">
+                  {mode === GameMode.HIDE_AND_SEEK ? 'ESCONDE-ESCONDE' : 'MODO LIVRE'}
+                </span>
+                {togglePause && (
+                  <button
+                    onClick={togglePause}
+                    title={status === GameStatus.PAUSED ? 'Continuar' : 'Pausar'}
+                    className="bg-white/10 hover:bg-white/20 active:scale-95 text-xs p-1 px-1.5 rounded transition-all flex items-center justify-center border border-white/10"
+                  >
+                    {status === GameStatus.PAUSED ? '▶️' : '⏸️'}
+                  </button>
+                )}
+              </div>
             </div>
 
             {mode === GameMode.HIDE_AND_SEEK && (
@@ -48,10 +72,36 @@ export const HUD: React.FC<HUDProps> = ({ status, mode, match, timer, showMissio
               <div className="text-xs font-mono flex justify-between items-center border-t border-white/5 pt-1">
                 <span>{status === GameStatus.PREP ? 'CONTAGEM:' : 'TEMPO:'}</span>
                 <span
-                  className={`font-bold ${timer <= 5 && status === GameStatus.PLAYING && !debugMode ? 'text-red-500 animate-pulse text-sm' : 'text-green-400'}`}
+                  className={`font-bold ${timer <= 5 && status === GameStatus.PLAYING && !freezeTimer ? 'text-red-500 animate-pulse text-sm' : 'text-green-400'}`}
                 >
-                  {debugMode && status === GameStatus.PLAYING ? '∞ (DEBUG)' : `${timer}s`}
+                  {freezeTimer && status === GameStatus.PLAYING ? '∞ (DEBUG)' : `${timer}s`}
                 </span>
+              </div>
+            )}
+
+            {status === GameStatus.PAUSED && (
+              <div className="mt-3 pt-2 border-t border-white/10 flex flex-col gap-2">
+                <div className="text-center text-yellow-400 pixel-font text-[10px] py-0.5">
+                  JOGO PAUSADO
+                </div>
+                <button
+                  onClick={togglePause}
+                  className="pixel-font bg-blue-600 hover:bg-blue-500 text-white text-[8px] py-1.5 rounded transition-colors"
+                >
+                  CONTINUAR
+                </button>
+                <button
+                  onClick={restartRound}
+                  className="pixel-font bg-gray-700/50 hover:bg-gray-600 text-white text-[8px] py-1.5 rounded transition-colors"
+                >
+                  RESPAWN
+                </button>
+                <button
+                  onClick={resetToMenu}
+                  className="pixel-font bg-red-900/40 hover:bg-red-800 text-white text-[8px] py-1.5 rounded transition-colors border border-red-500/30"
+                >
+                  SAIR PARA O MENU
+                </button>
               </div>
             )}
           </div>

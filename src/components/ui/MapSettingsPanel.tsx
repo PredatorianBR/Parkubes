@@ -6,8 +6,6 @@ interface MapSettingsPanelProps {
   updateSetting: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
   updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
   resetRatios: () => void;
-  showWireframe?: boolean;
-  setShowWireframe?: (val: boolean) => void;
 }
 
 export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
@@ -15,8 +13,6 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
   updateSetting,
   updateRatio,
   resetRatios,
-  showWireframe,
-  setShowWireframe,
 }) => {
   const renderRatioSlider = (
     key: keyof GameSettings['ratios'],
@@ -115,54 +111,6 @@ export const MapSettingsPanel: React.FC<MapSettingsPanelProps> = ({
       {renderRatioSlider('factory', 'FÁBRICAS', 'accent-slate-400')}
       {renderRatioSlider('ruins', 'RUÍNAS', 'accent-gray-600')}
       {renderRatioSlider('foliage', 'TOUCEIRAS (FLORES)', 'accent-pink-600')}
-
-      <h3 className="pixel-font text-xs text-blue-300 border-b border-white/10 pb-2 mb-2 mt-4">
-        OPÇÕES
-      </h3>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="flex flex-col gap-2">
-          <label className="pixel-font text-[10px] text-gray-400 flex justify-between">
-            ZOOM <span>{settings.cameraZoom}</span>
-          </label>
-          <input
-            type="range"
-            min="10"
-            max="100"
-            step="5"
-            value={settings.cameraZoom}
-            onChange={(e) => updateSetting('cameraZoom', parseInt(e.target.value))}
-            className="w-full accent-purple-500"
-          />
-        </div>
-        <div className="flex flex-col gap-2 mt-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="cameraFollowMenu"
-              checked={settings.cameraFollow}
-              onChange={(e) => updateSetting('cameraFollow', e.target.checked)}
-              className="w-4 h-4 accent-purple-500"
-            />
-            <label htmlFor="cameraFollowMenu" className="pixel-font text-[10px] text-gray-400">
-              CÂMERA SEGUIR
-            </label>
-          </div>
-          {setShowWireframe && (
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="showWireframeMenu"
-                checked={!!showWireframe}
-                onChange={(e) => setShowWireframe(e.target.checked)}
-                className="w-4 h-4 accent-cyan-500"
-              />
-              <label htmlFor="showWireframeMenu" className="pixel-font text-[10px] text-gray-400">
-                WIREFRAME AO OCULTAR
-              </label>
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 };

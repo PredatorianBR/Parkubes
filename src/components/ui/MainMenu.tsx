@@ -4,8 +4,6 @@ import { MapSettingsPanel } from './MapSettingsPanel';
 
 interface MainMenuProps {
   gameState: GameState;
-  debugMode: boolean;
-  setDebugMode: (val: boolean) => void;
   startGame: () => void;
   playAgain: () => void;
   nextRound: () => void;
@@ -14,16 +12,12 @@ interface MainMenuProps {
   updateRatio: (key: keyof GameSettings['ratios'], value: number) => void;
 
   resetRatios: () => void;
-  showWireframe?: boolean;
-  setShowWireframe?: (val: boolean) => void;
   setIsEditing: (val: boolean) => void;
   setGameMode: (mode: GameMode) => void;
 }
 
 export const MainMenu: React.FC<MainMenuProps> = ({
   gameState,
-  debugMode,
-  setDebugMode,
   startGame,
   playAgain,
   nextRound,
@@ -31,8 +25,6 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   updateSetting,
   updateRatio,
   resetRatios,
-  showWireframe,
-  setShowWireframe,
   setIsEditing,
   setGameMode,
 }) => {
@@ -54,27 +46,11 @@ export const MainMenu: React.FC<MainMenuProps> = ({
         <div className="max-w-xl w-full flex flex-col items-center">
           <h2 className="pixel-font text-4xl mb-6 text-yellow-400 animate-pulse">PARKUBES</h2>
 
-          <div className="w-full flex justify-end mb-2">
-            <button
-              onClick={() => setDebugMode(!debugMode)}
-              className={`pixel-font text-[10px] px-2 py-1 border rounded transition-all
-                        ${
-                          debugMode
-                            ? 'bg-green-900/60 border-green-500 text-green-400'
-                            : 'bg-gray-800/50 border-gray-600 text-gray-500 hover:text-gray-300'
-                        }`}
-            >
-              DEBUG
-            </button>
-          </div>
-
           <MapSettingsPanel
             settings={gameState.settings}
             updateSetting={updateSetting}
             updateRatio={updateRatio}
             resetRatios={resetRatios}
-            showWireframe={showWireframe}
-            setShowWireframe={setShowWireframe}
           />
 
           <div className="flex gap-4 mb-6 mt-4">
