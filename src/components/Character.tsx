@@ -36,10 +36,14 @@ interface CharacterProps {
   ladderFaceAngle?: number;
   isWallClimbing?: boolean;
   wallClimbProgress?: number;
+  lookAtPosRef?: React.MutableRefObject<THREE.Vector3 | null>;
   color?: string; // Optional coloring
+  visible?: boolean; // Control character visibility (e.g. AI hidden when out of sight)
+  showXRay?: boolean; // Whether to render through-wall x-ray silhouette
 }
 
 const ParticleEffects: React.FC<{
+  visible?: boolean;
   isRunning: boolean;
   isMoving: boolean;
   isGrounded: boolean;
@@ -54,6 +58,7 @@ const ParticleEffects: React.FC<{
   moveSpeed: number;
   visualStateRef?: React.MutableRefObject<Partial<VisualState> | null | undefined>;
 }> = ({
+  visible = true,
   isRunning: _isRunning,
   isMoving: _isMoving,
   isGrounded: _isGrounded,
@@ -119,6 +124,9 @@ const ParticleEffects: React.FC<{
 
   useFrame((state, delta) => {
     if (!meshRef.current || !playerGroup.current) return;
+    const isVisible = visible && playerGroup.current.visible !== false;
+    meshRef.current.visible = isVisible;
+    if (!isVisible) return;
 
     const vs = visualStateRef?.current || {};
     const isRunning = vs.isRunning ?? _isRunning;
@@ -540,9 +548,13 @@ export const Character: React.FC<CharacterProps> = ({
   isWallClimbing: _isWallClimbing = false,
   wallClimbProgress: _wallClimbProgress = 0,
   waterExitTimerRef,
+  lookAtPosRef,
   color = '#1f91db', // Default character color (blue)
+  visible = true,
+  showXRay = true,
 }) => {
   const stunIndicatorRef = useRef<HTMLDivElement>(null!);
+  const overlayWrapperRef = useRef<HTMLDivElement>(null!);
   const bodyColorNormal = new THREE.Color(color).clone().multiplyScalar(0.8).getStyle();
   const headColor = color;
   const bodyColor = bodyColorNormal;
@@ -599,6 +611,14 @@ export const Character: React.FC<CharacterProps> = ({
   const wallClimbAnimTime = useRef(0);
   const wasWallClimbing = useRef(false);
   const wallClimbRecoveryTimer = useRef(0);
+
+  // Smooth Hiding / Crouch Transition & Alert Look-around
+  const hidingProgress = useRef(0);
+  const hidingLookTimer = useRef(0);
+  const hidingLookState = useRef(0); // 0 = forward, 1 = turning, 2 = holding glance, 3 = returning
+  const hidingNextLookTime = useRef(1.5 + Math.random() * 2.0);
+  const hidingLookTargetYaw = useRef(0);
+  const hidingLookTargetPitch = useRef(0);
 
   useFrame((state, delta) => {
     try {
@@ -661,13 +681,89 @@ export const Character: React.FC<CharacterProps> = ({
       }
     }
 
+    // --- HIDING / CROUCH SMOOTH TRANSITION & ALERT GLANCES ---
+    const isActivelyHiding =
+      isHiding &&
+      !isMoving &&
+      !isRunning &&
+      !isRolling &&
+      !isStumbling &&
+      !stunned &&
+      isGrounded &&
+      !isClimbing &&
+      !isLadderSliding &&
+      !isWallClimbing &&
+      !isCharging;
+
+    const targetHiding = isActivelyHiding ? 1.0 : 0.0;
+    if (hidingProgress.current < targetHiding) {
+      hidingProgress.current = Math.min(targetHiding, hidingProgress.current + delta * 6.0);
+    } else if (hidingProgress.current > targetHiding) {
+      hidingProgress.current = Math.max(targetHiding, hidingProgress.current - delta * 12.0);
+    }
+    const hideP = hidingProgress.current;
+    const hideEased = hideP * hideP * (3 - 2 * hideP); // smoothstep blend
+    const hideBreath = Math.sin(time * 2.2) * 0.012 * hideEased;
+    const hideTremble = (Math.sin(time * 16) * 0.005 + Math.sin(time * 22) * 0.003) * hideEased;
+    const hideSquash = 0.28 * hideEased + hideBreath + hideTremble;
+
+    // Sporadic alert glances while crouched/hiding
+    let hidingHeadYaw = 0;
+    let hidingHeadPitch = 0;
+
+    if (hideP > 0.4 && isActivelyHiding) {
+      hidingLookTimer.current += delta;
+      if (hidingLookState.current === 0) {
+        // Forward tense posture, waiting for next glance
+        if (hidingLookTimer.current >= hidingNextLookTime.current) {
+          hidingLookState.current = 1;
+          hidingLookTimer.current = 0;
+          // Random glance: 30° to 65° left or right, with subtle surveying pitch
+          hidingLookTargetYaw.current = (Math.random() > 0.5 ? 1 : -1) * (0.55 + Math.random() * 0.55);
+          hidingLookTargetPitch.current = -0.05 + (Math.random() - 0.5) * 0.15;
+        }
+      } else if (hidingLookState.current === 1) {
+        // Turning head smoothly and attentively (~0.25s)
+        const p = Math.min(hidingLookTimer.current / 0.25, 1);
+        const glanceEased = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        hidingHeadYaw = hidingLookTargetYaw.current * glanceEased;
+        hidingHeadPitch = hidingLookTargetPitch.current * glanceEased;
+        if (p >= 1) {
+          hidingLookState.current = 2;
+          hidingLookTimer.current = 0;
+        }
+      } else if (hidingLookState.current === 2) {
+        // Holding attentive glance (~0.8s)
+        hidingHeadYaw = hidingLookTargetYaw.current;
+        hidingHeadPitch = hidingLookTargetPitch.current;
+        if (hidingLookTimer.current >= 0.8) {
+          hidingLookState.current = 3;
+          hidingLookTimer.current = 0;
+        }
+      } else if (hidingLookState.current === 3) {
+        // Returning head to forward position (~0.3s)
+        const p = Math.min(hidingLookTimer.current / 0.3, 1);
+        const returnEased = 1 - (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
+        hidingHeadYaw = hidingLookTargetYaw.current * returnEased;
+        hidingHeadPitch = hidingLookTargetPitch.current * returnEased;
+        if (p >= 1) {
+          hidingLookState.current = 0;
+          hidingLookTimer.current = 0;
+          hidingNextLookTime.current = 1.8 + Math.random() * 2.5; // Next look in 1.8 - 4.3s
+        }
+      }
+    } else {
+      hidingLookState.current = 0;
+      hidingLookTimer.current = 0;
+    }
+
     // --- IDLE ANIMATION LOGIC ---
-    let headRotYTarget = 0;
+    let headRotYTarget = hidingHeadYaw * hideEased;
     let bodyRotZ = 0;
     let breathingScale = 1.0;
     let heavyBreathingRotX = 0;
-    let targetHeadRotX = 0;
-    let idleBobY = 0;
+    let targetHeadRotX = (0.12 + hidingHeadPitch) * hideEased;
+    let idleBobY = -0.18 * hideEased;
 
     if (
       isGrounded &&
@@ -677,7 +773,7 @@ export const Character: React.FC<CharacterProps> = ({
       !isRolling &&
       !isStumbling &&
       !isCharging &&
-      !isHiding &&
+      hideP < 0.3 &&
       !isClimbing &&
       !isLadderSliding &&
       !isNearLadder
@@ -947,11 +1043,7 @@ export const Character: React.FC<CharacterProps> = ({
         }
 
         // Calculate relative angle to look at the ladder (Target - Current)
-        let diff = targetAngle - currentBodyRotY;
-
-        // Normalize angle
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
+        const diff = Math.atan2(Math.sin(targetAngle - currentBodyRotY), Math.cos(targetAngle - currentBodyRotY));
 
         // Permitir rotação mais ampla para olhar para a escada
         headRotYTarget = THREE.MathUtils.clamp(diff, -1.8, 1.8);
@@ -1200,7 +1292,7 @@ export const Character: React.FC<CharacterProps> = ({
     }
 
     // Combine Squash components
-    let totalSquash = baseCrouch + landingSquash + moveSquash;
+    let totalSquash = baseCrouch + landingSquash + moveSquash + hideSquash;
 
     if (isStumbling) {
       totalSquash = 0.4;
@@ -1229,11 +1321,6 @@ export const Character: React.FC<CharacterProps> = ({
       const p = THREE.MathUtils.clamp(1 - timer / duration, 0, 1);
       const bellCurve = Math.sin(p * Math.PI);
       totalSquash = 0.15 + bellCurve * 0.35;
-    } else if (isHiding) {
-      // Hiding: deep crouch with slow nervous breathing and tremble
-      const hideBreath = Math.sin(time * 1.8) * 0.015; // slow, subtle breathing
-      const tremble = Math.sin(time * 18) * 0.008 + Math.sin(time * 23) * 0.005; // nervous tremble
-      totalSquash = 0.6 + hideBreath + tremble;
     } else if (isClimbing) {
       totalSquash = 0.25 + moveSquash;
     } else if (isLadderSliding) {
@@ -1419,6 +1506,36 @@ export const Character: React.FC<CharacterProps> = ({
         squashLerpSpeed,
       );
     }
+
+    // Look-At Target override (when spotting the other character in close proximity)
+    if (lookAtPosRef?.current && groupRef.current) {
+      const charWorldPos = groupRef.current.position;
+      const toTargetX = lookAtPosRef.current.x - charWorldPos.x;
+      const toTargetZ = lookAtPosRef.current.z - charWorldPos.z;
+      const toTargetY = lookAtPosRef.current.y - charWorldPos.y;
+      const distToTarget = Math.hypot(toTargetX, toTargetZ);
+
+      // Only look directly at the other character when within close proximity (<= 14.0m)
+      if (distToTarget <= 14.0) {
+        const bodyYaw = groupRef.current.rotation.y;
+        // Rotate world offset into character's local coordinates
+        const localTargetX = toTargetX * Math.cos(-bodyYaw) - toTargetZ * Math.sin(-bodyYaw);
+        const localTargetZ = toTargetX * Math.sin(-bodyYaw) + toTargetZ * Math.cos(-bodyYaw);
+
+        // Local yaw angle to face the target
+        const targetHeadYaw = -Math.atan2(localTargetX, localTargetZ);
+        if (Math.abs(targetHeadYaw) < 2.5) {
+          headRotYTarget = THREE.MathUtils.clamp(targetHeadYaw, -1.4, 1.4);
+
+          const horizontalDist = Math.hypot(localTargetX, localTargetZ);
+          if (horizontalDist > 0.3) {
+            const targetHeadPitch = -Math.atan2(toTargetY, horizontalDist);
+            targetHeadRotX = THREE.MathUtils.clamp(targetHeadPitch, -0.75, 0.75);
+          }
+        }
+      }
+    }
+
     if (headMesh.current) {
       // Head position with vertical lag compensation
       const headTargetY = targetHeadLocalY - headBobLag;
@@ -1470,8 +1587,15 @@ export const Character: React.FC<CharacterProps> = ({
       const bMat = bodyMesh.current.material as THREE.MeshStandardMaterial;
       if (bMat) bMat.color.set(stunned ? '#4b5563' : bodyColorNormal);
     }
+    const isCharacterVisible = groupRef.current ? groupRef.current.visible !== false : visible;
+    if (overlayWrapperRef.current) {
+      overlayWrapperRef.current.style.display = isCharacterVisible ? 'block' : 'none';
+    }
     if (stunIndicatorRef.current) {
-      stunIndicatorRef.current.style.display = stunned ? 'block' : 'none';
+      stunIndicatorRef.current.style.display = isCharacterVisible && stunned ? 'block' : 'none';
+    }
+    if (staminaGroupRef?.current && !isCharacterVisible) {
+      staminaGroupRef.current.style.display = 'none';
     }
   } catch (err) {
     console.error('Error in Character useFrame:', err);
@@ -1481,6 +1605,7 @@ export const Character: React.FC<CharacterProps> = ({
   return (
     <>
       <ParticleEffects
+        visible={visible}
         visualStateRef={visualStateRef}
         isRunning={_isRunning}
         isMoving={_isMoving}
@@ -1495,7 +1620,7 @@ export const Character: React.FC<CharacterProps> = ({
         isRolling={_isRolling}
         moveSpeed={_moveSpeed}
       />
-      <group ref={groupRef}>
+      <group ref={groupRef} visible={visible}>
         {/* UI Elements */}
         {overlayContent && (
           <Html
@@ -1503,19 +1628,23 @@ export const Character: React.FC<CharacterProps> = ({
             center
             style={{ pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 101 }}
           >
-            {overlayContent}
+            <div ref={overlayWrapperRef}>
+              {overlayContent}
+            </div>
           </Html>
         )}
 
         {/* Stun Indicator - Show during the entire stun sequence */}
-        <Html position={[0, 5.0, 0]} center style={{ pointerEvents: 'none', zIndex: 100 }}>
-          <div ref={stunIndicatorRef} style={{ display: 'none' }} className="text-xl animate-spin">
-            💫
-          </div>
-        </Html>
+        {visible && (
+          <Html position={[0, 5.0, 0]} center style={{ pointerEvents: 'none', zIndex: 100 }}>
+            <div ref={stunIndicatorRef} style={{ display: 'none' }} className="text-xl animate-spin">
+              💫
+            </div>
+          </Html>
+        )}
 
         {/* Stamina Bar */}
-        {staminaGroupRef && staminaFillRef && (
+        {visible && staminaGroupRef && staminaFillRef && (
           <Html position={[0, 4.4, 0]} center style={{ pointerEvents: 'none', zIndex: 90 }}>
             <div
               ref={staminaGroupRef}
@@ -1549,73 +1678,126 @@ export const Character: React.FC<CharacterProps> = ({
             <meshStandardMaterial color={headColor} />
 
             {/* X-Ray Silhouette */}
-            <mesh renderOrder={1}>
-              <boxGeometry args={[1.4, 1.6, 1.4]} />
-              <meshBasicMaterial
-                color="#00e5ff"
-                depthTest={false}
-                depthWrite={false}
-                transparent={false}
-              />
-            </mesh>
+            {showXRay && (
+              <mesh renderOrder={1}>
+                <boxGeometry args={[1.4, 1.6, 1.4]} />
+                <meshBasicMaterial
+                  color="#00e5ff"
+                  depthTest={false}
+                  depthWrite={false}
+                  transparent={false}
+                />
+              </mesh>
+            )}
           </mesh>
           {/* Body - Slightly smaller width/depth */}
           <mesh ref={bodyMesh} position={[0, 1.2, 0]} castShadow receiveShadow renderOrder={2}>
             <boxGeometry args={[1.4, 2.4, 1.4]} />
             <meshStandardMaterial color={bodyColor} />
 
-            {/* X-Ray Silhouette */}
-            <mesh renderOrder={1}>
-              <boxGeometry args={[1.4, 2.4, 1.4]} />
-              <meshBasicMaterial
-                color="#00e5ff"
-                depthTest={false}
-                depthWrite={false}
-                transparent={false}
-              />
+            {/* Front Chest Plate / Vest Detail */}
+            <mesh position={[0, 0.48, 0.71]} castShadow receiveShadow renderOrder={2.1}>
+              <boxGeometry args={[0.85, 0.9, 0.06]} />
+              <meshStandardMaterial color={color} roughness={0.4} metalness={0.1} />
             </mesh>
+
+            {/* Front Forward Chevron / Directional Badge */}
+            <mesh position={[0, 0.58, 0.75]} rotation={[0, 0, Math.PI / 4]} renderOrder={2.2}>
+              <boxGeometry args={[0.3, 0.3, 0.05]} />
+              <meshStandardMaterial color="#ffffff" roughness={0.2} metalness={0.4} />
+            </mesh>
+
+            {/* Full Perimeter Waist Belt - Raised to natural waist */}
+            <mesh position={[0, -0.15, 0]} castShadow receiveShadow renderOrder={2.1}>
+              <boxGeometry args={[1.44, 0.3, 1.44]} />
+              <meshStandardMaterial color="#1e293b" roughness={0.5} />
+            </mesh>
+
+            {/* Front Belt Buckle Plate */}
+            <mesh position={[0, -0.15, 0.73]} castShadow receiveShadow renderOrder={2.2}>
+              <boxGeometry args={[0.48, 0.36, 0.05]} />
+              <meshStandardMaterial color="#f59e0b" roughness={0.25} metalness={0.7} />
+            </mesh>
+
+            {/* Front Belt Buckle Core */}
+            <mesh position={[0, -0.15, 0.76]} renderOrder={2.3}>
+              <boxGeometry args={[0.22, 0.18, 0.04]} />
+              <meshStandardMaterial color="#0f172a" />
+            </mesh>
+
+            {/* X-Ray Silhouette */}
+            {showXRay && (
+              <mesh renderOrder={1}>
+                <boxGeometry args={[1.4, 2.4, 1.4]} />
+                <meshBasicMaterial
+                  color="#00e5ff"
+                  depthTest={false}
+                  depthWrite={false}
+                  transparent={false}
+                />
+              </mesh>
+            )}
           </mesh>
-          {/* Eyes */}
+          {/* Eyes & Pupils */}
           <group ref={eyesMesh} position={[0, 3.2, 0]}>
+            {/* Right Eye */}
             <mesh
               position={[0.36, 0, 0.72]}
               castShadow={false}
               receiveShadow={false}
-              renderOrder={3}
+              renderOrder={2.1}
             >
-              <boxGeometry args={[0.3, 0.3, 0.1]} />
-              <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
+              <boxGeometry args={[0.3, 0.3, 0.06]} />
+              <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} roughness={0.2} />
+
+              {/* Right Pupil */}
+              <mesh position={[0, 0, 0.04]} castShadow={false} receiveShadow={false} renderOrder={2.2}>
+                <boxGeometry args={[0.14, 0.14, 0.02]} />
+                <meshStandardMaterial color="#090d16" roughness={0.2} />
+              </mesh>
 
               {/* X-Ray Eye */}
-              <mesh renderOrder={1.1} castShadow={false} receiveShadow={false}>
-                <boxGeometry args={[0.3, 0.3, 0.1]} />
-                <meshBasicMaterial
-                  color="#ffffff"
-                  depthTest={false}
-                  depthWrite={false}
-                  transparent={false}
-                />
-              </mesh>
+              {showXRay && (
+                <mesh renderOrder={1.1} castShadow={false} receiveShadow={false}>
+                  <boxGeometry args={[0.3, 0.3, 0.06]} />
+                  <meshBasicMaterial
+                    color="#ffffff"
+                    depthTest={false}
+                    depthWrite={false}
+                    transparent={false}
+                  />
+                </mesh>
+              )}
             </mesh>
+
+            {/* Left Eye */}
             <mesh
               position={[-0.36, 0, 0.72]}
               castShadow={false}
               receiveShadow={false}
-              renderOrder={3}
+              renderOrder={2.1}
             >
-              <boxGeometry args={[0.3, 0.3, 0.1]} />
-              <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} />
+              <boxGeometry args={[0.3, 0.3, 0.06]} />
+              <meshStandardMaterial color="white" emissive="black" emissiveIntensity={0} roughness={0.2} />
+
+              {/* Left Pupil */}
+              <mesh position={[0, 0, 0.04]} castShadow={false} receiveShadow={false} renderOrder={2.2}>
+                <boxGeometry args={[0.14, 0.14, 0.02]} />
+                <meshStandardMaterial color="#090d16" roughness={0.2} />
+              </mesh>
 
               {/* X-Ray Eye */}
-              <mesh renderOrder={1.1} castShadow={false} receiveShadow={false}>
-                <boxGeometry args={[0.3, 0.3, 0.1]} />
-                <meshBasicMaterial
-                  color="#ffffff"
-                  depthTest={false}
-                  depthWrite={false}
-                  transparent={false}
-                />
-              </mesh>
+              {showXRay && (
+                <mesh renderOrder={1.1} castShadow={false} receiveShadow={false}>
+                  <boxGeometry args={[0.3, 0.3, 0.06]} />
+                  <meshBasicMaterial
+                    color="#ffffff"
+                    depthTest={false}
+                    depthWrite={false}
+                    transparent={false}
+                  />
+                </mesh>
+              )}
             </mesh>
           </group>
         </group>

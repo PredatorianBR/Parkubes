@@ -20,8 +20,11 @@ import {
   isPositionBlocked,
   CLIMB_SPEED,
   STAMINA_CLIMB_COST,
+  STAMINA_LADDER_CLIMB_COST,
+  STAMINA_JUMP_COST,
+  STAMINA_RUN_COST,
 } from '../utils/physics';
-import { NavigationGraph, NavNode, EdgeType } from '../utils/navigation';
+import { NavigationGraph, NavNode, EdgeType, MAX_SCALABLE_HEIGHT } from '../utils/navigation';
 
 
 import { VoxelGround } from './environment/VoxelGround';
@@ -35,6 +38,7 @@ import { Ladder } from './buildings/Ladder';
 import { GridMaterial } from './GridMaterial';
 import { BlinkingWindow } from './buildings/BlinkingWindow';
 import { Roof } from './buildings/Roof';
+import { SoundDirectionIndicator } from './SoundDirectionIndicator';
 
 interface VoxelSeekProps {
   status: GameStatus;
@@ -50,6 +54,8 @@ interface VoxelSeekProps {
   showWireframe?: boolean; // NEW PROP
   showOcclusion?: boolean;
   showAIPath?: boolean;
+  alwaysShowAI?: boolean;
+  addDestinationMode?: boolean;
   isEditing?: boolean;
   mapId: number;
 }
@@ -830,7 +836,14 @@ const Building: React.FC<{
           if (outlineEdges.size > 0) {
             const startKey = outlineEdges.keys().next().value;
             let currentKey = startKey;
-            while (true) {
+            const visited = new Set<string>();
+            let iterations = 0;
+            const maxIter = outlineEdges.size + 10;
+            while (currentKey && iterations < maxIter) {
+              iterations++;
+              if (visited.has(currentKey)) break;
+              visited.add(currentKey);
+
               const [x, z] = currentKey.split(',').map(Number);
               points.push([x, z]);
               const nextNode = outlineEdges.get(currentKey);
@@ -1283,6 +1296,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       showWireframe,
       showOcclusion,
       showAIPath,
+      alwaysShowAI = false,
+      addDestinationMode = false,
       mapId,
     } = props;
     const { camera, controls } = useThree(); // Access Controls
@@ -1352,6 +1367,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     const aiLongStuckPos = useRef(new THREE.Vector3(0, 0, 0));
     const aiJumpHoldTimer = useRef(0);
     const aiLastProgressPos = useRef(new THREE.Vector3(0, 0, 0));
+    const aiLastRouteSig = useRef<string>('');
+    const aiRouteRepeatCount = useRef<number>(0);
+    const aiAvoidNodeIds = useRef<Set<string>>(new Set());
     const aiProgressCheckTimer = useRef(0);
     const aiSearchLookTimer = useRef(0);
     const aiWasTryingToMove = useRef(false);
@@ -1410,6 +1428,15 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     const aiFleeTimer = useRef(0); // Cooldown to re-evaluate fleeing hiding spot
     const aiWanderTargetTimer = useRef(0); // Countdown to force target re-evaluation
     const aiLastSearchedQuadrant = useRef(0); // Track last searched quadrant in search mode
+    const aiVisitedQuadrants = useRef<Set<number>>(new Set());
+    const aiSearchTimer = useRef(0);
+    const aiWasPursuingPlayer = useRef(false);
+    const playerLookAtTarget = useRef<THREE.Vector3 | null>(null);
+    const aiLookAtTarget = useRef<THREE.Vector3 | null>(null);
+    const aiNoiseLevelRef = useRef(0);
+    const playerSeesAiRef = useRef(false);
+    const playerStillTimer = useRef(0);
+    const aiStillTimer = useRef(0);
 
     // AI Visual State
     const aiVisualStateRef = useRef({
@@ -1469,7 +1496,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       worldSize: number;
     } | null>(null);
 
-    const aiPath = useRef<{ id?: string; x: number; y: number; z: number; edgeType?: EdgeType | null }[]>([]);
+    const aiPath = useRef<{ id?: string; x: number; y: number; z: number; edgeType?: EdgeType | null; isCorner?: boolean }[]>([]);
     const aiPathIndex = useRef<number>(0);
     const aiPathRecalcTimer = useRef<number>(0);
     const aiLastPathTarget = useRef<THREE.Vector3>(new THREE.Vector3(Infinity, Infinity, Infinity));
@@ -1516,6 +1543,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         (window as any).__PARKUBES_AI_PATH_INDEX = aiPathIndex;
         (window as any).__PARKUBES_AI_LAST_KNOWN = aiLastKnownPlayerPos;
         (window as any).__PARKUBES_AI_HAS_LAST_KNOWN = aiHasLastKnownPlayerPos;
+        (window as any).__PARKUBES_AI_HIDING_SPOT = aiHidingSpot;
 
         // Reset Player to Initial Spawn
         playerPos.current.copy(data.spawnPos);
@@ -1614,7 +1642,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
 
     const navGraph = useMemo(() => {
       if (!mapData) return null;
-      return new NavigationGraph(mapData);
+      const g = new NavigationGraph(mapData);
+      (window as any).__PARKUBES_NAV_GRAPH = g;
+      return g;
     }, [mapData]);
 
     const getRandomWaypoint = React.useCallback(
@@ -1627,31 +1657,23 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           return new THREE.Vector3(0, 0, 0);
         }
 
-        const nodesArray: NavNode[] = Array.from(graph.nodes.values());
-        // Filter nodes that are at least minDist away from current position
-        const validNodes = nodesArray.filter((node) => {
+        const nodesArray = graph.nodesArray.length > 0 ? graph.nodesArray : Array.from(graph.nodes.values());
+        // Filter nodes that are at least minDist away from current position and have connections
+        const validNodes: NavNode[] = [];
+        for (let i = 0; i < nodesArray.length; i++) {
+          const node = nodesArray[i];
           const d = Math.hypot(node.x - currentPos.x, node.z - currentPos.z);
-          if (d < minDist) return false;
-          // Filter out isolated nodes without connections
-          const edges = graph.edges.get(node.id);
-          if (!edges || edges.length === 0) return false;
-          return true;
-        });
-
-        const pool = validNodes.length > 0 ? validNodes : nodesArray;
-
-        // Try up to 10 candidates to ensure findPath finds a valid accessible route
-        for (let i = 0; i < 10; i++) {
-          const randomNode = pool[Math.floor(Math.random() * pool.length)];
-          const target = new THREE.Vector3(randomNode.x, randomNode.y, randomNode.z);
-          const testPath = graph.findPath(currentPos, target);
-          if (testPath && testPath.length > 0) {
-            return target;
+          if (d >= minDist) {
+            const edges = graph.edges.get(node.id);
+            if (edges && edges.length > 0) {
+              validNodes.push(node);
+            }
           }
         }
 
-        const fallback = pool[Math.floor(Math.random() * pool.length)];
-        return new THREE.Vector3(fallback.x, fallback.y, fallback.z);
+        const pool = validNodes.length > 0 ? validNodes : nodesArray;
+        const randomNode = pool[Math.floor(Math.random() * pool.length)];
+        return new THREE.Vector3(randomNode.x, randomNode.y, randomNode.z);
       },
       [],
     );
@@ -1765,6 +1787,9 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           aiDetourTimer.current = 0;
           aiJumpHoldTimer.current = 0;
           aiLastProgressPos.current.copy(aiSpawn);
+          aiLastRouteSig.current = '';
+          aiRouteRepeatCount.current = 0;
+          aiAvoidNodeIds.current.clear();
           aiProgressCheckTimer.current = 0;
           aiSearchLookTimer.current = 0;
           aiLateralDetourDir.current.set(0, 0, 0);
@@ -1777,6 +1802,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           aiWasDirect.current = false;
           aiHasWanderTarget.current = false;
           aiWanderTargetTimer.current = 0;
+          aiVisitedQuadrants.current.clear();
+          aiSearchTimer.current = 0;
+          aiLocalSearchCount.current = 0;
+          aiWasPursuingPlayer.current = false;
 
           // Select initial random target spot for AI at start of round
           if (navGraph) {
@@ -1784,7 +1813,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             aiHidingSpot.current.copy(aiTargetSpot);
           }
         } else {
-          // Free Mode: reset player only
+          // Free Mode: reset player only and safely place AI
           playerPos.current.copy(mapData.spawnPos);
           prevPlayerPos.current.copy(mapData.spawnPos);
           playerVel.current.set(0, 0, 0);
@@ -1792,6 +1821,15 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           airTimeHighPoint.current = mapData.spawnPos.y;
           stamina.current = 100;
           stunTimer.current = 0;
+
+          if (navGraph) {
+            const aiSpawn = getRandomWaypoint(mapData.spawnPos, navGraph, 15.0);
+            if (aiSpawn.lengthSq() > 0.1) {
+              aiPos.current.copy(aiSpawn);
+              aiPrevPos.current.copy(aiSpawn);
+              aiHidingSpot.current.copy(aiSpawn);
+            }
+          }
         }
 
         // Reset Camera & Controls strictly ONCE before the countdown starts (PREP status)
@@ -1829,20 +1867,11 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       return () => window.removeEventListener('resize', handleResize);
     }, [fitCameraToMap, settings.cameraFollow, status, mapData]);
 
-    const [isAddingDestination, setIsAddingDestination] = useState(false);
-    const isAddingDestinationRef = useRef(false);
     const isCustomDestination = useRef(false);
 
     // Listen to DevTools AI Waypath actions
     useEffect(() => {
-      const handleAddDestinationClick = () => {
-        isAddingDestinationRef.current = true;
-        setIsAddingDestination(true);
-      };
-
       const handleClearPath = () => {
-        isAddingDestinationRef.current = false;
-        setIsAddingDestination(false);
         if (navGraph) {
           const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
           if (newRandomTarget.lengthSq() > 0.1) {
@@ -1851,9 +1880,12 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             if (computedPath && computedPath.length > 0) {
               const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
               aiPath.current = smoothed.map((n, idx) => {
-                const nextNode = smoothed[idx + 1];
-                const edgeType = nextNode ? navGraph.getEdgeType(n, nextNode) : null;
-                return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
+                const prevNode = idx > 0 ? smoothed[idx - 1] : null;
+                const edgeType = prevNode
+                  ? (navGraph.getEdgeType(prevNode, n) ??
+                    (n.y < prevNode.y - 1.0 ? 'drop' : n.y > prevNode.y + 1.0 ? 'climb' : 'walk'))
+                  : 'walk';
+                return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType, isCorner: n.isCorner };
               });
               aiPathIndex.current = 0;
               aiLastPathTarget.current.copy(newRandomTarget);
@@ -1887,12 +1919,10 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         }
       };
 
-      window.addEventListener('ai-add-destination-click', handleAddDestinationClick);
       window.addEventListener('ai-clear-path', handleClearPath);
       window.addEventListener('ai-remove-next-node', handleRemoveNextNode);
 
       return () => {
-        window.removeEventListener('ai-add-destination-click', handleAddDestinationClick);
         window.removeEventListener('ai-clear-path', handleClearPath);
         window.removeEventListener('ai-remove-next-node', handleRemoveNextNode);
       };
@@ -1955,9 +1985,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           // Face the ladder wall
           const targetAngle = physicsOutput.ladderFaceAngle;
           const currentAngle = characterGroup.current.rotation.y;
-          let diff = targetAngle - currentAngle;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
+          const diff = Math.atan2(Math.sin(targetAngle - currentAngle), Math.cos(targetAngle - currentAngle));
 
           const rotSpeed = 12;
           characterGroup.current.rotation.y += diff * dt * rotSpeed;
@@ -1965,9 +1993,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           // pDir now reflects world direction relative to camera
           const targetAngle = Math.atan2(physicsOutput.pDir.x, physicsOutput.pDir.z);
           const currentAngle = characterGroup.current.rotation.y;
-          let diff = targetAngle - currentAngle;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
+          const diff = Math.atan2(Math.sin(targetAngle - currentAngle), Math.cos(targetAngle - currentAngle));
 
           const rotSpeed = 15;
           characterGroup.current.rotation.y += diff * dt * rotSpeed;
@@ -1979,7 +2005,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         props.mode === GameMode.HIDE_AND_SEEK && props.match.currentRound % 2 !== 0;
       const aiIsFrozen = status === GameStatus.PREP && isAISeeker;
       const aiCanMove =
-        (status === GameStatus.PLAYING || status === GameStatus.PREP) && !aiIsFrozen;
+        (status === GameStatus.PLAYING || status === GameStatus.PREP || props.mode === GameMode.FREE) && !aiIsFrozen;
 
       const aiInput = {
         moveDir: new THREE.Vector3(0, 0, 0),
@@ -1993,101 +2019,639 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         attemptRoll: false,
       };
 
-      const targetPos = new THREE.Vector3().copy(aiPos.current);
+      const targetPos = new THREE.Vector3().copy(
+        aiHidingSpot.current.lengthSq() > 0.1 ? aiHidingSpot.current : aiPos.current,
+      );
 
-      if (props.mode === GameMode.HIDE_AND_SEEK && aiCanMove && navGraph) {
+      const isAIMovementActive =
+        props.mode === GameMode.HIDE_AND_SEEK || isCustomDestination.current || addDestinationMode;
+
+      let aiHasVisualContact = false;
+      let aiHasHeardNoise = false;
+
+      if (aiHeardEmojiTimer.current > 0) {
+        aiHeardEmojiTimer.current -= dt;
+      }
+
+      if (isAIMovementActive && aiCanMove && navGraph) {
         // AI Autonomous Target & Pathfinding logic
 
-        // If no valid target or destination reached, pick a new random target
-        const destinationReached =
-          aiPath.current.length > 0 && aiPathIndex.current >= aiPath.current.length;
-        const closeToTarget = aiPos.current.distanceTo(aiHidingSpot.current) < 1.5;
+        // If AI is Seeker: locate player strictly through vision (Line of Sight) or acoustic noise
+        if (props.mode === GameMode.HIDE_AND_SEEK && isAISeeker) {
+          const seekerEye = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 1.4, aiPos.current.z);
+          const playerHead = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 1.4, playerPos.current.z);
+          const playerTorso = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 0.7, playerPos.current.z);
+          const distToPlayer = aiPos.current.distanceTo(playerPos.current);
 
-        if (aiHidingSpot.current.lengthSq() < 0.1 || (!isCustomDestination.current && (destinationReached || closeToTarget))) {
-          isCustomDestination.current = false;
-          const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
-          if (newRandomTarget.lengthSq() > 0.1) {
-            aiHidingSpot.current.copy(newRandomTarget);
-            aiPath.current = [];
-            aiPathIndex.current = 0;
+          // 1. Vision: True 3D Line of Sight check across different heights/rooftops
+          aiHasVisualContact =
+            distToPlayer < 40.0 &&
+            (checkLineOfSight(seekerEye, playerHead, mapData.collisionGrid) ||
+              checkLineOfSight(seekerEye, playerTorso, mapData.collisionGrid));
+
+          // 2. Hearing: Acoustic Noise from player (running, jumping, swimming, landing)
+          const playerNoiseRadius = physicsOutput.noiseLevel ?? 0;
+          aiHasHeardNoise = playerNoiseRadius > 0 && distToPlayer <= playerNoiseRadius;
+          if (aiHasHeardNoise) {
+            aiHeardEmojiTimer.current = 1.8;
+          }
+
+          if (aiHasVisualContact) {
+            // Visual contact confirmed! Active pursuit
+            aiHasLastKnownPlayerPos.current = true;
+            aiLastKnownPlayerPos.current.copy(playerPos.current);
+            aiPlayerLastVel.current.copy(playerVel.current);
+            aiSearchTimer.current = 0;
+            aiLocalSearchCount.current = 0;
+            aiAvoidNodeIds.current.clear();
+            aiRouteRepeatCount.current = 0;
+
+            // Target exact player position directly for the most direct line
+            targetPos.copy(playerPos.current);
+
+            const distToPlayer = aiPos.current.distanceTo(playerPos.current);
+            const isDirectReachable =
+              Math.abs(aiPos.current.y - playerPos.current.y) <= 0.8 &&
+              navGraph.isDirectWalkable(aiPos.current, playerPos.current, mapData.collisionGrid);
+
+            if (isDirectReachable) {
+              // Direct clear sprint straight at the player without graph routing
+              aiPath.current = [
+                { id: 'direct_catch', x: playerPos.current.x, y: playerPos.current.y, z: playerPos.current.z, edgeType: 'walk' },
+              ];
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.copy(playerPos.current);
+              aiPathRecalcTimer.current = 0;
+            } else {
+              const isMidAction =
+                !aiIsGrounded.current ||
+                aiLadderState.current.isClimbing ||
+                aiLadderState.current.isLadderMounting ||
+                aiLadderState.current.isLadderHanging;
+
+              if (!isMidAction && (!aiWasPursuingPlayer.current || aiLastPathTarget.current.distanceTo(targetPos) > 3.0)) {
+                aiPathRecalcTimer.current = 999;
+              }
+            }
+            aiWasPursuingPlayer.current = true;
+          } else if (aiHasHeardNoise) {
+            // Heard player making noise nearby! Head to sound origin
+            aiHasLastKnownPlayerPos.current = true;
+            aiLastKnownPlayerPos.current.copy(playerPos.current);
+            aiPlayerLastVel.current.copy(playerVel.current);
+            aiSearchTimer.current = 0;
+            aiLocalSearchCount.current = 0;
+
+            targetPos.copy(playerPos.current);
+
+            // Immediately clear old patrol/search path and force immediate route calculation to sound only when not mid-action
+            const isMidAction =
+              !aiIsGrounded.current ||
+              aiLadderState.current.isClimbing ||
+              aiLadderState.current.isLadderMounting ||
+              aiLadderState.current.isLadderHanging;
+
+            if (!isMidAction && (!aiWasPursuingPlayer.current || aiLastPathTarget.current.distanceTo(targetPos) > 2.5)) {
+              aiPath.current = [];
+              aiPathIndex.current = 0;
+              aiPathRecalcTimer.current = 999;
+            }
+            aiWasPursuingPlayer.current = true;
+          } else {
+            aiWasPursuingPlayer.current = false;
+
+            if (aiHasLastKnownPlayerPos.current) {
+              // Lost sight/sound: go to last known spot and investigate nearby corners
+              aiSearchTimer.current += dt;
+              const distToLast = aiPos.current.distanceTo(aiLastKnownPlayerPos.current);
+
+              if (distToLast < 2.5 || aiSearchTimer.current > 6.0) {
+                if (aiLocalSearchCount.current < 2 && aiSearchTimer.current <= 5.0) {
+                  const searchSpots = navGraph.findNearbySearchSpots(aiLastKnownPlayerPos.current, 3.0, 14.0);
+                  if (searchSpots && searchSpots.length > 0) {
+                    const spotIdx = aiLocalSearchCount.current % searchSpots.length;
+                    const spot = searchSpots[spotIdx];
+                    targetPos.set(spot.x, spot.y, spot.z);
+                    if (aiPos.current.distanceTo(spot) < 1.5) {
+                      aiLocalSearchCount.current++;
+                    }
+                  } else {
+                    aiHasLastKnownPlayerPos.current = false;
+                  }
+                } else {
+                  aiHasLastKnownPlayerPos.current = false;
+                  aiSearchTimer.current = 0;
+                  aiLocalSearchCount.current = 0;
+                }
+              } else {
+                targetPos.copy(aiLastKnownPlayerPos.current);
+              }
+            } else {
+            // No contact: patrol quadrants from vantage points looking for player
+            aiWanderTargetTimer.current += dt;
+
+            const getQuad = (x: number, z: number): number => {
+              if (x >= 0 && z >= 0) return 1;
+              if (x < 0 && z >= 0) return 2;
+              if (x < 0 && z < 0) return 3;
+              return 4;
+            };
+
+            const currentQuad = getQuad(aiPos.current.x, aiPos.current.z);
+            aiVisitedQuadrants.current.add(currentQuad);
+            if (aiVisitedQuadrants.current.size >= 4) {
+              aiVisitedQuadrants.current.clear();
+              aiVisitedQuadrants.current.add(currentQuad);
+            }
+
+            const distToPatrol = aiPos.current.distanceTo(aiWanderTarget.current);
+            const needsNewPatrolTarget =
+              aiWanderTarget.current.lengthSq() < 0.1 ||
+              distToPatrol < 2.0 ||
+              aiWanderTargetTimer.current > 8.0;
+
+            if (needsNewPatrolTarget) {
+              aiWanderTargetTimer.current = 0;
+              const patrol = navGraph.findReachablePatrolTarget(
+                aiPos.current,
+                aiVisitedQuadrants.current,
+                mapData.collisionGrid,
+              );
+
+              if (patrol) {
+                aiWanderTarget.current.set(patrol.target.x, patrol.target.y, patrol.target.z);
+              } else {
+                const vantage = navGraph.findStrategicVantageTarget(
+                  aiPos.current,
+                  null,
+                  aiVisitedQuadrants.current,
+                  mapData.collisionGrid,
+                );
+                if (vantage) {
+                  aiWanderTarget.current.set(vantage.x, vantage.y, vantage.z);
+                } else {
+                  const rnd = getRandomWaypoint(aiPos.current, navGraph, 12.0);
+                  if (rnd.lengthSq() > 0.1) {
+                    aiWanderTarget.current.copy(rnd);
+                  }
+                }
+              }
+            }
+
+            targetPos.copy(
+              aiWanderTarget.current.lengthSq() > 0.1 ? aiWanderTarget.current : aiPos.current,
+            );
           }
         }
+      } else {
+          // AI is Hider or in Free mode
+          aiFleeTimer.current += dt;
+          const distToPlayer = aiPos.current.distanceTo(playerPos.current);
+          const closeToHidingSpot = aiPos.current.distanceTo(aiHidingSpot.current) < 1.5;
 
-        targetPos.copy(aiHidingSpot.current);
+          if (props.mode === GameMode.HIDE_AND_SEEK) {
+            // Hider in Hide & Seek mode: evaluate visual contact and acoustic noise
+            const noHidingSpotSet = aiHidingSpot.current.lengthSq() < 0.1;
 
-        // Stuck detection: if trying to move but no progress for > 1.5s, trigger recalculation
+            // 1. Visual contact check (true 3D line of sight across different heights/rooftops)
+            const seekerEye = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 1.4, playerPos.current.z);
+            const aiHead = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 1.4, aiPos.current.z);
+            const aiTorso = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 0.7, aiPos.current.z);
+            const playerSeesAi =
+              distToPlayer < 40.0 &&
+              (checkLineOfSight(seekerEye, aiHead, mapData.collisionGrid) ||
+                checkLineOfSight(seekerEye, aiTorso, mapData.collisionGrid));
+
+            const aiEye = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 1.4, aiPos.current.z);
+            const pHead = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 1.4, playerPos.current.z);
+            const pTorso = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 0.7, playerPos.current.z);
+            const aiSeesPlayer =
+              distToPlayer < 40.0 &&
+              (checkLineOfSight(aiEye, pHead, mapData.collisionGrid) ||
+                checkLineOfSight(aiEye, pTorso, mapData.collisionGrid));
+
+            aiHasVisualContact = playerSeesAi || aiSeesPlayer;
+
+            // 2. Hearing / Acoustic detection with projected trajectory projection
+            const playerNoiseRadius = physicsOutput.noiseLevel ?? 0;
+            aiHasHeardNoise = playerNoiseRadius > 0 && distToPlayer <= playerNoiseRadius;
+            if (aiHasHeardNoise) {
+              aiHeardEmojiTimer.current = 1.8;
+            }
+
+            // Movement projection: is player heading towards the AI based on acoustic velocity projection?
+            const projectedPlayerPos = new THREE.Vector3()
+              .copy(playerPos.current)
+              .addScaledVector(playerVel.current, 1.5);
+            const projectedDistToAi = aiPos.current.distanceTo(projectedPlayerPos);
+            const playerMovingTowardsAi =
+              aiHasHeardNoise &&
+              (distToPlayer < 3.2 || (playerVel.current.length() > 0.4 && projectedDistToAi < distToPlayer - 0.3));
+
+            // Flee ONLY if:
+            // 1. Visual line of sight is active (either party sees the other), OR
+            // 2. AI heard player noise AND player is actively heading towards the AI based on movement projection!
+            const shouldFleeFromPlayer =
+              (aiHasVisualContact || playerMovingTowardsAi) && aiFleeTimer.current >= 2.0;
+
+            // Flee to a new hiding spot that breaks LOS and is far from the sound / player position
+            if (noHidingSpotSet || (!isCustomDestination.current && shouldFleeFromPlayer)) {
+              isCustomDestination.current = false;
+              aiFleeTimer.current = 0;
+              const bestSpot = navGraph.evaluateHidingSpots(playerPos.current, aiPos.current, mapData.collisionGrid);
+              if (bestSpot) {
+                aiHidingSpot.current.set(bestSpot.x, bestSpot.y, bestSpot.z);
+                aiPath.current = [];
+                aiPathIndex.current = 0;
+              } else {
+                const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
+                if (newRandomTarget.lengthSq() > 0.1) {
+                  aiHidingSpot.current.copy(newRandomTarget);
+                  aiPath.current = [];
+                  aiPathIndex.current = 0;
+                }
+              }
+            }
+          } else {
+            // Free mode: wander around when destination is reached
+            const destinationReached =
+              aiPath.current.length > 0 && aiPathIndex.current >= aiPath.current.length;
+            if (
+              aiHidingSpot.current.lengthSq() < 0.1 ||
+              (!isCustomDestination.current && (destinationReached || closeToHidingSpot))
+            ) {
+              isCustomDestination.current = false;
+              const newRandomTarget = getRandomWaypoint(aiPos.current, navGraph, 10.0);
+              if (newRandomTarget.lengthSq() > 0.1) {
+                aiHidingSpot.current.copy(newRandomTarget);
+                aiPath.current = [];
+                aiPathIndex.current = 0;
+              }
+            }
+          }
+
+          targetPos.copy(aiHidingSpot.current.lengthSq() > 0.1 ? aiHidingSpot.current : aiPos.current);
+        }
+
+        // Stuck detection: if AI is actively in play/chase but hasn't made physical progress for > 1.8s
         const distFromLastCheck = aiPos.current.distanceTo(aiLastProgressPos.current);
-        if (aiInput.moveDir.lengthSq() > 0.01 && distFromLastCheck < 0.2) {
+        const isActivelyNavigating = aiPath.current.length > 0 && aiPathIndex.current < aiPath.current.length;
+        if (isActivelyNavigating && distFromLastCheck < 0.25) {
           aiStuckTimer.current += dt;
         } else {
           aiStuckTimer.current = 0;
           aiLastProgressPos.current.copy(aiPos.current);
         }
 
-        const isStuck = aiStuckTimer.current > 1.5;
+        const isStuck = aiStuckTimer.current > 1.8;
         if (isStuck) {
           aiStuckTimer.current = 0;
+          aiPath.current = [];
+          aiPathIndex.current = 0;
+          aiPathRecalcTimer.current = 999;
+          aiAvoidNodeIds.current.clear();
         }
 
-        // Calculate path if empty, reached end, target moved, or stuck
+        aiPathRecalcTimer.current += dt;
+
+        const isHiderSettled =
+          props.mode === GameMode.HIDE_AND_SEEK &&
+          !isAISeeker &&
+          !isCustomDestination.current &&
+          aiPos.current.distanceTo(targetPos) < 1.5;
+
+        const isCurrentlyMidAction =
+          !aiIsGrounded.current ||
+          aiLadderState.current.isClimbing ||
+          aiLadderState.current.isLadderMounting ||
+          aiLadderState.current.isLadderHanging;
+
+        const needsPath =
+          !isHiderSettled &&
+          !isCurrentlyMidAction &&
+          (aiPath.current.length === 0 ||
+            aiPathIndex.current >= aiPath.current.length ||
+            aiLastPathTarget.current.distanceTo(targetPos) > 2.5 ||
+            isStuck);
+
+        // Calculate path with throttle cooldown to prevent CPU lag
         if (
-          aiPath.current.length === 0 ||
-          aiPathIndex.current >= aiPath.current.length ||
-          aiLastPathTarget.current.distanceTo(targetPos) > 1.0 ||
-          isStuck
+          needsPath &&
+          (aiPath.current.length === 0
+            ? aiPathRecalcTimer.current >= 0.15
+            : aiPathRecalcTimer.current >= 0.3)
         ) {
           aiPathRecalcTimer.current = 0;
           aiLastPathTarget.current.copy(targetPos);
 
-          const computedPath = navGraph.findPath(aiPos.current, targetPos);
+          const isActivelyPursuing = aiHasVisualContact && isAISeeker;
+          if (isActivelyPursuing) {
+            aiAvoidNodeIds.current.clear();
+            aiRouteRepeatCount.current = 0;
+          }
+
+          const hasAvoidNodes = aiAvoidNodeIds.current.size > 0 && !isActivelyPursuing;
+          let computedPath = navGraph.findPath(aiPos.current, targetPos, {
+            avoidNodeIds: hasAvoidNodes ? aiAvoidNodeIds.current : undefined,
+            penalizedNodeIds: hasAvoidNodes ? aiAvoidNodeIds.current : undefined,
+            variationCost: hasAvoidNodes ? 12.0 : undefined,
+          });
+
+          // Fallback if avoidNodeIds was too strict and returned null
+          if (!computedPath && hasAvoidNodes) {
+            computedPath = navGraph.findPath(aiPos.current, targetPos, {
+              penalizedNodeIds: aiAvoidNodeIds.current,
+              variationCost: 20.0,
+            });
+          }
+
+          if (!computedPath) {
+            computedPath = navGraph.findPath(aiPos.current, targetPos);
+          }
+
           if (computedPath && computedPath.length > 0) {
+            const newSig = computedPath.map((n) => n.id).join('->');
+            if (!isActivelyPursuing && newSig === aiLastRouteSig.current && newSig.length > 0) {
+              aiRouteRepeatCount.current++;
+              // Add intermediate nodes to avoid/penalize set for the next variation
+              computedPath.slice(1, -1).forEach((n) => aiAvoidNodeIds.current.add(n.id));
+
+              // If repeated 2 or more times, try immediately finding an alternative variation
+              if (aiRouteRepeatCount.current >= 2) {
+                const altPath =
+                  navGraph.findPath(aiPos.current, targetPos, {
+                    avoidNodeIds: aiAvoidNodeIds.current,
+                    penalizedNodeIds: aiAvoidNodeIds.current,
+                    variationCost: 12.0,
+                  }) ||
+                  navGraph.findPath(aiPos.current, targetPos, {
+                    penalizedNodeIds: aiAvoidNodeIds.current,
+                    variationCost: 20.0,
+                  });
+
+                if (altPath && altPath.length > 0) {
+                  const altSig = altPath.map((n) => n.id).join('->');
+                  if (altSig !== aiLastRouteSig.current) {
+                    computedPath = altPath;
+                    aiLastRouteSig.current = altSig;
+                  }
+                } else if (!isCustomDestination.current) {
+                  // No alternative path to this target -> pick a new random destination waypoint
+                  const newTarget = getRandomWaypoint(aiPos.current, navGraph, 8.0);
+                  if (newTarget.lengthSq() > 0.1) {
+                    aiHidingSpot.current.copy(newTarget);
+                    aiAvoidNodeIds.current.clear();
+                    aiRouteRepeatCount.current = 0;
+                    aiLastRouteSig.current = '';
+                  }
+                }
+              }
+            } else {
+              aiLastRouteSig.current = newSig;
+              aiRouteRepeatCount.current = 1;
+              if (aiAvoidNodeIds.current.size > 20) {
+                aiAvoidNodeIds.current.clear();
+              }
+            }
+
             const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
             aiPath.current = smoothed.map((n, idx) => {
-              const nextNode = smoothed[idx + 1];
-              const edgeType = nextNode
-                ? (navGraph.getEdgeType(n, nextNode) ??
-                  (nextNode.y < n.y - 1.0 ? 'drop' : nextNode.y > n.y + 1.0 ? 'climb' : 'walk'))
-                : null;
-              return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
+              const prevNode = idx > 0 ? smoothed[idx - 1] : null;
+              const rawEdgeType = prevNode ? navGraph.getEdgeType(prevNode, n) : null;
+              const diffY = prevNode ? n.y - prevNode.y : 0;
+              const edgeType = prevNode
+                ? (rawEdgeType ??
+                  (diffY < -1.0 ? 'drop' : (diffY > CLIMB_THRESHOLD && diffY <= MAX_SCALABLE_HEIGHT) ? 'climb' : 'walk'))
+                : 'walk';
+              return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType, isCorner: n.isCorner };
             });
             aiPathIndex.current = 0;
           } else {
+            // Target is unreachable from current AI position -> pick another waypoint
             aiPath.current = [];
             aiPathIndex.current = 0;
+            aiAvoidNodeIds.current.clear();
+            aiRouteRepeatCount.current = 0;
+            aiLastRouteSig.current = '';
+            if (!isCustomDestination.current) {
+              const newTarget = getRandomWaypoint(aiPos.current, navGraph, 8.0);
+              if (newTarget.lengthSq() > 0.1) {
+                aiHidingSpot.current.copy(newTarget);
+              }
+            } else {
+              isCustomDestination.current = false;
+            }
+          }
+        } else if (aiPath.current.length > 0 && aiPathIndex.current < aiPath.current.length) {
+          // Dynamic Continuous Path Optimization:
+          // If a direct, flat, unobstructed line of sight opens up to the final destination, take the direct shortcut!
+          const isActivelyPursuing = aiHasVisualContact && isAISeeker;
+          if (isActivelyPursuing || aiPathRecalcTimer.current >= 0.25) {
+            if (!isActivelyPursuing) aiPathRecalcTimer.current = 0;
+
+            const distToTarget = aiPos.current.distanceTo(targetPos);
+            if (
+              distToTarget < 35.0 &&
+              Math.abs(aiPos.current.y - targetPos.y) <= 0.8 &&
+              navGraph.isDirectWalkable(aiPos.current, targetPos, mapData.collisionGrid)
+            ) {
+              // Direct clear line of sight to final target opened up!
+              aiPath.current = [
+                { id: 'direct_dest', x: targetPos.x, y: targetPos.y, z: targetPos.z, edgeType: 'walk' },
+              ];
+              aiPathIndex.current = 0;
+              aiLastPathTarget.current.copy(targetPos);
+            }
           }
         }
 
-        // Follow path node by node
+        // Follow path node by node with dynamic pruning of obsolete nodes
         if (aiPath.current.length > 0 && aiPathIndex.current < aiPath.current.length) {
-          const activeNode = aiPath.current[aiPathIndex.current];
+          // --- PRUNE OBSOLETE / SUBOPTIMAL NODES ---
+          // 1. Multi-node Lookahead Shortcut: If a further node along the path is directly reachable, discard all intermediate nodes!
+          const lookaheadMax = Math.min(aiPath.current.length - 1, aiPathIndex.current + 8);
+          for (let k = lookaheadMax; k > aiPathIndex.current; k--) {
+            const candidateNode = aiPath.current[k];
+            // Ensure no special transitions (ladder, climb, jump, drop) in the bypassed range are skipped unsafely
+            let canBypass = true;
+            for (let j = aiPathIndex.current; j < k; j++) {
+              const edgeType = aiPath.current[j].edgeType;
+              if (
+                edgeType === 'ladder' ||
+                edgeType === 'climb' ||
+                edgeType === 'jump' ||
+                edgeType === 'drop' ||
+                aiPath.current[j].id?.includes('ladder')
+              ) {
+                canBypass = false;
+                break;
+              }
+            }
+            if (
+              canBypass &&
+              Math.abs(aiPos.current.y - candidateNode.y) <= 0.6 &&
+              navGraph.isDirectWalkable(aiPos.current, candidateNode, mapData.collisionGrid)
+            ) {
+              // Further node is directly reachable: discard all intermediate nodes!
+              aiPathIndex.current = k;
+              break;
+            }
+          }
+
+          // 2. Overshoot / Behind AI Check: If AI has already moved past the current node towards next node/destination, discard current node
+          if (aiPathIndex.current + 1 < aiPath.current.length) {
+            const currNode = aiPath.current[aiPathIndex.current];
+            const nextNode = aiPath.current[aiPathIndex.current + 1];
+            if (currNode.edgeType === 'walk') {
+              const segX = nextNode.x - currNode.x;
+              const segZ = nextNode.z - currNode.z;
+              const segLenSq = segX * segX + segZ * segZ;
+              if (segLenSq > 0.01) {
+                const toAiX = aiPos.current.x - currNode.x;
+                const toAiZ = aiPos.current.z - currNode.z;
+                const proj = (toAiX * segX + toAiZ * segZ) / segLenSq;
+                if (proj > 0.6 && Math.abs(aiPos.current.y - nextNode.y) <= 0.8) {
+                  aiPathIndex.current++;
+                }
+              }
+            }
+          }
+
+          const activeNode =
+            aiPathIndex.current < aiPath.current.length
+              ? aiPath.current[aiPathIndex.current]
+              : aiPath.current[aiPath.current.length - 1];
           const prevNode = aiPathIndex.current > 0 ? aiPath.current[aiPathIndex.current - 1] : null;
           const isClimbNode = activeNode.edgeType === 'climb';
 
           // Distance to current node
           const distXZ = Math.hypot(aiPos.current.x - activeNode.x, aiPos.current.z - activeNode.z);
           const distY = Math.abs(aiPos.current.y - activeNode.y);
+          const heightDiffUp = activeNode.y - aiPos.current.y;
 
           // Find relevant ladder zone if target node is ladder-related or AI is near a ladder zone
           let activeLadderZone = null;
           if (mapData.ladderZones && mapData.ladderZones.length > 0) {
             activeLadderZone = mapData.ladderZones.find(
               (z) =>
-                Math.hypot(activeNode.x - z.railX, activeNode.z - z.railZ) < 2.5 ||
-                (Math.hypot(aiPos.current.x - z.railX, aiPos.current.z - z.railZ) < 2.5 &&
+                Math.hypot(activeNode.x - z.railX, activeNode.z - z.railZ) < 3.0 ||
+                (Math.hypot(aiPos.current.x - z.railX, aiPos.current.z - z.railZ) < 3.0 &&
                   aiPos.current.y >= z.minY - 1.0 &&
                   aiPos.current.y <= z.maxY + 2.0),
             );
           }
 
-          // Stamina management
-          if (aiStamina.current <= 0.1) {
-            aiIsExhausted.current = true;
-          } else if (aiStamina.current >= 50.0) {
-            aiIsExhausted.current = false;
-          }
-          const isLowStamina = aiStamina.current <= 30.0;
+          // Real-time Accessibility & Wall Obstruction Check:
+          let isNodeAccessible = true;
+          const isLadderNode = activeNode.edgeType === 'ladder' || activeNode.id?.includes('ladder');
+          const isJumpNode = activeNode.edgeType === 'jump';
 
-          if (!aiIsExhausted.current) {
+          if (!isLadderNode) {
+            if (isJumpNode) {
+              // Jump node is only inaccessible if AI is on the ground far below both the origin and destination roofs
+              const originY = prevNode ? prevNode.y : activeNode.y;
+              if (aiIsGrounded.current && aiPos.current.y < originY - 2.5 && aiPos.current.y < activeNode.y - 2.5) {
+                isNodeAccessible = false;
+              }
+            } else if (activeNode.edgeType === 'walk') {
+              if (aiIsGrounded.current && heightDiffUp > MAX_SCALABLE_HEIGHT) {
+                // Standard walk node blocked vertically without a climb/ladder
+                isNodeAccessible = false;
+              } else if (distXZ > 0.8 && heightDiffUp <= 1.2 && !navGraph.isDirectWalkable(aiPos.current, activeNode, mapData.collisionGrid)) {
+                // Wall or solid building obstacle directly blocks corridor to next node
+                isNodeAccessible = false;
+              }
+            } else if (isClimbNode && heightDiffUp > MAX_SCALABLE_HEIGHT) {
+              // Wall climb higher than scalable limit
+              isNodeAccessible = false;
+            }
+          }
+
+          // Real-time Frontal Wall Collision Detection:
+          // Detect if the AI is facing and colliding against a solid wall in the direction of the target node
+          if (isNodeAccessible && aiIsGrounded.current && !isLadderNode && !isJumpNode) {
+            const moveDirNorm = new THREE.Vector3(activeNode.x - aiPos.current.x, 0, activeNode.z - aiPos.current.z);
+            if (moveDirNorm.lengthSq() > 0.01) {
+              moveDirNorm.normalize();
+              const probeDist = PLAYER_RADIUS + 0.35;
+              const probeX = aiPos.current.x + moveDirNorm.x * probeDist;
+              const probeZ = aiPos.current.z + moveDirNorm.z * probeDist;
+              const isWallAhead = isPositionBlocked(probeX, aiPos.current.y, probeZ, mapData.collisionGrid, PLAYER_RADIUS * 0.7);
+
+              if (isWallAhead) {
+                const halfSize = Math.floor(settings.worldSize / 2);
+                const clampedProbeX = THREE.MathUtils.clamp(probeX, -halfSize + 0.1, halfSize - 0.1);
+                const clampedProbeZ = THREE.MathUtils.clamp(probeZ, -halfSize + 0.1, halfSize - 0.1);
+                const obstacleTopH = getTerrainHeight(clampedProbeX, clampedProbeZ, aiPos.current.y, mapData.collisionGrid, mapData.bGrid, mapData.wGrid, settings.worldSize, CLIMB_THRESHOLD);
+                const wallH = obstacleTopH - aiPos.current.y;
+                const canClimbObstacle = wallH <= MAX_SCALABLE_HEIGHT && wallH > CLIMB_THRESHOLD && (isClimbNode || heightDiffUp > CLIMB_THRESHOLD);
+                if (!canClimbObstacle && wallH > CLIMB_THRESHOLD) {
+                  // Direct wall obstruction in front: cannot walk through wall to activeNode!
+                  isNodeAccessible = false;
+                }
+              }
+            }
+          }
+
+          if (!isNodeAccessible) {
+            // Penalize the blocked node and calculate new nodes detour around the wall
+            if (activeNode.id) {
+              aiAvoidNodeIds.current.add(activeNode.id);
+            }
+            aiPath.current = [];
+            aiPathIndex.current = 0;
+            aiPathRecalcTimer.current = 0.3;
+            aiStuckTimer.current = 0;
+            aiInput.moveDir.set(0, 0, 0);
+            aiInput.run = false;
+            aiInput.jump = false;
+            aiInput.climb = false;
+            aiInput.grabLadder = false;
+            aiInput.ladderUp = false;
+            aiInput.ladderDown = false;
+          }
+
+          // Lookahead stamina estimation for upcoming path actions (jumps, climbs, ladders)
+          let upcomingJumpStaminaNeeded = 0;
+          let upcomingClimbStaminaNeeded = 0;
+
+          // Check upcoming 4 nodes in the path
+          const lookaheadLimit = Math.min(aiPath.current.length, aiPathIndex.current + 4);
+          for (let i = aiPathIndex.current; i < lookaheadLimit; i++) {
+            const node = aiPath.current[i];
+            const pNode = i > 0 ? aiPath.current[i - 1] : null;
+            if (node.edgeType === 'jump') {
+              const jDist = pNode ? Math.hypot(node.x - pNode.x, node.z - pNode.z) : 4.0;
+              const jHeight = pNode ? node.y - pNode.y : 0;
+              // Budget: JUMP cost (15) + runup acceleration (8-15) + mantle/climb cost on arrival (12-15) + buffer (5)
+              const jumpBudget =
+                STAMINA_JUMP_COST + (jDist > 3.0 ? 15.0 : 8.0) + (jHeight > 0 ? 12.0 : 5.0) + 5.0;
+              upcomingJumpStaminaNeeded = Math.max(upcomingJumpStaminaNeeded, jumpBudget);
+            } else if (node.edgeType === 'climb') {
+              const cHeight = Math.max(1.0, pNode ? node.y - pNode.y : 2.0);
+              const climbBudget = (cHeight / CLIMB_SPEED) * STAMINA_CLIMB_COST + 10.0;
+              upcomingClimbStaminaNeeded = Math.max(upcomingClimbStaminaNeeded, climbBudget);
+            } else if (node.edgeType === 'ladder' || node.id?.includes('ladder')) {
+              const lHeight = pNode ? Math.abs(node.y - pNode.y) : 4.0;
+              const ladderBudget = (lHeight / CLIMB_SPEED) * STAMINA_LADDER_CLIMB_COST + 5.0;
+              upcomingClimbStaminaNeeded = Math.max(upcomingClimbStaminaNeeded, ladderBudget);
+            }
+          }
+
+          const totalUpcomingStaminaNeeded = Math.max(
+            upcomingJumpStaminaNeeded,
+            upcomingClimbStaminaNeeded,
+          );
+          const shouldConserveStamina =
+            totalUpcomingStaminaNeeded > 0 &&
+            aiStamina.current < totalUpcomingStaminaNeeded + 10.0;
+
+          // Stamina management:
+          // When stamina is low (<= 25%), AI walks instead of sprinting to continuously recover stamina.
+          const isLowStamina = aiStamina.current <= 25.0 || shouldConserveStamina;
+          aiIsExhausted.current = aiStamina.current <= 5.0;
+
+          if (isNodeAccessible) {
             if (
               activeLadderZone &&
               (activeNode.edgeType === 'ladder' || activeNode.id?.includes('ladder'))
@@ -2146,12 +2710,12 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
                 }
               } else if (isGoingUp) {
                 // --- CLIMBING UP ---
-                // Calculate required stamina for the full ladder ascent with safety margin
+                // Calculate required stamina for ladder ascent with light stamina cost
                 const climbHeight = Math.max(1.0, zone.maxY - zone.minY);
-                const baseStaminaNeeded = ((climbHeight / CLIMB_SPEED) + 0.8) * STAMINA_CLIMB_COST * 1.35;
+                const baseStaminaNeeded = (climbHeight / CLIMB_SPEED) * STAMINA_LADDER_CLIMB_COST + 5.0;
                 const requiredStamina = Math.min(
                   100.0,
-                  Math.max(zone.maxY > 6.0 ? 85.0 : 45.0, baseStaminaNeeded),
+                  Math.max(15.0, baseStaminaNeeded),
                 );
 
                 if (activeNode.id?.includes('ladder_foot')) {
@@ -2185,13 +2749,16 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
                   }
                 } else {
                   // Actively climbing up the ladder towards roof
-                  // If stamina somehow runs low (< 5.0) in mid-air, hold on and rest on ladder to recover
-                  if (aiStamina.current < 5.0 && !aiIsGrounded.current) {
+                  // If near the top (within 0.8m of roof), always finish climbing up and step onto roof!
+                  const isNearTop = aiPos.current.y >= zone.maxY - 0.8;
+                  if (aiStamina.current <= 0 || (aiStamina.current < 5.0 && !aiIsGrounded.current && !isNearTop)) {
+                    // Mid-air resting on lower rungs of the ladder
                     aiInput.grabLadder = true;
                     aiInput.ladderUp = false;
                     aiInput.ladderDown = false;
                     aiInput.moveDir.set(0, 0, 0);
                   } else {
+                    // Climb up / step onto roof
                     aiInput.grabLadder = true;
                     aiInput.ladderUp = true;
                     aiInput.ladderDown = false;
@@ -2200,8 +2767,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
 
                   // Dismount on roof when high enough and grounded or near top
                   if (
-                    (aiPos.current.y >= zone.maxY - 0.1 && aiIsGrounded.current) ||
-                    aiPos.current.y >= zone.maxY + 0.1
+                    (aiPos.current.y >= zone.maxY - 0.35 && aiIsGrounded.current) ||
+                    aiPos.current.y >= zone.maxY - 0.05
                   ) {
                     aiInput.grabLadder = false;
                     aiInput.ladderUp = false;
@@ -2266,62 +2833,223 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
                 0,
                 activeNode.z - aiPos.current.z,
               );
+              const isDropping = activeNode.edgeType === 'drop' || activeNode.y < aiPos.current.y - 1.2;
+              const isJumping =
+                activeNode.edgeType === 'jump' ||
+                (!isDropping &&
+                  activeNode.y >= aiPos.current.y - 1.2 &&
+                  distXZ > 1.8 &&
+                  !navGraph.isDirectWalkable(aiPos.current, activeNode, mapData.collisionGrid));
+
               if (dir.lengthSq() > 0.01) {
                 dir.normalize();
+
+                // Proactive Wall & Corner Clearance Deflection:
+                // Only apply during standard flat walking on ground/surface to prevent scraping walls.
+                // NEVER deflect when dropping, jumping, falling or airborne (AI directly follows target direction).
+                if (!isDropping && !isJumping && aiIsGrounded.current && activeNode.edgeType === 'walk' && Math.abs(activeNode.y - aiPos.current.y) <= 0.6) {
+                  const nearbyBoxes = mapData.collisionGrid.query(aiPos.current.x, aiPos.current.z, PLAYER_RADIUS + 0.35);
+                  let wallPushX = 0;
+                  let wallPushZ = 0;
+                  for (const box of nearbyBoxes) {
+                    if (aiPos.current.y + 0.1 < box.maxY && aiPos.current.y + PLAYER_HEIGHT - 0.1 > box.minY) {
+                      const closeX = Math.max(box.minX, Math.min(aiPos.current.x, box.maxX));
+                      const closeZ = Math.max(box.minZ, Math.min(aiPos.current.z, box.maxZ));
+                      const dx = aiPos.current.x - closeX;
+                      const dz = aiPos.current.z - closeZ;
+                      const dSq = dx * dx + dz * dz;
+                      const safeDist = PLAYER_RADIUS + 0.15;
+                      if (dSq < safeDist * safeDist && dSq > 0.0001) {
+                        const d = Math.sqrt(dSq);
+                        const pushMag = (safeDist - d) / safeDist;
+                        wallPushX += (dx / d) * pushMag;
+                        wallPushZ += (dz / d) * pushMag;
+                      }
+                    }
+                  }
+                  if (Math.abs(wallPushX) > 0.01 || Math.abs(wallPushZ) > 0.01) {
+                    // Only apply perpendicular (lateral) deflection to ensure AI never turns backward
+                    const perpX = -dir.z;
+                    const perpZ = dir.x;
+                    const perpDot = wallPushX * perpX + wallPushZ * perpZ;
+                    dir.x += perpX * perpDot * 0.35;
+                    dir.z += perpZ * perpDot * 0.35;
+                    if (dir.lengthSq() > 0.01) dir.normalize();
+                  }
+                }
+
                 aiInput.moveDir.copy(dir);
-                aiInput.run = !isLowStamina;
+                aiInput.run = (aiHasVisualContact && isAISeeker) ? !aiIsExhausted.current : !isLowStamina;
               }
 
-              // Climb low obstacles if edge type is climb
-              if (isClimbNode) {
+              const isScalableHeight = heightDiffUp > CLIMB_THRESHOLD && heightDiffUp <= MAX_SCALABLE_HEIGHT;
+
+              if (isDropping) {
+                // Drop directly off the building ledge towards next lower node: no deflection or hesitation
+                aiInput.run = true;
+                aiInput.moveDir.copy(dir);
+                aiInput.climb = false;
+                aiInput.grabLadder = false;
+                aiInput.attemptRoll = true;
+              } else if (isJumping) {
+                if (aiIsGrounded.current) {
+                  const checkGapDist1 = PLAYER_RADIUS + 0.15;
+                  const checkGapDist2 = PLAYER_RADIUS + 0.45;
+                  const terrainAhead1 = getTerrainHeight(
+                    aiPos.current.x + dir.x * checkGapDist1,
+                    aiPos.current.z + dir.z * checkGapDist1,
+                    aiPos.current.y,
+                    mapData.collisionGrid,
+                    mapData.bGrid,
+                    mapData.wGrid,
+                    settings.worldSize,
+                  );
+                  const terrainAhead2 = getTerrainHeight(
+                    aiPos.current.x + dir.x * checkGapDist2,
+                    aiPos.current.z + dir.z * checkGapDist2,
+                    aiPos.current.y,
+                    mapData.collisionGrid,
+                    mapData.bGrid,
+                    mapData.wGrid,
+                    settings.worldSize,
+                  );
+
+                  const isAtLedge =
+                    terrainAhead1 < aiPos.current.y - 1.2 ||
+                    terrainAhead1 === -Infinity ||
+                    terrainAhead2 < aiPos.current.y - 1.2 ||
+                    terrainAhead2 === -Infinity;
+
+                  if (aiStamina.current < 8.0 && !isAtLedge && distXZ > 2.5) {
+                    // Only pause briefly if stamina is completely depleted and still far from ledge
+                    aiInput.moveDir.set(0, 0, 0);
+                    aiInput.run = false;
+                    aiInput.jump = false;
+                    aiInput.climb = false;
+                  } else {
+                    // Sprint forward with high momentum towards the gap
+                    aiInput.run = true;
+                    aiInput.climb = true;
+                    aiInput.moveDir.copy(dir);
+
+                    // Jump immediately when reaching ledge or within close jumping launch distance
+                    const isMovingForward = aiInput.moveDir.lengthSq() > 0.1;
+                    if ((isAtLedge || distXZ <= 1.5) && isMovingForward) {
+                      aiInput.jump = true;
+                    }
+                  }
+                } else {
+                  // Airborne across gap: keep pushing forward and ready to mantle ledge only if having stamina
+                  aiInput.run = true;
+                  aiInput.climb = aiStamina.current > 0;
+                  aiInput.attemptRoll = true;
+                  aiInput.moveDir.copy(dir);
+                }
+              } else if (
+                isClimbNode ||
+                (!isDropping &&
+                  !isJumping &&
+                  (heightDiffUp > 0.3 || (!aiIsGrounded.current && activeNode.y > aiPos.current.y - 0.4)) &&
+                  heightDiffUp <= MAX_SCALABLE_HEIGHT &&
+                  distXZ < 8.0)
+              ) {
                 const wallClimbHeight = Math.max(1.0, activeNode.y - aiPos.current.y);
                 const requiredStamina = Math.min(
                   100.0,
-                  (wallClimbHeight / CLIMB_SPEED) * STAMINA_CLIMB_COST + 5.0,
+                  (wallClimbHeight / CLIMB_SPEED) * STAMINA_CLIMB_COST + 8.0,
                 );
-                if (aiStamina.current >= requiredStamina) {
-                  aiInput.climb = true;
-                } else {
-                  aiInput.moveDir.set(0, 0, 0);
-                  aiInput.run = false;
+
+                // If insufficient stamina or exhausted, wait to recover and do NOT attempt to climb/jump
+                if (aiStamina.current < requiredStamina || aiStamina.current <= 0) {
                   aiInput.climb = false;
-                  aiStuckTimer.current = 0;
+                  aiInput.jump = false;
+                  aiInput.run = false;
+                  if (aiIsGrounded.current) {
+                    aiInput.moveDir.set(0, 0, 0);
+                    aiStuckTimer.current = 0; // Don't trigger stuck recalculation while waiting for stamina
+                  }
+                } else {
+                  // Sufficient stamina: maintain climb input until fully on top
+                  aiInput.moveDir.copy(dir);
+                  aiInput.climb = true;
+                  aiInput.run = true;
+
+                  // If on ground starting climb, jump into the wall to initiate vertical climbing
+                  if (aiIsGrounded.current && heightDiffUp > 0.4) {
+                    aiInput.jump = true;
+                  }
                 }
-              } else if (activeNode.edgeType === 'drop' || activeNode.y < aiPos.current.y - 1.0) {
-                // Dropping off a ledge towards next ground node: run forward and prepare roll landing
-                aiInput.attemptRoll = true;
-                aiInput.climb = false;
-                aiInput.grabLadder = false;
               }
 
-              // Advance node when close (or when landed on ground for drop transitions)
-              const isDropLanding = (activeNode.edgeType === 'drop' || activeNode.y < aiPos.current.y - 1.0) && aiIsGrounded.current;
-              if ((distXZ < 0.65 && distY < 1.2) || (isDropLanding && distXZ < 1.2 && distY < 1.5)) {
-                aiPathIndex.current++;
+              // Smooth lookahead: if next node is directly walkable, advance early to cut corners directly
+              let advancedEarly = false;
+              if (aiPathIndex.current + 1 < aiPath.current.length) {
+                const nextNode = aiPath.current[aiPathIndex.current + 1];
+                if (
+                  activeNode.edgeType === 'walk' &&
+                  nextNode.edgeType === 'walk' &&
+                  !activeNode.isCorner &&
+                  Math.abs(aiPos.current.y - nextNode.y) <= 0.6 &&
+                  navGraph.isDirectWalkable(aiPos.current, nextNode, mapData.collisionGrid)
+                ) {
+                  aiPathIndex.current++;
+                  advancedEarly = true;
+                }
+              }
+
+              // Advance node when close (or when landed on target roof/ground)
+              if (!advancedEarly) {
+                if (isJumping) {
+                  const distToPrev = prevNode ? Math.hypot(aiPos.current.x - prevNode.x, aiPos.current.z - prevNode.z) : 999;
+                  const hasCrossedToTargetRoof =
+                    aiIsGrounded.current &&
+                    Math.abs(aiPos.current.y - activeNode.y) <= 1.0 &&
+                    (distXZ < 1.2 || (distToPrev > 2.2 && distXZ < 2.5));
+
+                  if (hasCrossedToTargetRoof || (distXZ < 0.8 && distY < 1.2)) {
+                    aiPathIndex.current++;
+                  }
+                } else if (isDropping) {
+                  const isDropLanding = aiIsGrounded.current && aiPos.current.y <= activeNode.y + 1.2;
+                  if ((distXZ < 1.0 && distY < 1.2) || (isDropLanding && distXZ < 1.8)) {
+                    aiPathIndex.current++;
+                  }
+                } else if (isClimbNode || (heightDiffUp > 0.2 && isScalableHeight)) {
+                  const isClimbLanding =
+                    aiIsGrounded.current && aiPos.current.y >= activeNode.y - 0.6;
+                  if (isClimbLanding || (distXZ < 0.85 && distY < 1.2)) {
+                    aiPathIndex.current++;
+                  }
+                } else {
+                  const arriveThreshold = activeNode.isCorner ? 0.45 : 0.75;
+                  if (distXZ < arriveThreshold && distY < 1.2) {
+                    aiPathIndex.current++;
+                  }
+                }
               }
             }
-          } else {
-            // Exhausted: stop and recover
-            const isMidAirLadder =
-              !aiIsGrounded.current &&
-              activeLadderZone !== null &&
-              aiPos.current.y > (activeLadderZone?.minY ?? 0) + 0.5;
-
-            aiInput.moveDir.set(0, 0, 0);
-            aiInput.run = false;
-            aiInput.jump = false;
-            aiInput.climb = false;
-            // NEVER let go of ladder in mid-air when exhausted; hang and recover instead
-            aiInput.grabLadder = isMidAirLadder;
-            aiInput.ladderUp = false;
-            aiInput.ladderDown = false;
           }
         }
+      }
 
-        if (aiEmojiRef.current !== '🤖') {
-          aiEmojiRef.current = '🤖';
-          setAiEmoji('🤖');
-        }
+      // Safety: If AI has no movement intent (stopped, arrived, hiding), never trigger jump
+      if (aiInput.moveDir.lengthSq() < 0.01) {
+        aiInput.jump = false;
+        aiInput.run = false;
+      }
+
+      // Safety: If AI has no stamina, strictly prohibit climbing, jumping, and sprinting
+      if (aiStamina.current <= 0) {
+        aiInput.climb = false;
+        aiInput.jump = false;
+        aiInput.run = false;
+        aiInput.ladderUp = false;
+      }
+
+      // Roll on fall: When airborne and falling from a height, anticipate impact and execute a parkour roll
+      const aiCurrentFallDist = aiAirTimeHighPoint.current - aiPos.current.y;
+      if (!aiIsGrounded.current && (aiCurrentFallDist >= 2.0 || aiVel.current.y < -3.0)) {
+        aiInput.attemptRoll = true;
       }
 
       // Run AI Physics
@@ -2362,6 +3090,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         aiLadderState,
       );
 
+      aiNoiseLevelRef.current = aiPhysicsOutput.noiseLevel ?? 0;
+
       // Update AI Character Transform
       if (aiCharacterGroup.current) {
         aiCharacterGroup.current.position.copy(aiPos.current);
@@ -2373,9 +3103,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         if (isOnLadder) {
           const targetAngle = aiPhysicsOutput.ladderFaceAngle;
           const currentAngle = aiCharacterGroup.current.rotation.y;
-          let diff = targetAngle - currentAngle;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
+          const diff = Math.atan2(Math.sin(targetAngle - currentAngle), Math.cos(targetAngle - currentAngle));
           aiCharacterGroup.current.rotation.y += diff * dt * 12;
         } else if (
           (aiPhysicsOutput.pMoving || aiSearchLookTimer.current > 0) &&
@@ -2383,9 +3111,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         ) {
           const targetAngle = Math.atan2(aiPhysicsOutput.pDir.x, aiPhysicsOutput.pDir.z);
           const currentAngle = aiCharacterGroup.current.rotation.y;
-          let diff = targetAngle - currentAngle;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
+          const diff = Math.atan2(Math.sin(targetAngle - currentAngle), Math.cos(targetAngle - currentAngle));
           aiCharacterGroup.current.rotation.y += diff * dt * 10; // Rotate slightly slower for scan look
         }
       }
@@ -2411,6 +3137,25 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         }
       }
 
+      const isAIHider = props.mode === GameMode.HIDE_AND_SEEK && !isAISeeker;
+      const isAIStandingStill =
+        aiPhysicsOutput.isGrounded &&
+        !aiPhysicsOutput.effectiveStunned &&
+        !aiPhysicsOutput.isRolling &&
+        !aiPhysicsOutput.isClimbing &&
+        !aiPhysicsOutput.isLadderSliding &&
+        !aiPhysicsOutput.isWallClimbing &&
+        !aiPhysicsOutput.pMoving &&
+        aiInput.moveDir.lengthSq() < 0.01 &&
+        aiSmoothedMoveSpeed.current < 0.15;
+
+      if (isAIHider && isAIStandingStill) {
+        aiStillTimer.current += dt;
+      } else {
+        aiStillTimer.current = 0;
+      }
+      const isAIHiding = isAIHider && aiStillTimer.current >= 2.0;
+
       aiVisualStateRef.current = {
         isCharging: aiPhysicsOutput.isCharging,
         isRolling: aiPhysicsOutput.isRolling,
@@ -2424,11 +3169,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         currentSurface: aiSurface,
         fallDistance: aiPhysicsOutput.fallDistance,
         justLanded: aiPhysicsOutput.justLanded,
-        isHiding:
-          props.mode === GameMode.HIDE_AND_SEEK &&
-          !isAISeeker &&
-          aiInput.moveDir.lengthSq() < 0.01 &&
-          aiPos.current.distanceTo(aiHidingSpot.current) < 1.5,
+        isHiding: isAIHiding,
         isClimbing: aiPhysicsOutput.isClimbing,
         isLadderSliding: aiPhysicsOutput.isLadderSliding,
         isNearLadder: aiPhysicsOutput.isNearLadder,
@@ -2438,6 +3179,119 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         isWallClimbing: aiPhysicsOutput.isWallClimbing,
         wallClimbProgress: aiPhysicsOutput.wallClimbProgress,
       };
+
+      // Update floating Emoji over AI head reflecting real-time state & perception
+      let nextEmoji = '🤖';
+      if (aiStunTimer.current > 0) {
+        nextEmoji = '💫';
+      } else if (aiIsExhausted.current || aiStamina.current < 15.0) {
+        nextEmoji = '😮‍💨';
+      } else if (
+        aiPhysicsOutput.isClimbing ||
+        aiPhysicsOutput.isWallClimbing ||
+        aiPhysicsOutput.isLadderSliding ||
+        aiPhysicsOutput.isNearLadder ||
+        aiPhysicsOutput.isLadderHanging ||
+        aiPhysicsOutput.isLadderMounting
+      ) {
+        nextEmoji = '🧗';
+      } else if (!aiIsGrounded.current && Math.abs(aiVel.current.y) > 2.0) {
+        nextEmoji = '🦘';
+      } else if (props.mode === GameMode.HIDE_AND_SEEK) {
+        if (isAISeeker) {
+          if (aiHasVisualContact) {
+            nextEmoji = '🎯'; // Spotted target: chasing
+          } else if (aiHasHeardNoise || aiHeardEmojiTimer.current > 0) {
+            nextEmoji = '👂'; // Heard sound: investigating
+          } else if (aiHasLastKnownPlayerPos.current) {
+            nextEmoji = '🔎'; // Searching last known area
+          } else {
+            nextEmoji = '🔍'; // Scouting / patrolling quadrants
+          }
+        } else {
+          // Hider
+          if (aiHasVisualContact) {
+            nextEmoji = '😱'; // Seen by seeker: fleeing in panic
+          } else if (aiHasHeardNoise || aiHeardEmojiTimer.current > 0) {
+            nextEmoji = '👂'; // Heard seeker sound: evading
+          } else if (isAIHiding) {
+            nextEmoji = '🤫'; // Safely hidden / quiet / crouching
+          } else if (isAIStandingStill) {
+            nextEmoji = '👀'; // Stopped / looking around
+          } else {
+            nextEmoji = '🏃'; // Running to cover
+          }
+        }
+      } else if (props.mode === GameMode.FREE) {
+        if (aiInput.moveDir.lengthSq() > 0.01) {
+          nextEmoji = '🚶';
+        } else {
+          nextEmoji = '🤖';
+        }
+      }
+
+      if (aiEmojiRef.current !== nextEmoji) {
+        aiEmojiRef.current = nextEmoji;
+        setAiEmoji(nextEmoji);
+      }
+
+      // Dynamic Gaze Tracking: Both characters look at each other whenever they have visual line of sight
+      const distBetween = aiPos.current.distanceTo(playerPos.current);
+      const aEye = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 1.4, aiPos.current.z);
+      const pEye = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 1.4, playerPos.current.z);
+      const pHead = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 1.4, playerPos.current.z);
+      const pTorso = new THREE.Vector3(playerPos.current.x, playerPos.current.y + 0.7, playerPos.current.z);
+      const aHead = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 1.4, aiPos.current.z);
+      const aTorso = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 0.7, aiPos.current.z);
+
+      const aiSeesPlayer =
+        distBetween < 40.0 &&
+        (checkLineOfSight(aEye, pHead, mapData.collisionGrid) ||
+          checkLineOfSight(aEye, pTorso, mapData.collisionGrid));
+
+      const LOOK_AT_MAX_DISTANCE = 14.0;
+
+      if (aiSeesPlayer && distBetween <= LOOK_AT_MAX_DISTANCE) {
+        aiLookAtTarget.current = playerPos.current;
+        // When AI is not moving (e.g. stopped, hiding or observing), smoothly rotate body to face player
+        if (aiInput.moveDir.lengthSq() < 0.01 && aiCharacterGroup.current) {
+          const dx = playerPos.current.x - aiPos.current.x;
+          const dz = playerPos.current.z - aiPos.current.z;
+          if (dx * dx + dz * dz > 0.01) {
+            const targetAngle = Math.atan2(dx, dz);
+            const diff = Math.atan2(Math.sin(targetAngle - aiCharacterGroup.current.rotation.y), Math.cos(targetAngle - aiCharacterGroup.current.rotation.y));
+            aiCharacterGroup.current.rotation.y += diff * dt * 6.0;
+          }
+        }
+      } else {
+        aiLookAtTarget.current = null;
+      }
+
+      const aFeet = new THREE.Vector3(aiPos.current.x, aiPos.current.y + 0.1, aiPos.current.z);
+      const playerSeesAi =
+        distBetween < 45.0 &&
+        (checkLineOfSight(pEye, aHead, mapData.collisionGrid) ||
+          checkLineOfSight(pEye, aTorso, mapData.collisionGrid) ||
+          checkLineOfSight(pEye, aFeet, mapData.collisionGrid));
+
+      playerSeesAiRef.current = playerSeesAi;
+
+      // Boneco da IA só fica visível se o jogador tiver contato visual com ela (ou se ativada opção no devtools)
+      if (aiCharacterGroup.current) {
+        const isAiVisible =
+          alwaysShowAI ||
+          status === GameStatus.ROUND_OVER ||
+          status === GameStatus.GAME_OVER
+            ? true
+            : playerSeesAi;
+        aiCharacterGroup.current.visible = isAiVisible;
+      }
+
+      if (playerSeesAi && distBetween <= LOOK_AT_MAX_DISTANCE) {
+        playerLookAtTarget.current = aiPos.current;
+      } else {
+        playerLookAtTarget.current = null;
+      }
 
       // Catch Collision Check
       if (
@@ -2480,7 +3334,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
           aiStaminaFill.current.style.backgroundColor = `hsl(${hue}, 100%, 50%)`;
         }
 
-        aiStaminaGroup.current.style.display = s < 0.99 ? 'block' : 'none';
+        const isAiGroupVisible = aiCharacterGroup.current ? aiCharacterGroup.current.visible : false;
+        aiStaminaGroup.current.style.display = isAiGroupVisible && s < 0.99 ? 'block' : 'none';
       }
 
       // Determine Surface
@@ -2494,9 +3349,6 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
         }
       }
 
-      // --- HIDING LOGIC ---
-      const isHiding = false;
-
       const dx = playerPos.current.x - prevPlayerPos.current.x;
       const dz = playerPos.current.z - prevPlayerPos.current.z;
       const rawMoveSpeed = dt > 0 ? Math.sqrt(dx * dx + dz * dz) / dt : 0;
@@ -2507,6 +3359,28 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       );
       const currentMoveSpeed = smoothedMoveSpeed.current;
       prevPlayerPos.current.copy(playerPos.current);
+
+      // --- HIDING LOGIC ---
+      // Whoever is being pursued (hider/fugitivo) crouches down after staying still for 2 seconds
+      const isPlayerHider =
+        props.mode === GameMode.HIDE_AND_SEEK && props.match.currentRound % 2 !== 0;
+      const isPlayerMoving = physicsOutput.pMoving || rawMoveSpeed > 0.15;
+      const isPlayerStandingStill =
+        !isPlayerMoving &&
+        physicsOutput.isGrounded &&
+        !physicsOutput.effectiveStunned &&
+        !physicsOutput.isRolling &&
+        !physicsOutput.isClimbing &&
+        !physicsOutput.isLadderSliding &&
+        !physicsOutput.isWallClimbing &&
+        !physicsOutput.isCharging;
+
+      if (isPlayerHider && isPlayerStandingStill) {
+        playerStillTimer.current += dt;
+      } else {
+        playerStillTimer.current = 0;
+      }
+      const isHiding = isPlayerHider && playerStillTimer.current >= 2.0;
 
       // Sync Visual State
       const newVisualState = {
@@ -2874,32 +3748,54 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
     return (
       <group
         onPointerDown={(e) => {
-          if (isAddingDestinationRef.current && navGraph && e.point) {
+          if (addDestinationMode && e.button === 0 && navGraph && e.point) {
             e.stopPropagation();
             const clickedPoint = e.point.clone();
             aiHidingSpot.current.copy(clickedPoint);
             isCustomDestination.current = true;
-            isAddingDestinationRef.current = false;
-            setIsAddingDestination(false);
 
-            // Compute path immediately towards the clicked target
-            const computedPath = navGraph.findPath(aiPos.current, clickedPoint);
-            if (computedPath && computedPath.length > 0) {
-              const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
-              aiPath.current = smoothed.map((n, idx) => {
-                const nextNode = smoothed[idx + 1];
-                const edgeType = nextNode
-                  ? (navGraph.getEdgeType(n, nextNode) ??
-                    (nextNode.y < n.y - 1.0 ? 'drop' : nextNode.y > n.y + 1.0 ? 'climb' : 'walk'))
-                  : null;
-                return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType };
-              });
+            // Direct line check: if target is in straight unobstructed line of sight, take direct route
+            if (
+              Math.abs(aiPos.current.y - clickedPoint.y) <= CLIMB_THRESHOLD &&
+              navGraph.isDirectWalkable(aiPos.current, clickedPoint, mapData.collisionGrid)
+            ) {
+              aiPath.current = [
+                { id: 'direct_dest', x: clickedPoint.x, y: clickedPoint.y, z: clickedPoint.z, edgeType: 'walk' },
+              ];
               aiPathIndex.current = 0;
               aiLastPathTarget.current.copy(clickedPoint);
             } else {
-              aiPath.current = [];
-              aiPathIndex.current = 0;
-              aiLastPathTarget.current.set(-9999, -9999, -9999);
+              // Compute path around obstacles immediately towards the clicked target
+              const computedPath = navGraph.findPath(aiPos.current, clickedPoint);
+              if (computedPath && computedPath.length > 0) {
+                const smoothed = navGraph.smoothPath(computedPath, mapData.collisionGrid);
+                const pathNodes: { id: string; x: number; y: number; z: number; edgeType: any }[] = smoothed.map((n, idx) => {
+                  const prevNode = idx > 0 ? smoothed[idx - 1] : null;
+                  const edgeType = prevNode
+                    ? (navGraph.getEdgeType(prevNode, n) ??
+                      (n.y < prevNode.y - 1.0 ? 'drop' : n.y > prevNode.y + 1.0 ? 'climb' : 'walk'))
+                    : 'walk';
+                  return { id: n.id, x: n.x, y: n.y, z: n.z, edgeType, isCorner: n.isCorner };
+                });
+
+                // Ensure final target point is added at the end if direct from last node
+                const lastNode = pathNodes[pathNodes.length - 1];
+                if (
+                  lastNode &&
+                  Math.hypot(lastNode.x - clickedPoint.x, lastNode.z - clickedPoint.z) > 0.5 &&
+                  navGraph.isDirectWalkable(lastNode, clickedPoint, mapData.collisionGrid)
+                ) {
+                  pathNodes.push({ id: 'clicked_target', x: clickedPoint.x, y: clickedPoint.y, z: clickedPoint.z, edgeType: 'walk' });
+                }
+
+                aiPath.current = pathNodes;
+                aiPathIndex.current = 0;
+                aiLastPathTarget.current.copy(clickedPoint);
+              } else {
+                aiPath.current = [];
+                aiPathIndex.current = 0;
+                aiLastPathTarget.current.set(-9999, -9999, -9999);
+              }
             }
             aiPathRecalcTimer.current = 0;
             aiWaypointTimer.current = 0;
@@ -3006,6 +3902,7 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             stunTimerRef={stunTimer}
             rollTimerRef={rollTimer}
             staminaRef={stamina}
+            lookAtPosRef={playerLookAtTarget}
             color="#3b82f6"
             overlayContent={
               props.mode === GameMode.HIDE_AND_SEEK && status === GameStatus.PREP ? (
@@ -3016,7 +3913,15 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             }
           />
         )}
-        {props.mode === GameMode.HIDE_AND_SEEK && status !== GameStatus.IDLE && (
+        {status !== GameStatus.IDLE && (
+          <SoundDirectionIndicator
+            playerPos={playerPos}
+            aiPos={aiPos}
+            aiNoiseLevelRef={aiNoiseLevelRef}
+            hasVisualContactRef={playerSeesAiRef}
+          />
+        )}
+        {(props.mode === GameMode.HIDE_AND_SEEK || addDestinationMode || showAIPath || isCustomDestination.current) && status !== GameStatus.IDLE && (
           <Character
             groupRef={aiCharacterGroup}
             staminaFillRef={aiStaminaFill}
@@ -3025,13 +3930,15 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
             stunTimerRef={aiStunTimer}
             rollTimerRef={aiRollTimer}
             staminaRef={aiStamina}
+            lookAtPosRef={aiLookAtTarget}
             color="#ef4444"
+            showXRay={alwaysShowAI}
             overlayContent={
               status === GameStatus.PREP ? (
                 <div className="bg-black/75 px-2 py-0.5 rounded text-white text-[10px] pixel-font border border-white/20 select-none uppercase tracking-wider">
                   {props.match.currentRound % 2 !== 0 ? 'PEGADOR (IA)' : 'FUGITIVO (IA)'}
                 </div>
-              ) : status === GameStatus.PLAYING ? (
+              ) : status === GameStatus.PLAYING || props.mode === GameMode.FREE ? (
                 <div className="flex flex-col items-center gap-1">
                   <div
                     className="text-2xl animate-bounce"
@@ -3064,6 +3971,8 @@ export const VoxelSeek: React.FC<VoxelSeekProps> = React.memo(
       prev.showWireframe === next.showWireframe &&
       prev.showOcclusion === next.showOcclusion &&
       prev.showAIPath === next.showAIPath &&
+      prev.alwaysShowAI === next.alwaysShowAI &&
+      prev.addDestinationMode === next.addDestinationMode &&
       prev.isEditing === next.isEditing
     );
     // We explicitly skip comparing 'timer'

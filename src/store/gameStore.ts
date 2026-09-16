@@ -5,6 +5,8 @@ export interface DevSettings {
   perfPosition: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   ambientIntensity: number;
   sunIntensity: number;
+  sunAzimuth: number;
+  sunElevation: number;
   shadowsEnabled: boolean;
   fogDensity: number;
 }
@@ -29,6 +31,8 @@ export const useGameStore = create<GameStoreState>((set) => ({
     perfPosition: 'bottom-left',
     ambientIntensity: 0.4,
     sunIntensity: 2.0,
+    sunAzimuth: 345,
+    sunElevation: 55,
     shadowsEnabled: true,
     fogDensity: 0.005,
   },

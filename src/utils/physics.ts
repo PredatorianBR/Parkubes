@@ -22,10 +22,40 @@ export const WATER_DEPTH_LEVEL = -2.0; // Nível de flutuação padrão (pés do
 export const WATER_MOVE_SPEED_MULT = 0.4;
 export const WATER_JUMP_DAMPING = 0.6;
 
+// Jump Limits & Physics Calculations
+// Max horizontal sprint speed with full stamina = MOVE_SPEED_BASE * 1.5 = 15.0 m/s
+// Flight time at same level = 2 * (JUMP_FORCE / GRAVITY) = 2 * (18 / 60) = 0.60s
+// Theoretical max level jump = 15.0 * 0.60 = 9.0m
+// Safe practical jump limit for AI across building gaps with margins and player radius:
+export const MAX_JUMP_DISTANCE = 6.0; // 6.0m safe limit for level jumps
+
+/**
+ * Calculates the maximum safe jump distance achievable based on height difference.
+ * @param heightDiff Target height minus origin height (other.y - node.y)
+ * @param safetyFactor Margin factor (default 0.70)
+ */
+export const calculateMaxJumpDistance = (heightDiff: number, safetyFactor: number = 0.70): number => {
+  const maxSprintSpeed = MOVE_SPEED_BASE * 1.5; // 15.0 m/s
+  // Cannot jump higher than peak arc (v0^2 / 2g = 2.7m)
+  if (heightDiff > 2.0) return 0;
+
+  const discriminant = JUMP_FORCE * JUMP_FORCE - 2 * GRAVITY * heightDiff;
+  if (discriminant < 0) return 0;
+
+  const flightTime = (JUMP_FORCE + Math.sqrt(discriminant)) / GRAVITY;
+  const theoreticalDist = maxSprintSpeed * flightTime;
+
+  // Apply safety factor and clamp within safe reachable bounds [1.5m, 6.2m]
+  const safeDist = theoreticalDist * safetyFactor;
+  return Math.min(6.2, Math.max(1.5, safeDist));
+};
+
+
 // Stamina Costs & Recovery
 export const STAMINA_JUMP_COST = 15.0;
 export const STAMINA_RUN_COST = 20.0;
-export const STAMINA_CLIMB_COST = 35.0;
+export const STAMINA_CLIMB_COST = 25.0; // Wall climbing / mantling
+export const STAMINA_LADDER_CLIMB_COST = 10.0; // Climbing ladders (much lighter stamina drain)
 export const STAMINA_RECOVERY_IDLE = 25.0;
 export const STAMINA_RECOVERY_WALK = 5.0;
 
@@ -134,6 +164,36 @@ export class SpatialHashGrid {
     staticQuerySet.clear();
     return result;
   }
+
+  /** Zero-allocation check if a position is blocked by any solid collision box */
+  isBlocked(x: number, y: number, z: number, checkRadius: number = PLAYER_RADIUS): boolean {
+    const r = checkRadius + 0.1;
+    const x0 = Math.floor((x - r + this.worldHalf) / CELL_SIZE);
+    const x1 = Math.floor((x + r + this.worldHalf) / CELL_SIZE);
+    const z0 = Math.floor((z - r + this.worldHalf) / CELL_SIZE);
+    const z1 = Math.floor((z + r + this.worldHalf) / CELL_SIZE);
+    const radSq = checkRadius * checkRadius;
+
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const list = this.cells.get(this.key(cx, cz));
+        if (!list) continue;
+        for (let i = 0; i < list.length; i++) {
+          const box = list[i];
+          if (y + 0.1 < box.maxY && y + PLAYER_HEIGHT > box.minY) {
+            const closeX = Math.max(box.minX, Math.min(x, box.maxX));
+            const closeZ = Math.max(box.minZ, Math.min(z, box.maxZ));
+            const dx = x - closeX;
+            const dz = z - closeZ;
+            if (dx * dx + dz * dz < radSq) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
 }
 
 // --- HELPERS ---
@@ -219,22 +279,22 @@ export const getCeilingHeight = (
   const iz = worldToIndex(z, halfSize, worldSize);
   const bridgeH = bridgeGrid[ix]?.[iz] || 0;
 
-  let ceiling = Infinity;
-
-  // Check bridge grid (legacy)
-  if (bridgeH > 0 && currentY < bridgeH - 1.0) {
-    ceiling = Math.min(ceiling, bridgeH - 1.0);
+  // If under a bridge, that's a ceiling
+  if (bridgeH > 0 && bridgeH > currentY) {
+    return bridgeH;
   }
 
-  // Query 3D boxes for ceilings
+  // Query boxes that could be above the player
   const nearby = collisionGrid.query(x, z, 0.5);
-  for (const box of nearby) {
-    // XZ overlap check
-    if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+  let ceiling = Infinity;
 
-    // Box is above the player (bottom of box is above player head)
-    if (box.minY > currentY + 0.1 && box.minY < ceiling) {
-      ceiling = box.minY;
+  for (const box of nearby) {
+    if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+    // Box is above player's feet
+    if (box.minY > currentY) {
+      if (box.minY < ceiling) {
+        ceiling = box.minY;
+      }
     }
   }
 
@@ -242,38 +302,174 @@ export const getCeilingHeight = (
 };
 
 /**
- * Simple Raycasting for Line of Sight.
- * Returns true if the path is clear between start and end.
+ * Fast 2D segment-AABB slab intersection test with character clearance margin.
+ * Returns true if segment (x1, z1) -> (x2, z2) intersects box [minX, maxX] x [minZ, maxZ].
+ */
+export const segmentIntersectsBox = (
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number,
+  box: { minX: number; maxX: number; minZ: number; maxZ: number },
+  margin: number = PLAYER_RADIUS * 0.75,
+): boolean => {
+  const minX = box.minX - margin;
+  const maxX = box.maxX + margin;
+  const minZ = box.minZ - margin;
+  const maxZ = box.maxZ + margin;
+
+  const dx = x2 - x1;
+  const dz = z2 - z1;
+
+  let tMin = 0.0;
+  let tMax = 1.0;
+
+  // X slab
+  if (Math.abs(dx) < 1e-6) {
+    if (x1 < minX || x1 > maxX) return false;
+  } else {
+    const invDx = 1.0 / dx;
+    let t1 = (minX - x1) * invDx;
+    let t2 = (maxX - x1) * invDx;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  // Z slab
+  if (Math.abs(dz) < 1e-6) {
+    if (z1 < minZ || z1 > maxZ) return false;
+  } else {
+    const invDz = 1.0 / dz;
+    let t1 = (minZ - z1) * invDz;
+    let t2 = (maxZ - z1) * invDz;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  return tMin <= tMax && tMax >= 0.0 && tMin <= 1.0;
+};
+
+/**
+ * 3D Line Segment vs AABB intersection test using the 3D Slab method.
+ * Handles true 3D sight lines across varying elevations, diagonal line of sight,
+ * rooftops, courtyards, and vertical obstacles.
+ */
+export const segmentIntersectsAABB3D = (
+  x1: number,
+  y1: number,
+  z1: number,
+  x2: number,
+  y2: number,
+  z2: number,
+  box: CollisionBox,
+  margin: number = 0.0,
+): boolean => {
+  const minX = box.minX - margin;
+  const maxX = box.maxX + margin;
+  const minY = box.minY;
+  const maxY = box.maxY;
+  const minZ = box.minZ - margin;
+  const maxZ = box.maxZ + margin;
+
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dz = z2 - z1;
+
+  let tMin = 0.0;
+  let tMax = 1.0;
+
+  // X slab
+  if (Math.abs(dx) < 1e-6) {
+    if (x1 < minX || x1 > maxX) return false;
+  } else {
+    const invDx = 1.0 / dx;
+    let t1 = (minX - x1) * invDx;
+    let t2 = (maxX - x1) * invDx;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  // Y slab (Vertical 3D height intersection)
+  if (Math.abs(dy) < 1e-6) {
+    if (y1 < minY || y1 > maxY) return false;
+  } else {
+    const invDy = 1.0 / dy;
+    let t1 = (minY - y1) * invDy;
+    let t2 = (maxY - y1) * invDy;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  // Z slab
+  if (Math.abs(dz) < 1e-6) {
+    if (z1 < minZ || z1 > maxZ) return false;
+  } else {
+    const invDz = 1.0 / dz;
+    let t1 = (minZ - z1) * invDz;
+    let t2 = (maxZ - z1) * invDz;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  return tMin <= tMax && tMax >= 0.0 && tMin <= 1.0;
+};
+
+/**
+ * Robust 3D Line of Sight check between start (e.g. eye position) and end (target eye/torso).
+ * Accurately handles elevation differences (ground to rooftop, rooftop to ground, rooftop to rooftop).
  */
 export const checkLineOfSight = (
   start: THREE.Vector3,
   end: THREE.Vector3,
   collisionGrid: SpatialHashGrid,
+  checkMargin: number = 0.05,
 ): boolean => {
   const dist = start.distanceTo(end);
   if (dist <= 0) return true;
 
-  const stepSize = 0.5;
-  const dir = scratchVec1.subVectors(end, start).normalize();
-  const probe = scratchVec2;
+  // Query all collision boxes along the 2D bounding circle
+  const midX = (start.x + end.x) / 2;
+  const midZ = (start.z + end.z) / 2;
+  const radius = Math.hypot(end.x - start.x, end.z - start.z) / 2 + 1.0;
+  const boxes = collisionGrid.query(midX, midZ, radius);
 
-  for (let d = stepSize; d < dist; d += stepSize) {
-    probe.copy(start).addScaledVector(dir, d);
-    const boxes = collisionGrid.query(probe.x, probe.z, 0.1);
-    for (let i = 0; i < boxes.length; i++) {
-      const box = boxes[i];
-      if (probe.y >= box.minY && probe.y <= box.maxY) {
-        if (
-          probe.x >= box.minX &&
-          probe.x <= box.maxX &&
-          probe.z >= box.minZ &&
-          probe.z <= box.maxZ
-        ) {
-          return false;
-        }
-      }
+  for (let i = 0; i < boxes.length; i++) {
+    const box = boxes[i];
+    if (segmentIntersectsAABB3D(start.x, start.y, start.z, end.x, end.y, end.z, box, checkMargin)) {
+      return false; // Obstacle/building blocks true 3D line of sight!
     }
   }
+
   return true;
 };
 
@@ -288,19 +484,7 @@ export const isPositionBlocked = (
   collisionGrid: SpatialHashGrid,
   checkRadius: number = PLAYER_RADIUS,
 ): boolean => {
-  const boxes = collisionGrid.query(x, z, checkRadius);
-  for (const box of boxes) {
-    if (y + 0.1 < box.maxY && y + PLAYER_HEIGHT > box.minY) {
-      const closeX = Math.max(box.minX, Math.min(x, box.maxX));
-      const closeZ = Math.max(box.minZ, Math.min(z, box.maxZ));
-      const dx = x - closeX;
-      const dz = z - closeZ;
-      if (dx * dx + dz * dz < checkRadius * checkRadius) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return collisionGrid.isBlocked(x, y, z, checkRadius);
 };
 
 /**
@@ -669,18 +853,19 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     } else {
       // Climbable surface movement intent: To mount a ladder when not on it, explicit grab (actions.grabLadder) via JUMP is strictly required
       const canMount = alreadyOnLadder || actions.grabLadder;
-      const isMovingUp = canMount && (actions.grabLadder || (alreadyOnLadder && (actions.ladderUp || moveDir.lengthSq() > 0.1))) && !actions.ladderDown;
+      const isMovingUp = canMount && next.stamina > 0 && (actions.grabLadder || (alreadyOnLadder && (actions.ladderUp || moveDir.lengthSq() > 0.1))) && !actions.ladderDown;
       const isMovingDown = canMount && actions.ladderDown && next.pos.y > ladderMinY + 0.1;
 
       // TOP DISMOUNT: entity reaches top ledge of climbable surface
-      if (next.pos.y >= ladderMaxY - 0.5 && isMovingUp) {
-        next.pos.y = Math.min(ladderMaxY + 0.1, next.pos.y + 8.0 * dt);
+      // Automatically step onto roof if near top (>= ladderMaxY - 0.6) to prevent getting stuck
+      if (next.pos.y >= ladderMaxY - 0.6) {
+        next.pos.y = Math.min(ladderMaxY + 0.15, next.pos.y + 8.0 * dt);
         const dirX = Math.sin(matchedLadderAngle);
         const dirZ = Math.cos(matchedLadderAngle);
         next.pos.x += dirX * 5.0 * dt;
         next.pos.z += dirZ * 5.0 * dt;
 
-        if (next.pos.y >= ladderMaxY - 0.1) {
+        if (next.pos.y >= ladderMaxY - 0.15) {
           const roofH = getTerrainHeight(
             next.pos.x,
             next.pos.z,
@@ -710,7 +895,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
         next.isLadderSliding = false;
         next.isLadderHanging = false;
         next.isGrounded = false;
-        next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
+        next.stamina = Math.max(0, next.stamina - STAMINA_LADDER_CLIMB_COST * dt);
         next.noiseLevel = Math.max(next.noiseLevel, NOISE_CLIMB);
 
         // Soft alignment to keep character flush against ladder surface (eliminates 1-block offset)
@@ -733,7 +918,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
           next.isLadderSliding = false;
           next.isGrounded = true;
         }
-      } else if (alreadyOnLadder && next.pos.y < ladderMaxY - 0.5) {
+      } else if (alreadyOnLadder && next.pos.y < ladderMaxY - 0.6) {
         // Hang / cling on climbable surface when stationary
         next.vel.y = 0;
         next.isClimbing = true;
@@ -836,10 +1021,12 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
       const lookAheadDist = PLAYER_RADIUS + 0.1;
       const checkX = next.pos.x + (isXAxis ? (axisVal > 0 ? lookAheadDist : -lookAheadDist) : 0);
       const checkZ = next.pos.z + (!isXAxis ? (axisVal > 0 ? lookAheadDist : -lookAheadDist) : 0);
+      const clampedCheckX = THREE.MathUtils.clamp(checkX, -halfSize + 0.05, halfSize - 0.05);
+      const clampedCheckZ = THREE.MathUtils.clamp(checkZ, -halfSize + 0.05, halfSize - 0.05);
 
       const targetH = getTerrainHeight(
-        checkX,
-        checkZ,
+        clampedCheckX,
+        clampedCheckZ,
         next.pos.y,
         cGrid,
         world.bGrid,
@@ -903,14 +1090,15 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
 
       let climbingLedge = false;
       // Se o muro for alto o suficiente para bloquear, mas o topo estiver abaixo da cabeça do jogador (pos.y + PLAYER_HEIGHT)
-      // Cancela a escalada de borda se o jogador estiver em uma escada ou área de escada (!isNearLadderArea)
+      // Cancela a escalada de borda se o jogador estiver em uma escada ou área de escada (!isNearLadderArea) ou sem stamina
       if (
         isBlockedBy3DWall &&
         wallTopHeight > next.pos.y + CLIMB_THRESHOLD &&
         wallTopHeight <= next.pos.y + PLAYER_HEIGHT + 2.5 &&
         !isWaterExit &&
         !isNearLadderArea &&
-        actions.climb
+        actions.climb &&
+        next.stamina > 0
       ) {
         const ceilingAtLedge = getCeilingHeight(
           targetX,
@@ -925,7 +1113,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
         }
       }
 
-      if (climbingLedge && next.stamina > 0) {
+      if (climbingLedge) {
         next.vel.y = Math.max(next.vel.y, CLIMB_SPEED);
         next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
         // Track wall climbing state for animation
@@ -957,18 +1145,26 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
         ceilingAtTarget === Infinity ||
         ceilingAtTarget - Math.max(targetH, next.pos.y) >= PLAYER_HEIGHT;
 
-      if (!isWall && !isAbyss && hasHeadroom) {
-        const canStepUp = heightDiff <= CLIMB_THRESHOLD || isWaterExit;
+      const canAdvance = climbingLedge ? hasHeadroom : (!isWall && !isAbyss && hasHeadroom);
 
-        if (targetH > next.pos.y + 0.05 && canStepUp) {
+      if (canAdvance) {
+        const effectiveTargetH = climbingLedge ? Math.max(targetH, wallTopHeight) : targetH;
+        const effectiveHeightDiff = effectiveTargetH - next.pos.y;
+        const canStepUp =
+          effectiveHeightDiff <= CLIMB_THRESHOLD ||
+          isWaterExit ||
+          (climbingLedge && next.pos.y >= wallTopHeight - 0.7);
+
+        if (effectiveTargetH > next.pos.y + 0.05 && canStepUp) {
           if (isWaterExit) {
             // Smooth but fast rise out of water
             const lerpSpeed = 6.0 * dt;
-            next.pos.y = next.pos.y + (targetH - next.pos.y) * Math.min(lerpSpeed, 1.0);
+            next.pos.y = next.pos.y + (effectiveTargetH - next.pos.y) * Math.min(lerpSpeed, 1.0);
             next.vel.y = Math.max(next.vel.y, 3.0); // upward boost to help climb out
           } else {
-            next.pos.y = targetH;
+            next.pos.y = effectiveTargetH;
             next.vel.y = 0;
+            next.isGrounded = true;
           }
         }
         next.pos.x = targetX;
@@ -1142,7 +1338,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
   }
 
   // Final map boundary clamping (Global)
-  const GLOBAL_MARGIN = PLAYER_RADIUS + 0.1;
+  const GLOBAL_MARGIN = PLAYER_RADIUS - 0.2;
   const minBoundFinal = -halfSize + GLOBAL_MARGIN;
   const maxBoundFinal = halfSize - GLOBAL_MARGIN;
   next.pos.x = THREE.MathUtils.clamp(next.pos.x, minBoundFinal, maxBoundFinal);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { OrthographicCamera, Stars, Sky, ContactShadows, OrbitControls } from '@react-three/drei';
 import { Perf } from 'r3f-perf';
@@ -67,12 +68,16 @@ const GameLayout: React.FC<{
       {
         ambientIntensity,
         sunIntensity,
+        sunAzimuth,
+        sunElevation,
         showPerfMonitor,
         showGrid,
         showCollision,
         showOcclusion,
         showAIPath,
+        alwaysShowAI,
         showWireframe,
+        addDestinationMode,
         godMode,
         freezeTimer,
         cameraZoom,
@@ -97,6 +102,20 @@ const GameLayout: React.FC<{
             max: 5,
             step: 0.1,
             label: 'Luz Solar',
+          },
+          sunAzimuth: {
+            value: devSettings.sunAzimuth,
+            min: 0,
+            max: 360,
+            step: 1,
+            label: 'Direção do Sol (°)',
+          },
+          sunElevation: {
+            value: devSettings.sunElevation,
+            min: 5,
+            max: 90,
+            step: 1,
+            label: 'Elevação do Sol (°)',
           },
           showPerfMonitor: {
             value: true,
@@ -139,6 +158,10 @@ const GameLayout: React.FC<{
             value: true,
             label: 'Rota e Alvo da IA',
           },
+          alwaysShowAI: {
+            value: false,
+            label: 'Visão Permanente da IA',
+          },
           showWireframe: {
             value: true,
             label: 'Wireframe ao Ocultar',
@@ -148,9 +171,10 @@ const GameLayout: React.FC<{
       ),
       'Waypath da IA': folder(
         {
-          'Adicionar Destino': button(() => {
-            window.dispatchEvent(new CustomEvent('ai-add-destination-click'));
-          }),
+          addDestinationMode: {
+            value: false,
+            label: 'Adicionar Destino',
+          },
           'Limpar Caminho': button(() => {
             window.dispatchEvent(new CustomEvent('ai-clear-path'));
           }),
@@ -229,28 +253,26 @@ const GameLayout: React.FC<{
       if (status !== GameStatus.PLAYING && status !== GameStatus.PREP) return;
 
       const interval = setInterval(() => {
-        setMatchTimer((t) => {
-          if (status === GameStatus.PREP) {
+        if (status === GameStatus.PREP) {
+          setMatchTimer((t) => {
             if (t <= 1) {
-              handlePrepComplete();
+              setTimeout(() => handlePrepComplete(), 0);
               return 30; // Start playing timer at 30
             }
             return t - 1;
-          } else {
-            // PLAYING
-            if (freezeTimer) {
-              return t; // Freeze/ignore timer in debug freeze mode
-            }
+          });
+        } else {
+          // PLAYING
+          if (freezeTimer) return;
+          setMatchTimer((t) => {
             if (t <= 1) {
-              // Hider wins if time runs out.
-              // Odd round: Player is hider (1, 3). Even round: AI is hider (2, 4).
               const isPlayerHider = match.currentRound % 2 !== 0;
-              handleRoundEnd(isPlayerHider);
+              setTimeout(() => handleRoundEnd(isPlayerHider), 0);
               return 0;
             }
             return t - 1;
-          }
-        });
+          });
+        }
       }, 1000);
 
       return () => clearInterval(interval);
@@ -266,6 +288,17 @@ const GameLayout: React.FC<{
       }),
       [settings, cameraZoom, cameraFollow],
     );
+
+    const sunPosition = useMemo<[number, number, number]>(() => {
+      const radAzimuth = (sunAzimuth * Math.PI) / 180;
+      const radElevation = (sunElevation * Math.PI) / 180;
+      const sunDistance = 140;
+      return [
+        Math.cos(radAzimuth) * Math.cos(radElevation) * sunDistance,
+        Math.sin(radElevation) * sunDistance,
+        Math.sin(radAzimuth) * Math.cos(radElevation) * sunDistance,
+      ];
+    }, [sunAzimuth, sunElevation]);
 
     return (
       <>
@@ -299,6 +332,7 @@ const GameLayout: React.FC<{
           <Canvas
             shadows
             gl={{ antialias: true }}
+            onContextMenu={(e) => e.preventDefault()}
             onCreated={({ gl }) => {
               const canvas = gl.domElement;
               canvas.addEventListener('webglcontextlost', (e) => {
@@ -312,12 +346,12 @@ const GameLayout: React.FC<{
           >
             {showPerfMonitor && <Perf position="bottom-left" />}
             <OrthographicCamera makeDefault position={[100, 100, 100]} near={0.1} far={5000} />
-            <Sky sunPosition={[100, 50, 100]} turbidity={0.01} rayleigh={0.1} />
+            <Sky sunPosition={sunPosition} turbidity={0.01} rayleigh={0.1} />
             <Stars radius={150} depth={50} count={3000} factor={4} saturation={0} fade speed={1} />
             <ambientLight intensity={ambientIntensity} />
             <directionalLight
               castShadow
-              position={[60, 120, 40]}
+              position={sunPosition}
               intensity={sunIntensity}
               shadow-mapSize={[2048, 2048]}
               shadow-camera-left={-shadowSize}
@@ -328,7 +362,15 @@ const GameLayout: React.FC<{
               shadow-camera-far={500}
               shadow-bias={-0.0005}
             />
-            <OrbitControls makeDefault enabled={true} />
+            <OrbitControls
+              makeDefault
+              enabled={true}
+              mouseButtons={{
+                LEFT: addDestinationMode ? undefined : THREE.MOUSE.ROTATE,
+                MIDDLE: THREE.MOUSE.PAN,
+                RIGHT: THREE.MOUSE.ROTATE,
+              }}
+            />
             <VoxelSeek
               status={status}
               mode={mode}
@@ -342,6 +384,8 @@ const GameLayout: React.FC<{
               showWireframe={showWireframe}
               showOcclusion={showOcclusion}
               showAIPath={showAIPath}
+              alwaysShowAI={alwaysShowAI}
+              addDestinationMode={addDestinationMode}
               isEditing={isEditing}
               mapId={mapId}
             />

@@ -10,6 +10,8 @@ import {
   PLAYER_RADIUS,
   CLIMB_THRESHOLD,
   FLOOR_HEIGHT,
+  MAX_JUMP_DISTANCE,
+  calculateMaxJumpDistance,
 } from './physics';
 import { VoxelObject } from '../types';
 
@@ -35,10 +37,102 @@ export interface NavEdge {
   cost: number;
 }
 
+/**
+ * High-performance MinBinaryHeap / PriorityQueue for A* pathfinding.
+ */
+export class MinBinaryHeap<T> {
+  private heap: { element: T; priority: number }[] = [];
+
+  constructor() {}
+
+  public get size(): number {
+    return this.heap.length;
+  }
+
+  public isEmpty(): boolean {
+    return this.heap.length === 0;
+  }
+
+  public push(element: T, priority: number): void {
+    this.heap.push({ element, priority });
+    this.bubbleUp(this.heap.length - 1);
+  }
+
+  public pop(): T | undefined {
+    if (this.heap.length === 0) return undefined;
+    const top = this.heap[0].element;
+    const bottom = this.heap.pop()!;
+    if (this.heap.length > 0) {
+      this.heap[0] = bottom;
+      this.sinkDown(0);
+    }
+    return top;
+  }
+
+  public peek(): T | undefined {
+    return this.heap.length > 0 ? this.heap[0].element : undefined;
+  }
+
+  private bubbleUp(index: number): void {
+    const item = this.heap[index];
+    while (index > 0) {
+      const parentIdx = (index - 1) >> 1;
+      const parent = this.heap[parentIdx];
+      if (item.priority >= parent.priority) break;
+      this.heap[index] = parent;
+      index = parentIdx;
+    }
+    this.heap[index] = item;
+  }
+
+  private sinkDown(index: number): void {
+    const length = this.heap.length;
+    const item = this.heap[index];
+    while (true) {
+      const leftIdx = (index << 1) + 1;
+      const rightIdx = leftIdx + 1;
+      let smallestIdx = index;
+      let smallestPriority = item.priority;
+
+      if (leftIdx < length && this.heap[leftIdx].priority < smallestPriority) {
+        smallestIdx = leftIdx;
+        smallestPriority = this.heap[leftIdx].priority;
+      }
+      if (rightIdx < length && this.heap[rightIdx].priority < smallestPriority) {
+        smallestIdx = rightIdx;
+      }
+      if (smallestIdx === index) break;
+
+      this.heap[index] = this.heap[smallestIdx];
+      index = smallestIdx;
+    }
+    this.heap[index] = item;
+  }
+
+  public clear(): void {
+    this.heap.length = 0;
+  }
+}
+
 export class NavigationGraph {
   public nodes: Map<string, NavNode> = new Map();
+  public nodesArray: NavNode[] = [];
   public edges: Map<string, NavEdge[]> = new Map();
+  public ladderZones: {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+    faceAngle: number;
+    railX: number;
+    railZ: number;
+  }[] = [];
   private gridBuckets: Map<number, NavNode[]> = new Map();
+  public collisionGrid?: SpatialHashGrid;
+  public bGrid: number[][] = [];
+  public wGrid: number[][] = [];
   private worldSize: number;
   private halfSize: number;
 
@@ -64,18 +158,24 @@ export class NavigationGraph {
   }) {
     this.worldSize = mapData.worldSize;
     this.halfSize = Math.floor(mapData.worldSize / 2);
+    this.ladderZones = mapData.ladderZones || [];
+    this.collisionGrid = mapData.collisionGrid;
+    this.bGrid = mapData.bGrid || [];
+    this.wGrid = mapData.wGrid || [];
 
     this.buildNodes(mapData);
+    this.nodesArray = Array.from(this.nodes.values());
     this.buildEdges(mapData);
   }
 
   private buildNodes(mapData: {
+    objects?: VoxelObject[];
     collisionGrid: SpatialHashGrid;
     bGrid: number[][];
     wGrid: number[][];
     ladderZones?: { minX: number; minZ: number; maxX: number; maxZ: number; minY: number; maxY: number }[];
   }) {
-    const { collisionGrid, bGrid, wGrid, ladderZones } = mapData;
+    const { collisionGrid, bGrid, wGrid, ladderZones, objects } = mapData;
 
     // 1. Probing nodes across the grid XZ coordinates
     for (let gx = 0; gx < this.worldSize; gx++) {
@@ -121,9 +221,8 @@ export class NavigationGraph {
             worldZ <= box.maxZ
           ) {
             const topY = box.maxY;
-            
-            // All building rooftops (low buildings, highrises, factories) can be accessible standable nodes
-            const allowRooftop = topY >= 2.0;
+            // All surfaces and rooftops (low obstacles, ruins, AC units, containers, low buildings, highrises, factories) can be accessible standable nodes
+            const allowRooftop = topY >= 0.5;
 
             if (allowRooftop) {
               // Check headroom
@@ -152,18 +251,25 @@ export class NavigationGraph {
             return; // Out of bounds, cannot walk here
           }
 
-          // Check if position itself is inside or overlapping any building structure
-          const checkBoxes = collisionGrid.query(worldX, worldZ, PLAYER_RADIUS);
+          // 1. Strict Building Interior Footprint Check:
+          // Never allow a ground or lower-level node inside the footprint/interior of a building
+          if (bGrid[gx]?.[gz] !== undefined && bGrid[gx][gz] > 0.5 && y < bGrid[gx][gz] - 0.1) {
+            return; // Skip node inside building footprint!
+          }
+
+          // Check if position itself is inside or overlapping any building collision box
+          const checkBoxes = collisionGrid.query(worldX, worldZ, PLAYER_RADIUS + 0.2);
           let isInsideBuilding = false;
 
           for (const box of checkBoxes) {
-            // Check if Y height is below the building top (inside building interior/ground footprint)
+            // Check if Y height is inside building interior volume (between minY and maxY - 0.35)
             if (
-              y < box.maxY - 0.1 &&
-              worldX >= box.minX - 0.1 &&
-              worldX <= box.maxX + 0.1 &&
-              worldZ >= box.minZ - 0.1 &&
-              worldZ <= box.maxZ + 0.1
+              y >= box.minY + 0.1 &&
+              y < box.maxY - 0.35 &&
+              worldX >= box.minX - 0.05 &&
+              worldX <= box.maxX + 0.05 &&
+              worldZ >= box.minZ - 0.05 &&
+              worldZ <= box.maxZ + 0.05
             ) {
               isInsideBuilding = true;
               break;
@@ -174,16 +280,69 @@ export class NavigationGraph {
             return; // Skip node inside building interior!
           }
 
-          // Check if position itself is blocked (clearance of 0.25m so nodes adjacent to wall faces are preserved)
-          if (!isPositionBlocked(worldX, y, worldZ, collisionGrid, 0.25)) {
+          // Check if position itself is blocked
+          if (!isPositionBlocked(worldX, y, worldZ, collisionGrid, y >= 0.5 ? 0.15 : 0.35)) {
             const isWaterVal = wGrid[gx]?.[gz] === 1 && y < 0;
             const id = `${gx},${gz},${y.toFixed(2)}`;
 
             // Clamp node world coordinates so they remain physically reachable by the AI
             const reachMin = -this.halfSize + PLAYER_RADIUS + 0.12;
             const reachMax = this.halfSize - PLAYER_RADIUS - 0.12;
-            const nodeX = Math.max(reachMin, Math.min(reachMax, worldX));
-            const nodeZ = Math.max(reachMin, Math.min(reachMax, worldZ));
+            let nodeX = Math.max(reachMin, Math.min(reachMax, worldX));
+            let nodeZ = Math.max(reachMin, Math.min(reachMax, worldZ));
+
+            // Corner & Wall Clearance Nudging:
+            // Calculate repulsive offset away from vertical obstacle walls/corners to ensure
+            // nodes don't hug walls or clip quinas (minimum clearance >= PLAYER_RADIUS + 0.10)
+            const targetClearance = PLAYER_RADIUS + 0.10; // ~0.90m
+            const nearbyObstacles = collisionGrid.query(nodeX, nodeZ, targetClearance + 0.25);
+            let pushX = 0;
+            let pushZ = 0;
+
+            for (const box of nearbyObstacles) {
+              if (y + 0.1 < box.maxY && y + PLAYER_HEIGHT - 0.1 > box.minY) {
+                const closeX = Math.max(box.minX, Math.min(nodeX, box.maxX));
+                const closeZ = Math.max(box.minZ, Math.min(nodeZ, box.maxZ));
+                const dx = nodeX - closeX;
+                const dz = nodeZ - closeZ;
+                const distSq = dx * dx + dz * dz;
+
+                if (distSq < targetClearance * targetClearance && distSq > 0.00001) {
+                  const dist = Math.sqrt(distSq);
+                  const pushDist = targetClearance - dist;
+                  pushX += (dx / dist) * pushDist;
+                  pushZ += (dz / dist) * pushDist;
+                }
+              }
+            }
+
+            if (Math.abs(pushX) > 0.001 || Math.abs(pushZ) > 0.001) {
+              // Clamp push offset within cell boundaries (max offset 0.40m)
+              const maxPush = 0.40;
+              const pushLen = Math.hypot(pushX, pushZ);
+              if (pushLen > maxPush) {
+                pushX = (pushX / pushLen) * maxPush;
+                pushZ = (pushZ / pushLen) * maxPush;
+              }
+
+              const candX = Math.max(reachMin, Math.min(reachMax, nodeX + pushX));
+              const candZ = Math.max(reachMin, Math.min(reachMax, nodeZ + pushZ));
+
+              // Verify candidate offset position is not blocked and supported
+              if (!isPositionBlocked(candX, y, candZ, collisionGrid, 0.40)) {
+                if (y <= 0.5) {
+                  nodeX = candX;
+                  nodeZ = candZ;
+                } else {
+                  // If on roof/elevated surface, ensure the nudged position still has floor support
+                  const floorH = getTerrainHeight(candX, candZ, y, collisionGrid, bGrid, wGrid, this.worldSize, 0.6);
+                  if (Math.abs(floorH - y) <= 0.6) {
+                    nodeX = candX;
+                    nodeZ = candZ;
+                  }
+                }
+              }
+            }
 
             const nodeObj: NavNode = {
               id,
@@ -208,6 +367,100 @@ export class NavigationGraph {
           }
         });
       }
+    }
+
+    // 1.5 Guaranteed Rooftop Nodes for Every Building Object in the Map
+    if (objects && objects.length > 0) {
+      objects.forEach((obj) => {
+        const isBuildingObj =
+          obj.type === 'house' ||
+          obj.type === 'factory' ||
+          obj.type === 'highrise' ||
+          obj.type === 'ruin' ||
+          obj.type === 'container' ||
+          obj.type === 'bridge';
+        if (!isBuildingObj) return;
+
+        const w = obj.scale[0];
+        const d = obj.scale[2];
+        const minX = obj.position[0] - w / 2;
+        const maxX = obj.position[0] + w / 2;
+        const minZ = obj.position[2] - d / 2;
+        const maxZ = obj.position[2] + d / 2;
+        const roofY = obj.position[1] + obj.scale[1] / 2 + (obj.type !== 'ruin' ? 0.3 : 0);
+
+        // Check if any node already exists on this building roof
+        let countOnRoof = 0;
+        this.nodes.forEach((n) => {
+          if (
+            Math.abs(n.y - roofY) <= 0.6 &&
+            n.x >= minX - 0.1 &&
+            n.x <= maxX + 0.1 &&
+            n.z >= minZ - 0.1 &&
+            n.z <= maxZ + 0.1
+          ) {
+            countOnRoof++;
+          }
+        });
+
+        // If no nodes on this roof, generate guaranteed rooftop nodes
+        if (countOnRoof === 0) {
+          const samplePoints: { x: number; z: number }[] = [];
+
+          // Center of roof
+          samplePoints.push({ x: obj.position[0], z: obj.position[2] });
+
+          // Quadrants for larger roofs
+          if (w >= 3.0 && d >= 3.0) {
+            const offX = Math.max(0.6, w * 0.25);
+            const offZ = Math.max(0.6, d * 0.25);
+            samplePoints.push({ x: obj.position[0] - offX, z: obj.position[2] - offZ });
+            samplePoints.push({ x: obj.position[0] + offX, z: obj.position[2] - offZ });
+            samplePoints.push({ x: obj.position[0] - offX, z: obj.position[2] + offZ });
+            samplePoints.push({ x: obj.position[0] + offX, z: obj.position[2] + offZ });
+          }
+
+          samplePoints.forEach((pt) => {
+            const reachMin = -this.halfSize + PLAYER_RADIUS + 0.12;
+            const reachMax = this.halfSize - PLAYER_RADIUS - 0.12;
+            const ptX = Math.max(reachMin, Math.min(reachMax, pt.x));
+            const ptZ = Math.max(reachMin, Math.min(reachMax, pt.z));
+
+            const ceil = getCeilingHeight(ptX, ptZ, roofY, collisionGrid, bGrid, this.worldSize);
+            if (ceil !== Infinity && ceil - roofY < PLAYER_HEIGHT) return;
+
+            // Check if blocked by high obstacle
+            if (isPositionBlocked(ptX, roofY, ptZ, collisionGrid, 0.15)) return;
+
+            const gx = worldToIndex(ptX, this.halfSize, this.worldSize);
+            const gz = worldToIndex(ptZ, this.halfSize, this.worldSize);
+            const id = `bldg_roof_${obj.id}_${ptX.toFixed(1)}_${ptZ.toFixed(1)}`;
+
+            if (!this.nodes.has(id)) {
+              const nodeObj: NavNode = {
+                id,
+                gx,
+                gz,
+                x: ptX,
+                y: roofY,
+                z: ptZ,
+                isWater: false,
+                isCorner: false,
+                isEdge: true,
+              };
+              this.nodes.set(id, nodeObj);
+
+              const bucketKey = gx * 1000 + gz;
+              let bucket = this.gridBuckets.get(bucketKey);
+              if (!bucket) {
+                bucket = [];
+                this.gridBuckets.set(bucketKey, bucket);
+              }
+              bucket.push(nodeObj);
+            }
+          });
+        }
+      });
     }
 
     // 2. Compute isCorner (proximity to walls/obstacles)
@@ -257,11 +510,15 @@ export class NavigationGraph {
 
         // Check if any node exists in neighbor cell within safe height difference (e.g. 1.0 unit)
         let foundNeighbor = false;
-        this.nodes.forEach((other) => {
-          if (other.gx === ngx && other.gz === ngz && Math.abs(other.y - node.y) < 1.5) {
-            foundNeighbor = true;
+        const neighborBucket = this.gridBuckets.get(ngx * 1000 + ngz);
+        if (neighborBucket) {
+          for (let i = 0; i < neighborBucket.length; i++) {
+            if (Math.abs(neighborBucket[i].y - node.y) < 1.5) {
+              foundNeighbor = true;
+              break;
+            }
           }
-        });
+        }
 
         if (!foundNeighbor) {
           onEdge = true;
@@ -304,7 +561,7 @@ export class NavigationGraph {
       [1, 1],
     ];
 
-    // 1. Establish grid-adjacent edges (Walk, Climb, Drop)
+    // 1. Establish grid-adjacent edges (Walk, Climb, Drop) using spatial grid buckets
     this.nodes.forEach((node) => {
       const edgeList = this.edges.get(node.id)!;
 
@@ -312,55 +569,109 @@ export class NavigationGraph {
         const ngx = node.gx + dx;
         const ngz = node.gz + dz;
 
-        // Query all nodes at the neighbor grid cell
-        this.nodes.forEach((other) => {
-          if (other.gx !== ngx || other.gz !== ngz) return;
+        const neighborBucket = this.gridBuckets.get(ngx * 1000 + ngz);
+        if (!neighborBucket) return;
 
+        // Query nodes at the neighbor grid cell
+        for (let i = 0; i < neighborBucket.length; i++) {
+          const other = neighborBucket[i];
           const heightDiff = other.y - node.y;
 
           // Transition Type Evaluation
           if (Math.abs(heightDiff) <= CLIMB_THRESHOLD) {
             // WALKING transition
-            // Check if path is horizontally blocked by a wall between node and other
-            const midX = (node.x + other.x) / 2;
-            const midZ = (node.z + other.z) / 2;
-            const midY = (node.y + other.y) / 2;
+            const isDiagonal = dx !== 0 && dz !== 0;
 
-            if (!isPositionBlocked(midX, midY, midZ, collisionGrid, 0.25)) {
-              const dist = Math.sqrt((node.x - other.x) ** 2 + (node.z - other.z) ** 2);
+            // In grid navigation, diagonal movement across a building corner is forbidden
+            // if either orthogonal adjacent cell is blocked (inside a building or missing node at this height)
+            if (isDiagonal) {
+              const orth1Bucket = this.gridBuckets.get((node.gx + dx) * 1000 + node.gz);
+              const orth2Bucket = this.gridBuckets.get(node.gx * 1000 + (node.gz + dz));
+              const hasOrth1 = orth1Bucket?.some((n) => Math.abs(n.y - node.y) <= CLIMB_THRESHOLD);
+              const hasOrth2 = orth2Bucket?.some((n) => Math.abs(n.y - node.y) <= CLIMB_THRESHOLD);
+              if (!hasOrth1 || !hasOrth2) {
+                return; // Do not cut through building walls or corners diagonally!
+              }
+            }
+
+            // Multi-point corridor sampling along the edge to ensure no building or wall is intersected
+            const checkRadius = isDiagonal ? PLAYER_RADIUS + 0.05 : 0.55;
+            let corridorBlocked = false;
+
+            for (const t of [0.25, 0.5, 0.75]) {
+              const px = node.x + (other.x - node.x) * t;
+              const pz = node.z + (other.z - node.z) * t;
+              const py = node.y + (other.y - node.y) * t;
+
+              if (isPositionBlocked(px, py, pz, collisionGrid, checkRadius)) {
+                corridorBlocked = true;
+                break;
+              }
+
+              if (py > 0.5) {
+                const floorH = getTerrainHeight(px, pz, py, collisionGrid, this.bGrid, this.wGrid, this.worldSize, 0.6);
+                if (Math.abs(floorH - py) > 0.6) {
+                  corridorBlocked = true;
+                  break;
+                }
+              }
+            }
+
+            if (!corridorBlocked) {
+              const dist = Math.hypot(node.x - other.x, node.z - other.z);
               let cost = dist;
 
-              // Water traversal penalty
-              if (other.isWater) cost += dist * 1.5;
+              // Water traversal penalty: swimming in water drastically reduces speed (WATER_MOVE_SPEED_MULT = 0.4)
+              // and takes extra effort to enter/exit, making land paths and jumping over water heavily preferred.
+              if (other.isWater || node.isWater) {
+                cost += dist * 3.5 + 4.0;
+              }
+
+              // Corner avoidance cost: prefer wider, clearer paths around quinas
+              if (other.isCorner || node.isCorner) cost += 0.4;
 
               edgeList.push({ target: other, type: 'walk', cost });
             }
           } else if (heightDiff > CLIMB_THRESHOLD && heightDiff <= MAX_SCALABLE_HEIGHT) {
-            // CLIMBING transition (only 1-story buildings <= MAX_SCALABLE_HEIGHT or low obstacles are scalable without a ladder)
-            // Make sure we have a clear path to the destination ledge
-            if (!isPositionBlocked(other.x, other.y, other.z, collisionGrid, 0.25)) {
-              const dCellX = Math.abs(node.gx - other.gx);
-              const dCellZ = Math.abs(node.gz - other.gz);
-              const isDiagonal = dCellX > 0 && dCellZ > 0;
-              const dist =
-                Math.sqrt((node.x - other.x) ** 2 + (node.z - other.z) ** 2) + heightDiff;
-              // Climb penalty so AI will use walkways/ladders when available instead of scaling walls.
-              // Heavily penalize diagonal corner climbs (+15.0) so straight-line wall face climbing is always preferred.
-              const diagonalPenalty = isDiagonal ? 15.0 : 0;
-              const cost = dist + (heightDiff <= 2.8 ? 10.0 : 25.0) + diagonalPenalty;
+            // CLIMBING transition (for any low obstacles, rooftops, or surfaces <= 1 floor)
+            const midX = (node.x + other.x) / 2;
+            const midZ = (node.z + other.z) / 2;
+            const midY = Math.max(node.y, other.y);
+
+            if (
+              !isPositionBlocked(other.x, other.y, other.z, collisionGrid, 0.4) &&
+              !isPositionBlocked(midX, midY, midZ, collisionGrid, 0.4)
+            ) {
+              const horizDist = Math.hypot(node.x - other.x, node.z - other.z);
+              // If the building has a ladder, apply penalty to prefer the ladder route for whole building climbs
+              const hasLadderOnRoof = ladderZones.some((zone) => {
+                if (Math.abs(other.y - zone.maxY) > 1.5) return false;
+                return Math.hypot(other.x - zone.railX, other.z - zone.railZ) <= 18.0;
+              });
+              const ladderPenalty = hasLadderOnRoof && heightDiff > 3.0 ? 50.0 : 0;
+              // Obstacle Climb Cost: Climbing obstacles takes stamina and effort, making walking around on flat ground preferred
+              const baseClimbCost = 16.0;
+              const heightCost = heightDiff * 4.0;
+              const cost = horizDist + baseClimbCost + heightCost + ladderPenalty;
               edgeList.push({ target: other, type: 'climb', cost });
             }
           } else if (heightDiff < -CLIMB_THRESHOLD) {
-            // DROPPING transition: connect directly to adjacent lower node without any checks
-            const dCellX = Math.abs(node.gx - other.gx);
-            const dCellZ = Math.abs(node.gz - other.gz);
-            const isDiagonal = dCellX > 0 && dCellZ > 0;
-            const horizDist = Math.hypot(node.x - other.x, node.z - other.z);
-            // Straight direct drops have lowest cost; diagonal drops have penalty
-            const cost = horizDist + Math.abs(heightDiff) * 0.15 + (isDiagonal ? 10.0 : 0);
-            edgeList.push({ target: other, type: 'drop', cost });
+            // DROPPING transition: connect to adjacent lower node with safety cost
+            const midX = (node.x + other.x) / 2;
+            const midZ = (node.z + other.z) / 2;
+            const midY = Math.max(node.y, other.y);
+
+            if (
+              !isPositionBlocked(other.x, other.y, other.z, collisionGrid, 0.4) &&
+              !isPositionBlocked(midX, midY, midZ, collisionGrid, 0.4)
+            ) {
+              const horizDist = Math.hypot(node.x - other.x, node.z - other.z);
+              const dropCost = Math.abs(heightDiff) > MAX_SCALABLE_HEIGHT ? 50.0 : Math.abs(heightDiff) * 0.5;
+              const cost = horizDist + dropCost;
+              edgeList.push({ target: other, type: 'drop', cost });
+            }
           }
-        });
+        }
       });
     });
 
@@ -390,7 +701,6 @@ export class NavigationGraph {
       };
 
       // Ladder rotation faceAngle points INTO the building (towards the wall/roof).
-      // topNode and roofNode should be on the roof platform (forward into the roof in direction of faceAngle).
       const topDist = 0.5;
       const topX = railX + Math.sin(zone.faceAngle) * topDist;
       const topZ = railZ + Math.cos(zone.faceAngle) * topDist;
@@ -470,7 +780,6 @@ export class NavigationGraph {
       // Connect foot and top with ladder edges (BI-DIRECTIONAL: climb up & slide down)
       const heightDiff = topY - bottomY;
       const climbCost = heightDiff * 1.2 + 2.0;
-      // Fast and reliable ladder slide down cost
       const slideCost = heightDiff * 0.8 + 1.0;
 
       this.edges.get(footId)!.push({ target: topNode, type: 'ladder', cost: climbCost });
@@ -480,88 +789,119 @@ export class NavigationGraph {
       this.edges.get(topId)!.push({ target: roofNode, type: 'walk', cost: 1.0 });
       this.edges.get(roofId)!.push({ target: topNode, type: 'walk', cost: 1.0 });
 
-      // Connect groundApproachNode and roofNode to nearby ground/roof walking nodes
-      this.nodes.forEach((other) => {
-        if (
-          other.id === groundApproachId ||
-          other.id === footId ||
-          other.id === topId ||
-          other.id === roofId
-        )
-          return;
+      // Connect groundApproachNode and roofNode to nearby ground/roof walking nodes using local bucket scan
+      const scanDist = 4;
+      for (let dx = -scanDist; dx <= scanDist; dx++) {
+        for (let dz = -scanDist; dz <= scanDist; dz++) {
+          const gBucket = this.gridBuckets.get((groundApproachNode.gx + dx) * 1000 + (groundApproachNode.gz + dz));
+          if (gBucket) {
+            for (let i = 0; i < gBucket.length; i++) {
+              const other = gBucket[i];
+              if (
+                other.id === groundApproachId ||
+                other.id === footId ||
+                other.id === topId ||
+                other.id === roofId
+              )
+                continue;
+              const distGround = Math.hypot(other.x - groundApproachNode.x, other.z - groundApproachNode.z);
+              if (distGround <= 3.5 && Math.abs(other.y - groundApproachNode.y) <= 1.5) {
+                const midX = (other.x + groundApproachNode.x) / 2;
+                const midZ = (other.z + groundApproachNode.z) / 2;
+                const midY = (other.y + groundApproachNode.y) / 2;
+                if (!isPositionBlocked(midX, midY, midZ, collisionGrid, 0.25)) {
+                  this.edges.get(other.id)?.push({ target: groundApproachNode, type: 'walk', cost: distGround });
+                  this.edges.get(groundApproachId)!.push({ target: other, type: 'walk', cost: distGround });
+                }
+              }
+            }
+          }
 
-        const distGround = Math.hypot(other.x - groundApproachNode.x, other.z - groundApproachNode.z);
-        if (distGround <= 3.5 && Math.abs(other.y - groundApproachNode.y) <= 1.5) {
-          this.edges.get(other.id)?.push({ target: groundApproachNode, type: 'walk', cost: distGround });
-          this.edges.get(groundApproachId)!.push({ target: other, type: 'walk', cost: distGround });
-        }
-
-        const distRoof = Math.hypot(other.x - roofNode.x, other.z - roofNode.z);
-        if (distRoof <= 3.5 && Math.abs(other.y - roofNode.y) <= 1.5) {
-          this.edges.get(other.id)?.push({ target: roofNode, type: 'walk', cost: distRoof });
-          this.edges.get(roofId)!.push({ target: other, type: 'walk', cost: distRoof });
-        }
-      });
-    });
-
-    // 3. Establish rooftop jump connections across gaps between buildings
-    this.nodes.forEach((node) => {
-      // Only jump from elevated positions (roofs / elevated ledges)
-      if (node.y < 2.5) return;
-
-      const edgeList = this.edges.get(node.id)!;
-
-      this.nodes.forEach((other) => {
-        if (other.id === node.id) return;
-        // Jump target must also be an elevated position or roof platform
-        if (other.y < 2.0) return;
-
-        const dx = other.x - node.x;
-        const dz = other.z - node.z;
-        const distXZ = Math.sqrt(dx * dx + dz * dz);
-        const heightDiff = other.y - node.y;
-
-        // Max realistic horizontal jump distance calculation:
-        // Peak jump distance is achievable when target is same or lower height
-        // Upward jump with ledge grab (+2.5m max height reach): max ~5.5m gap
-        // Flat/Downward jump (0m to -4.0m): max ~7.5m gap
-        const maxAchievableDist = heightDiff > 0 ? 5.5 - heightDiff * 0.8 : 7.5;
-
-        if (distXZ < 1.6 || distXZ > maxAchievableDist) return;
-
-        // Max upward jump with ledge grab: +2.5m (jump height + ledge grab reach)
-        // Max downward jump: -4.0m (roof to lower roof)
-        if (heightDiff > 2.5 || heightDiff < -4.0) return;
-
-        // Check clear air trajectory between node and other
-        const steps = Math.max(3, Math.ceil(distXZ / 0.7));
-        let trajectoryBlocked = false;
-
-        for (let s = 1; s < steps; s++) {
-          const t = s / steps;
-          const px = node.x + dx * t;
-          const pz = node.z + dz * t;
-          // Calculate height arc (parabolic jump curve, peak near middle)
-          const arcY = Math.max(node.y, other.y) + Math.sin(t * Math.PI) * 1.0;
-
-          if (isPositionBlocked(px, arcY, pz, collisionGrid, PLAYER_RADIUS - 0.15)) {
-            trajectoryBlocked = true;
-            break;
+          const rBucket = this.gridBuckets.get((roofNode.gx + dx) * 1000 + (roofNode.gz + dz));
+          if (rBucket) {
+            for (let i = 0; i < rBucket.length; i++) {
+              const other = rBucket[i];
+              if (
+                other.id === groundApproachId ||
+                other.id === footId ||
+                other.id === topId ||
+                other.id === roofId
+              )
+                continue;
+              const distRoof = Math.hypot(other.x - roofNode.x, other.z - roofNode.z);
+              if (distRoof <= 3.5 && Math.abs(other.y - roofNode.y) <= 1.5) {
+                const midX = (other.x + roofNode.x) / 2;
+                const midZ = (other.z + roofNode.z) / 2;
+                const midY = (other.y + roofNode.y) / 2;
+                if (!isPositionBlocked(midX, midY, midZ, collisionGrid, 0.25)) {
+                  this.edges.get(other.id)?.push({ target: roofNode, type: 'walk', cost: distRoof });
+                  this.edges.get(roofId)!.push({ target: other, type: 'walk', cost: distRoof });
+                }
+              }
+            }
           }
         }
+      }
+    });
 
-        if (!trajectoryBlocked) {
-          // Verify both takeoff and landing positions are at/near building ledges or rooftop edges
-          // Mark takeoff and landing nodes as edges so they visual/logical edge nodes
-          node.isEdge = true;
-          other.isEdge = true;
+    // 3. Establish jump connections across gaps between buildings and across rivers/water channels
+    this.nodes.forEach((node) => {
+      // Jump from elevated positions (roofs / ledges) or from dry land across rivers/water gaps
+      if (node.isWater) return;
 
-          // Jump cost: distXZ * 1.1 + 2.0 penalty
-          // Ground drop + walk + climb back up costs 25+, so jump is heavily favored
-          const cost = distXZ * 1.1 + 2.0;
-          edgeList.push({ target: other, type: 'jump', cost });
+      const edgeList = this.edges.get(node.id)!;
+      const jumpRadius = 8; // Max grid distance for jumps
+
+      for (let dx = -jumpRadius; dx <= jumpRadius; dx++) {
+        for (let dz = -jumpRadius; dz <= jumpRadius; dz++) {
+          if (dx === 0 && dz === 0) continue;
+          const targetBucket = this.gridBuckets.get((node.gx + dx) * 1000 + (node.gz + dz));
+          if (!targetBucket) continue;
+
+          for (let i = 0; i < targetBucket.length; i++) {
+            const other = targetBucket[i];
+            if (other.id === node.id || other.isWater) continue;
+
+            const ddx = other.x - node.x;
+            const ddz = other.z - node.z;
+            const distXZ = Math.sqrt(ddx * ddx + ddz * ddz);
+            const heightDiff = other.y - node.y;
+
+            // Enforce maximum safe physical jump limit calculated from gravity, jump velocity, and sprint speed
+            const maxAchievableDist = calculateMaxJumpDistance(heightDiff);
+            if (distXZ < 1.4 || distXZ > maxAchievableDist) continue;
+            if (heightDiff > 2.0 || heightDiff < -4.0) continue;
+
+            // If they are directly walkable on flat terrain with no gap or water, prefer normal walking edges
+            if (Math.abs(heightDiff) <= 0.6 && this.isDirectWalkable(node, other, collisionGrid)) {
+              continue;
+            }
+
+            // Check clear air trajectory between node and other
+            const steps = Math.max(3, Math.ceil(distXZ / 0.7));
+            let trajectoryBlocked = false;
+
+            for (let s = 1; s < steps; s++) {
+              const t = s / steps;
+              const px = node.x + ddx * t;
+              const pz = node.z + ddz * t;
+              const arcY = Math.max(node.y, other.y) + Math.sin(t * Math.PI) * 1.0;
+
+              if (isPositionBlocked(px, arcY, pz, collisionGrid, PLAYER_RADIUS - 0.15)) {
+                trajectoryBlocked = true;
+                break;
+              }
+            }
+
+            if (!trajectoryBlocked) {
+              node.isEdge = true;
+              other.isEdge = true;
+              const cost = distXZ * 1.1 + 1.5;
+              edgeList.push({ target: other, type: 'jump', cost });
+            }
+          }
         }
-      });
+      }
     });
   }
 
@@ -576,6 +916,101 @@ export class NavigationGraph {
   }
 
   /**
+   * Calculates the total navigation cost/distance of a path from a given starting position.
+   */
+  public calculatePathCost(
+    startPos: { x: number; y: number; z: number },
+    nodes: { x: number; y: number; z: number; edgeType?: EdgeType | null; id?: string }[],
+    startIndex: number = 0,
+  ): number {
+    if (!nodes || nodes.length === 0 || startIndex >= nodes.length) return 0;
+
+    let totalCost = 0;
+    let prev = startPos;
+
+    for (let i = startIndex; i < nodes.length; i++) {
+      const curr = nodes[i];
+      const dx = curr.x - prev.x;
+      const dy = curr.y - prev.y;
+      const dz = curr.z - prev.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      let stepCost = dist + Math.abs(dy);
+
+      const edgeType = curr.edgeType;
+      if (edgeType === 'climb') {
+        stepCost += 16.0 + Math.abs(dy) * 4.0;
+      } else if (edgeType === 'ladder') {
+        stepCost += 10.0 + Math.abs(dy) * 2.5;
+      } else if (edgeType === 'jump') {
+        stepCost += dist * 1.1 + 2.0;
+      } else if (edgeType === 'drop') {
+        stepCost += Math.abs(dy) * 0.2;
+      }
+
+      totalCost += stepCost;
+      prev = curr;
+    }
+
+    return totalCost;
+  }
+
+  /**
+   * Finds the nearest ladder zone associated with a given building position (e.g. a rooftop node or building coordinate).
+   */
+  public findLadderForBuilding(
+    pos: { x: number; y: number; z: number },
+    maxDistance: number = 25.0,
+  ): {
+    zone: {
+      minX: number;
+      minY: number;
+      minZ: number;
+      maxX: number;
+      maxY: number;
+      maxZ: number;
+      faceAngle: number;
+      railX: number;
+      railZ: number;
+    };
+    index: number;
+    groundNode: NavNode | null;
+    footNode: NavNode | null;
+    topNode: NavNode | null;
+    roofNode: NavNode | null;
+  } | null {
+    if (!this.ladderZones || this.ladderZones.length === 0) return null;
+
+    let bestZone: any = null;
+    let bestIndex = -1;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < this.ladderZones.length; i++) {
+      const zone = this.ladderZones[i];
+      // Check height compatibility (the ladder reaches near the target height or covers its ascent)
+      const heightMatch = Math.abs(pos.y - zone.maxY) <= 2.0 || (pos.y >= zone.minY && pos.y <= zone.maxY + 1.5);
+      if (!heightMatch && pos.y >= 2.0) continue;
+
+      const dist = Math.hypot(pos.x - zone.railX, pos.z - zone.railZ);
+      if (dist < bestDist && dist <= maxDistance) {
+        bestDist = dist;
+        bestZone = zone;
+        bestIndex = i;
+      }
+    }
+
+    if (!bestZone || bestIndex === -1) return null;
+
+    return {
+      zone: bestZone,
+      index: bestIndex,
+      groundNode: this.nodes.get(`ladder_ground_${bestIndex}`) || null,
+      footNode: this.nodes.get(`ladder_foot_${bestIndex}`) || null,
+      topNode: this.nodes.get(`ladder_top_${bestIndex}`) || null,
+      roofNode: this.nodes.get(`ladder_roof_${bestIndex}`) || null,
+    };
+  }
+
+  /**
    * Find the closest node in the navigation graph to a 3D world position.
    */
   public findClosestNode(pos: THREE.Vector3): NavNode | null {
@@ -586,41 +1021,74 @@ export class NavigationGraph {
     const gx = worldToIndex(pos.x, this.halfSize, this.worldSize);
     const gz = worldToIndex(pos.z, this.halfSize, this.worldSize);
 
-    // Scan nearby grid cells (5x5 search window around the lookup cell)
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        const cx = gx + dx;
-        const cz = gz + dz;
+    const scratchP = new THREE.Vector3();
+    const scratchN = new THREE.Vector3();
 
-        if (cx >= 0 && cx < this.worldSize && cz >= 0 && cz < this.worldSize) {
-          const bucket = this.gridBuckets.get(cx * 1000 + cz);
-          if (bucket) {
-            for (let i = 0; i < bucket.length; i++) {
-              const node = bucket[i];
-              const dy = pos.y - node.y;
-              const yWeight = pos.y >= 2.0 ? 4.0 : 1.0;
-              const d = (pos.x - node.x) ** 2 + (pos.z - node.z) ** 2 + dy * dy * yWeight;
-              if (d < minDist) {
-                minDist = d;
-                closest = node;
+    // Ring search around lookup cell (up to 8 cells distance in O(1))
+    for (let r = 0; r <= 8; r++) {
+      let foundInRing = false;
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dz = -r; dz <= r; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const cx = gx + dx;
+          const cz = gz + dz;
+
+          if (cx >= 0 && cx < this.worldSize && cz >= 0 && cz < this.worldSize) {
+            const bucket = this.gridBuckets.get(cx * 1000 + cz);
+            if (bucket) {
+              for (let i = 0; i < bucket.length; i++) {
+                const node = bucket[i];
+                const dy = node.y - pos.y;
+                const upPenalty = dy > 0.8 ? (dy > 2.0 ? dy * dy * 35.0 : dy * dy * 12.0) : 0;
+                const yWeight = pos.y >= 2.0 ? 4.0 : 2.0;
+
+                // Penalize nodes separated from pos by a building wall
+                let losPenalty = 0;
+                if (this.collisionGrid && Math.abs(dy) <= 1.0) {
+                  scratchP.set(pos.x, pos.y + 0.5, pos.z);
+                  scratchN.set(node.x, node.y + 0.5, node.z);
+                  if (!checkLineOfSight(scratchP, scratchN, this.collisionGrid)) {
+                    losPenalty = 2000.0;
+                  }
+                }
+
+                const d = (pos.x - node.x) ** 2 + (pos.z - node.z) ** 2 + dy * dy * yWeight + upPenalty + losPenalty;
+                if (d < minDist) {
+                  minDist = d;
+                  closest = node;
+                  foundInRing = true;
+                }
               }
             }
           }
         }
       }
+      if (foundInRing && closest && minDist < 100.0) break;
     }
 
-    // Fallback: full scan if lookup failed (e.g. out of grid bounds)
-    if (!closest) {
-      this.nodes.forEach((node) => {
-        const dy = pos.y - node.y;
-        const yWeight = pos.y >= 2.0 ? 4.0 : 1.0;
-        const d = (pos.x - node.x) ** 2 + (pos.z - node.z) ** 2 + dy * dy * yWeight;
+    // Fallback: fast scan on cached nodesArray if out of grid bounds
+    if (!closest && this.nodesArray.length > 0) {
+      for (let i = 0; i < this.nodesArray.length; i++) {
+        const node = this.nodesArray[i];
+        const dy = node.y - pos.y;
+        const upPenalty = dy > 0.8 ? (dy > 2.0 ? dy * dy * 35.0 : dy * dy * 12.0) : 0;
+        const yWeight = pos.y >= 2.0 ? 4.0 : 2.0;
+
+        let losPenalty = 0;
+        if (this.collisionGrid && Math.abs(dy) <= 1.0) {
+          scratchP.set(pos.x, pos.y + 0.5, pos.z);
+          scratchN.set(node.x, node.y + 0.5, node.z);
+          if (!checkLineOfSight(scratchP, scratchN, this.collisionGrid)) {
+            losPenalty = 2000.0;
+          }
+        }
+
+        const d = (pos.x - node.x) ** 2 + (pos.z - node.z) ** 2 + dy * dy * yWeight + upPenalty + losPenalty;
         if (d < minDist) {
           minDist = d;
           closest = node;
         }
-      });
+      }
     }
 
     return closest;
@@ -628,18 +1096,26 @@ export class NavigationGraph {
 
   /**
    * Runs A* algorithm to find the path from startPos to endPos.
+   * Supports options to avoid/penalize specific nodes or add variation cost.
    * Returns an array of NavNodes representing the path, or null if no path is found.
    */
-  public findPath(startPos: THREE.Vector3, endPos: THREE.Vector3): NavNode[] | null {
+  public findPath(
+    startPos: THREE.Vector3,
+    endPos: THREE.Vector3,
+    options?: {
+      avoidNodeIds?: Set<string>;
+      penalizedNodeIds?: Set<string>;
+      variationCost?: number;
+    },
+  ): NavNode[] | null {
     const startNode = this.findClosestNode(startPos);
     const endNode = this.findClosestNode(endPos);
 
     if (!startNode || !endNode) return null;
     if (startNode.id === endNode.id) return [startNode];
 
-    // A* open and closed sets
-    const openSet: NavNode[] = [startNode];
-    const openSetIds = new Set<string>([startNode.id]);
+    // Fast MinBinaryHeap Priority Queue for O(log N) extraction
+    const openSet = new MinBinaryHeap<NavNode>();
     const closedSet = new Set<string>();
     const cameFrom: Map<string, NavNode> = new Map();
 
@@ -647,64 +1123,55 @@ export class NavigationGraph {
     gScore.set(startNode.id, 0);
 
     const fScore: Map<string, number> = new Map();
-    fScore.set(startNode.id, startPos.distanceTo(endPos));
+    const initialF = startPos.distanceTo(endPos);
+    fScore.set(startNode.id, initialF);
+
+    openSet.push(startNode, initialF);
 
     let iterations = 0;
-    const maxIterations = 3000;
+    const maxIterations = 6000;
 
-    while (openSet.length > 0 && iterations < maxIterations) {
+    while (!openSet.isEmpty() && iterations < maxIterations) {
       iterations++;
 
-      // Fast min-fScore search without array allocations or sorting
-      let lowestIdx = 0;
-      let lowestF = fScore.get(openSet[0].id) ?? Infinity;
-      for (let i = 1; i < openSet.length; i++) {
-        const f = fScore.get(openSet[i].id) ?? Infinity;
-        if (f < lowestF) {
-          lowestF = f;
-          lowestIdx = i;
-        }
-      }
-
-      const current = openSet[lowestIdx];
-      // Fast swap and pop to remove current in O(1)
-      openSet[lowestIdx] = openSet[openSet.length - 1];
-      openSet.pop();
-      openSetIds.delete(current.id);
+      const current = openSet.pop()!;
+      if (closedSet.has(current.id)) continue;
       closedSet.add(current.id);
 
       // Target reached! Reconstruct path.
       if (current.id === endNode.id) {
         const path: NavNode[] = [current];
         let currId = current.id;
+        const visitedInPath = new Set<string>([currId]);
         while (cameFrom.has(currId)) {
           const parent = cameFrom.get(currId)!;
+          if (visitedInPath.has(parent.id)) {
+            break; // Prevent infinite cycle
+          }
+          visitedInPath.add(parent.id);
           path.unshift(parent);
           currId = parent.id;
         }
 
         // Strict Accessibility Validation:
-        // 1. Buildings <= 1 floor (<= MAX_SCALABLE_HEIGHT) are scalable via wall vault/climb.
-        // 2. Buildings > 1 floor (> MAX_SCALABLE_HEIGHT) are ONLY accessible via ladders or rooftop jumps.
-        // 3. If any step scales > MAX_SCALABLE_HEIGHT without a ladder, or reaches an inaccessible node above that height, discard route.
+        // 1. Objects and surfaces with height difference <= 1 floor (<= MAX_SCALABLE_HEIGHT) are scalable via wall vault/climb.
+        // 2. Vertical steps > 1 floor (> MAX_SCALABLE_HEIGHT) are ONLY accessible via ladders or rooftop jumps.
+        // 3. If any step scales > MAX_SCALABLE_HEIGHT without a ladder, discard route.
         for (let i = 0; i < path.length - 1; i++) {
           const fromNode = path[i];
           const toNode = path[i + 1];
           const edgeType = this.getEdgeType(fromNode, toNode);
+          toNode.edgeType =
+            edgeType ??
+            (toNode.y < fromNode.y - 1.0
+              ? 'drop'
+              : toNode.y > fromNode.y + CLIMB_THRESHOLD
+                ? 'climb'
+                : 'walk');
           const heightDiff = toNode.y - fromNode.y;
 
-          // Wall climbing higher than 1-story building height is prohibited
+          // Scaling higher than 1-story step height without a ladder is prohibited
           if (heightDiff > MAX_SCALABLE_HEIGHT && edgeType !== 'ladder') {
-            return null; // Discard invalid route!
-          }
-
-          // Ascending to a height > MAX_SCALABLE_HEIGHT requires a ladder or jump
-          if (
-            toNode.y > MAX_SCALABLE_HEIGHT &&
-            heightDiff > CLIMB_THRESHOLD &&
-            edgeType !== 'ladder' &&
-            edgeType !== 'jump'
-          ) {
             return null; // Discard invalid route!
           }
         }
@@ -717,23 +1184,41 @@ export class NavigationGraph {
         const edge = neighbors[i];
         const neighbor = edge.target;
 
-        const tentativeGScore = (gScore.get(current.id) ?? Infinity) + edge.cost;
+        // Skip avoid nodes (except start and target end node)
+        if (
+          options?.avoidNodeIds &&
+          options.avoidNodeIds.has(neighbor.id) &&
+          neighbor.id !== endNode.id &&
+          neighbor.id !== startNode.id
+        ) {
+          continue;
+        }
+
+        let edgeCost = edge.cost;
+        if (options?.penalizedNodeIds && options.penalizedNodeIds.has(neighbor.id) && neighbor.id !== endNode.id) {
+          edgeCost += 50.0;
+        }
+        if (options?.variationCost) {
+          // Deterministic pseudo-random variation per node coordinate
+          const h = (Math.sin(neighbor.x * 12.9898 + neighbor.z * 78.233) * 43758.5453) % 1;
+          edgeCost += Math.abs(h) * options.variationCost;
+        }
+
+        const tentativeGScore = (gScore.get(current.id) ?? Infinity) + edgeCost;
 
         if (tentativeGScore < (gScore.get(neighbor.id) ?? Infinity)) {
           cameFrom.set(neighbor.id, current);
           gScore.set(neighbor.id, tentativeGScore);
 
-          // Euclidean distance heuristic
+          // Euclidean distance heuristic (admissible for shortest path)
           const dx = neighbor.x - endNode.x;
           const dy = neighbor.y - endNode.y;
           const dz = neighbor.z - endNode.z;
           const h = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          fScore.set(neighbor.id, tentativeGScore + h);
+          const f = tentativeGScore + h;
+          fScore.set(neighbor.id, f);
 
-          if (!openSetIds.has(neighbor.id)) {
-            openSet.push(neighbor);
-            openSetIds.add(neighbor.id);
-          }
+          openSet.push(neighbor, f);
         }
       }
     }
@@ -750,20 +1235,35 @@ export class NavigationGraph {
     from: { x: number; y: number; z: number },
     to: { x: number; y: number; z: number },
     collisionGrid: SpatialHashGrid,
+    clearanceRadius: number = PLAYER_RADIUS + 0.05,
   ): boolean {
     // If height difference is too large, direct flat walking is not possible
-    if (Math.abs(from.y - to.y) > 0.6) return false;
+    if (Math.abs(from.y - to.y) > 0.8) return false;
 
     const dx = to.x - from.x;
     const dz = to.z - from.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 0.1) return true;
 
-    const stepSize = 0.6;
-    const steps = Math.ceil(dist / stepSize);
-    const borderMargin = PLAYER_RADIUS + 0.05;
+    // 1. Raycast Line of Sight check at torso and knee height to detect any intersecting building boxes or fences
+    const startEye = new THREE.Vector3(from.x, from.y + 1.2, from.z);
+    const endEye = new THREE.Vector3(to.x, to.y + 1.2, to.z);
+    if (!checkLineOfSight(startEye, endEye, collisionGrid)) {
+      return false; // Obstacle or building blocks direct line of sight!
+    }
 
-    for (let s = 1; s <= steps; s++) {
+    const startKnee = new THREE.Vector3(from.x, from.y + 0.4, from.z);
+    const endKnee = new THREE.Vector3(to.x, to.y + 0.4, to.z);
+    if (!checkLineOfSight(startKnee, endKnee, collisionGrid)) {
+      return false; // Low obstacle blocks direct line of sight!
+    }
+
+    // 2. Fine-grained step corridor check (every 0.25m)
+    const stepSize = 0.25;
+    const steps = Math.ceil(dist / stepSize);
+    const borderMargin = PLAYER_RADIUS - 0.35;
+
+    for (let s = 0; s <= steps; s++) {
       const t = s / steps;
       const px = from.x + dx * t;
       const pz = from.z + dz * t;
@@ -779,9 +1279,40 @@ export class NavigationGraph {
         return false;
       }
 
-      // Check obstacle collisions
-      if (isPositionBlocked(px, py, pz, collisionGrid, 0.25)) {
+      // Check building grid (bGrid) footprint
+      const ix = worldToIndex(px, this.halfSize, this.worldSize);
+      const iz = worldToIndex(pz, this.halfSize, this.worldSize);
+      if (this.bGrid && this.bGrid[ix]?.[iz] !== undefined && this.bGrid[ix][iz] > 0.5) {
+        if (py < this.bGrid[ix][iz] - 0.1) {
+          return false; // Point intersects building footprint!
+        }
+      }
+
+      // Check obstacle collisions with player clearance to prevent corner clipping
+      if (isPositionBlocked(px, py, pz, collisionGrid, clearanceRadius)) {
         return false;
+      }
+
+      // Check solid ground support if elevated above ground level
+      if (py > 0.5) {
+        const floorH = getTerrainHeight(
+          px,
+          pz,
+          py,
+          collisionGrid,
+          this.bGrid,
+          this.wGrid,
+          this.worldSize,
+          0.6,
+        );
+        if (Math.abs(floorH - py) > 0.6) {
+          return false; // Gap or drop detected!
+        }
+      } else if (from.y >= -0.5 && to.y >= -0.5) {
+        // Ground-level check: if walking between dry land points, any water cell is a water gap / river
+        if (this.wGrid && this.wGrid[ix]?.[iz] === 1) {
+          return false; // Water channel / river detected along ground path!
+        }
       }
     }
 
@@ -801,8 +1332,8 @@ export class NavigationGraph {
     while (currIdx < path.length - 1) {
       let furthestIdx = currIdx + 1;
 
-      // Look ahead to find the furthest directly walkable node across the open space
-      const maxLookahead = path.length - 1;
+      // Look ahead up to 8 nodes to find the furthest directly walkable node across open space
+      const maxLookahead = Math.min(path.length - 1, currIdx + 8);
       for (let nextIdx = maxLookahead; nextIdx > currIdx + 1; nextIdx--) {
         // Stop lookahead if there is a special transition (jump, ladder, climb, drop)
         let hasSpecialTransition = false;
@@ -825,7 +1356,16 @@ export class NavigationGraph {
         }
       }
 
-      smoothed.push(path[furthestIdx]);
+      const nextNode = { ...path[furthestIdx] };
+      nextNode.edgeType =
+        path[furthestIdx].edgeType ??
+        this.getEdgeType(path[currIdx], path[furthestIdx]) ??
+        (nextNode.y < path[currIdx].y - 1.0
+          ? 'drop'
+          : nextNode.y > path[currIdx].y + CLIMB_THRESHOLD
+            ? 'climb'
+            : 'walk');
+      smoothed.push(nextNode);
       currIdx = furthestIdx;
     }
 
@@ -851,16 +1391,16 @@ export class NavigationGraph {
 
     this.nodes.forEach((node) => {
       const distToSeeker = Math.hypot(node.x - seekerPos.x, node.z - seekerPos.z);
-      if (distToSeeker < 5.0) return;
+      if (distToSeeker < 6.0) return;
 
       const distToAi = Math.hypot(node.x - currentAiPos.x, node.z - currentAiPos.z);
 
       let score = 0;
-      score += Math.min(distToSeeker, 35.0) * 3.0;
-      score -= distToAi * 0.4;
+      score += Math.min(distToSeeker, 40.0) * 4.0;
+      score -= distToAi * 0.35;
 
-      if (node.y >= 2.5) score += 25.0;
-      if (node.isCorner) score += 15.0;
+      if (node.y >= 2.5) score += 30.0;
+      if (node.isCorner) score += 20.0;
       if (node.isWater) score -= 40.0;
 
       const distToBorder = Math.min(
@@ -874,11 +1414,11 @@ export class NavigationGraph {
 
     if (candidates.length === 0) return null;
 
-    // Sort to get the top 12 best candidates
+    // Sort to get the top 24 best candidates
     candidates.sort((a, b) => b.initialScore - a.initialScore);
-    const topCandidates = candidates.slice(0, 12);
+    const topCandidates = candidates.slice(0, 24);
 
-    // Fast pass 2: Run Line of Sight check ONLY on the top 12 candidates
+    // Fast pass 2: Run Line of Sight check ONLY on top candidates
     const seekerEye = new THREE.Vector3(seekerPos.x, seekerPos.y + 1.5, seekerPos.z);
     let bestNode: NavNode | null = topCandidates[0].node;
     let highestFinalScore = -Infinity;
@@ -888,7 +1428,7 @@ export class NavigationGraph {
       const nodeEye = new THREE.Vector3(node.x, node.y + 1.0, node.z);
       const hasLOS = checkLineOfSight(seekerEye, nodeEye, collisionGrid);
 
-      const finalScore = initialScore + (!hasLOS ? 70.0 : 0);
+      const finalScore = initialScore + (!hasLOS ? 120.0 : -80.0);
       if (finalScore > highestFinalScore) {
         highestFinalScore = finalScore;
         bestNode = node;
