@@ -10,14 +10,28 @@ import {
   PLAYER_RADIUS,
   CLIMB_THRESHOLD,
   FLOOR_HEIGHT,
-  MAX_JUMP_DISTANCE,
   calculateMaxJumpDistance,
 } from './physics';
 import { VoxelObject } from '../types';
+import { MinBinaryHeap } from './heap';
+
+export { MinBinaryHeap };
 
 export const MAX_SCALABLE_HEIGHT = FLOOR_HEIGHT + 0.5; // 6.5m (1 floor height limit: only <= 1 floor is scalable without ladder)
 
 export type EdgeType = 'walk' | 'climb' | 'drop' | 'ladder' | 'jump';
+
+export interface LadderZone {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  faceAngle: number;
+  railX: number;
+  railZ: number;
+}
 
 export interface NavNode {
   id: string; // Format: "gx,gz,y"
@@ -29,6 +43,7 @@ export interface NavNode {
   isWater: boolean;
   isCorner: boolean; // close to walls/corners
   isEdge: boolean; // on a roof ledge/edge
+  edgeType?: EdgeType;
 }
 
 export interface NavEdge {
@@ -37,102 +52,22 @@ export interface NavEdge {
   cost: number;
 }
 
-/**
- * High-performance MinBinaryHeap / PriorityQueue for A* pathfinding.
- */
-export class MinBinaryHeap<T> {
-  private heap: { element: T; priority: number }[] = [];
-
-  constructor() {}
-
-  public get size(): number {
-    return this.heap.length;
-  }
-
-  public isEmpty(): boolean {
-    return this.heap.length === 0;
-  }
-
-  public push(element: T, priority: number): void {
-    this.heap.push({ element, priority });
-    this.bubbleUp(this.heap.length - 1);
-  }
-
-  public pop(): T | undefined {
-    if (this.heap.length === 0) return undefined;
-    const top = this.heap[0].element;
-    const bottom = this.heap.pop()!;
-    if (this.heap.length > 0) {
-      this.heap[0] = bottom;
-      this.sinkDown(0);
-    }
-    return top;
-  }
-
-  public peek(): T | undefined {
-    return this.heap.length > 0 ? this.heap[0].element : undefined;
-  }
-
-  private bubbleUp(index: number): void {
-    const item = this.heap[index];
-    while (index > 0) {
-      const parentIdx = (index - 1) >> 1;
-      const parent = this.heap[parentIdx];
-      if (item.priority >= parent.priority) break;
-      this.heap[index] = parent;
-      index = parentIdx;
-    }
-    this.heap[index] = item;
-  }
-
-  private sinkDown(index: number): void {
-    const length = this.heap.length;
-    const item = this.heap[index];
-    while (true) {
-      const leftIdx = (index << 1) + 1;
-      const rightIdx = leftIdx + 1;
-      let smallestIdx = index;
-      let smallestPriority = item.priority;
-
-      if (leftIdx < length && this.heap[leftIdx].priority < smallestPriority) {
-        smallestIdx = leftIdx;
-        smallestPriority = this.heap[leftIdx].priority;
-      }
-      if (rightIdx < length && this.heap[rightIdx].priority < smallestPriority) {
-        smallestIdx = rightIdx;
-      }
-      if (smallestIdx === index) break;
-
-      this.heap[index] = this.heap[smallestIdx];
-      index = smallestIdx;
-    }
-    this.heap[index] = item;
-  }
-
-  public clear(): void {
-    this.heap.length = 0;
-  }
-}
+const scratchPosA = new THREE.Vector3();
+const scratchPosB = new THREE.Vector3();
+const scratchPatrolTarget = new THREE.Vector3();
 
 export class NavigationGraph {
   public nodes: Map<string, NavNode> = new Map();
   public nodesArray: NavNode[] = [];
   public edges: Map<string, NavEdge[]> = new Map();
-  public ladderZones: {
-    minX: number;
-    minY: number;
-    minZ: number;
-    maxX: number;
-    maxY: number;
-    maxZ: number;
-    faceAngle: number;
-    railX: number;
-    railZ: number;
-  }[] = [];
+  public ladderZones: LadderZone[] = [];
   private gridBuckets: Map<number, NavNode[]> = new Map();
   public collisionGrid?: SpatialHashGrid;
   public bGrid: number[][] = [];
   public wGrid: number[][] = [];
+  private solidRoofGrid: number[][] = [];
+  private nearWaterGrid: Uint8Array;
+  private mapHasWater: boolean = false;
   private worldSize: number;
   private halfSize: number;
 
@@ -143,17 +78,7 @@ export class NavigationGraph {
     wGrid: number[][];
     sGrid: number[][];
     tGrid: number[][];
-    ladderZones: {
-      minX: number;
-      minY: number;
-      minZ: number;
-      maxX: number;
-      maxY: number;
-      maxZ: number;
-      faceAngle: number;
-      railX: number;
-      railZ: number;
-    }[];
+    ladderZones: LadderZone[];
     worldSize: number;
   }) {
     this.worldSize = mapData.worldSize;
@@ -162,10 +87,72 @@ export class NavigationGraph {
     this.collisionGrid = mapData.collisionGrid;
     this.bGrid = mapData.bGrid || [];
     this.wGrid = mapData.wGrid || [];
+    this.nearWaterGrid = new Uint8Array(this.worldSize * this.worldSize);
 
+    this.precomputeGrids(mapData.collisionGrid);
     this.buildNodes(mapData);
     this.nodesArray = Array.from(this.nodes.values());
     this.buildEdges(mapData);
+  }
+
+  private precomputeGrids(collisionGrid: SpatialHashGrid): void {
+    const size = this.worldSize;
+    this.solidRoofGrid = Array.from({ length: size }, () => new Array(size).fill(0));
+
+    // Precompute full-cell solid building heights for O(1) interior rejection
+    const allBoxes = collisionGrid.getAllBoxes();
+    for (let i = 0; i < allBoxes.length; i++) {
+      const box = allBoxes[i];
+      if (box.minY > 0.1 || box.maxY <= 0.5) continue;
+
+      const gx0 = Math.max(0, Math.ceil(box.minX + this.halfSize));
+      const gx1 = Math.min(size - 1, Math.floor(box.maxX + this.halfSize) - 1);
+      const gz0 = Math.max(0, Math.ceil(box.minZ + this.halfSize));
+      const gz1 = Math.min(size - 1, Math.floor(box.maxZ + this.halfSize) - 1);
+
+      for (let gx = gx0; gx <= gx1; gx++) {
+        for (let gz = gz0; gz <= gz1; gz++) {
+          if (box.maxY > this.solidRoofGrid[gx][gz]) {
+            this.solidRoofGrid[gx][gz] = box.maxY;
+          }
+        }
+      }
+    }
+
+    // Precompute water presence & 7-cell dilation mask for fast ground-jump filtering
+    const jumpDilate = 7;
+    for (let gx = 0; gx < size; gx++) {
+      const col = this.wGrid[gx];
+      if (!col) continue;
+      for (let gz = 0; gz < size; gz++) {
+        if (col[gz] === 1) {
+          this.mapHasWater = true;
+          const xMin = Math.max(0, gx - jumpDilate);
+          const xMax = Math.min(size - 1, gx + jumpDilate);
+          const zMin = Math.max(0, gz - jumpDilate);
+          const zMax = Math.min(size - 1, gz + jumpDilate);
+          for (let nx = xMin; nx <= xMax; nx++) {
+            const rowOffset = nx * size;
+            for (let nz = zMin; nz <= zMax; nz++) {
+              this.nearWaterGrid[rowOffset + nz] = 1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private hasWaterBetween(gx1: number, gz1: number, gx2: number, gz2: number): boolean {
+    if (!this.mapHasWater) return false;
+    const steps = Math.max(Math.abs(gx2 - gx1), Math.abs(gz2 - gz1));
+    if (steps === 0) return false;
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const gx = Math.round(gx1 + (gx2 - gx1) * t);
+      const gz = Math.round(gz1 + (gz2 - gz1) * t);
+      if (this.wGrid[gx]?.[gz] === 1) return true;
+    }
+    return false;
   }
 
   private buildNodes(mapData: {
@@ -173,9 +160,8 @@ export class NavigationGraph {
     collisionGrid: SpatialHashGrid;
     bGrid: number[][];
     wGrid: number[][];
-    ladderZones?: { minX: number; minZ: number; maxX: number; maxZ: number; minY: number; maxY: number }[];
   }) {
-    const { collisionGrid, bGrid, wGrid, ladderZones, objects } = mapData;
+    const { collisionGrid, bGrid, wGrid, objects } = mapData;
 
     // 1. Probing nodes across the grid XZ coordinates
     for (let gx = 0; gx < this.worldSize; gx++) {
@@ -255,6 +241,9 @@ export class NavigationGraph {
           // Never allow a ground or lower-level node inside the footprint/interior of a building
           if (bGrid[gx]?.[gz] !== undefined && bGrid[gx][gz] > 0.5 && y < bGrid[gx][gz] - 0.1) {
             return; // Skip node inside building footprint!
+          }
+          if (this.solidRoofGrid[gx]?.[gz] > 0.5 && y < this.solidRoofGrid[gx][gz] - 0.1) {
+            return; // Skip node inside building interior (O(1))
           }
 
           // Check if position itself is inside or overlapping any building collision box
@@ -373,12 +362,10 @@ export class NavigationGraph {
     if (objects && objects.length > 0) {
       objects.forEach((obj) => {
         const isBuildingObj =
-          obj.type === 'house' ||
+          obj.type === 'box' ||
           obj.type === 'factory' ||
           obj.type === 'highrise' ||
-          obj.type === 'ruin' ||
-          obj.type === 'container' ||
-          obj.type === 'bridge';
+          obj.type === 'ruin';
         if (!isBuildingObj) return;
 
         const w = obj.scale[0];
@@ -389,19 +376,31 @@ export class NavigationGraph {
         const maxZ = obj.position[2] + d / 2;
         const roofY = obj.position[1] + obj.scale[1] / 2 + (obj.type !== 'ruin' ? 0.3 : 0);
 
-        // Check if any node already exists on this building roof
+        // Check via spatial buckets if any node already exists on this building roof
         let countOnRoof = 0;
-        this.nodes.forEach((n) => {
-          if (
-            Math.abs(n.y - roofY) <= 0.6 &&
-            n.x >= minX - 0.1 &&
-            n.x <= maxX + 0.1 &&
-            n.z >= minZ - 0.1 &&
-            n.z <= maxZ + 0.1
-          ) {
-            countOnRoof++;
+        const minGx = worldToIndex(minX, this.halfSize, this.worldSize);
+        const maxGx = worldToIndex(maxX, this.halfSize, this.worldSize);
+        const minGz = worldToIndex(minZ, this.halfSize, this.worldSize);
+        const maxGz = worldToIndex(maxZ, this.halfSize, this.worldSize);
+        for (let gx = minGx; gx <= maxGx && countOnRoof === 0; gx++) {
+          for (let gz = minGz; gz <= maxGz; gz++) {
+            const bucket = this.gridBuckets.get(gx * 1000 + gz);
+            if (!bucket) continue;
+            for (let i = 0; i < bucket.length; i++) {
+              const n = bucket[i];
+              if (
+                Math.abs(n.y - roofY) <= 0.6 &&
+                n.x >= minX - 0.1 &&
+                n.x <= maxX + 0.1 &&
+                n.z >= minZ - 0.1 &&
+                n.z <= maxZ + 0.1
+              ) {
+                countOnRoof++;
+                break;
+              }
+            }
           }
-        });
+        }
 
         // If no nodes on this roof, generate guaranteed rooftop nodes
         if (countOnRoof === 0) {
@@ -425,6 +424,10 @@ export class NavigationGraph {
             const reachMax = this.halfSize - PLAYER_RADIUS - 0.12;
             const ptX = Math.max(reachMin, Math.min(reachMax, pt.x));
             const ptZ = Math.max(reachMin, Math.min(reachMax, pt.z));
+
+            // Ensure there is actual rooftop floor beneath this point (handles cut-out L/U shapes)
+            const floorH = getTerrainHeight(ptX, ptZ, roofY + 0.5, collisionGrid, bGrid, wGrid, this.worldSize, 0.6);
+            if (Math.abs(floorH - roofY) > 0.6) return;
 
             const ceil = getCeilingHeight(ptX, ptZ, roofY, collisionGrid, bGrid, this.worldSize);
             if (ceil !== Infinity && ceil - roofY < PLAYER_HEIGHT) return;
@@ -850,7 +853,15 @@ export class NavigationGraph {
       if (node.isWater) return;
 
       const edgeList = this.edges.get(node.id)!;
-      const jumpRadius = 8; // Max grid distance for jumps
+      const jumpRadius = 7; // Max jump distance is 6.2m (plus nudge <= 0.8m -> 7 grid cells)
+      const isGroundOrigin = node.y <= 0.5;
+      const originNearWater =
+        this.mapHasWater &&
+        node.gx >= 0 &&
+        node.gx < this.worldSize &&
+        node.gz >= 0 &&
+        node.gz < this.worldSize &&
+        this.nearWaterGrid[node.gx * this.worldSize + node.gz] === 1;
 
       for (let dx = -jumpRadius; dx <= jumpRadius; dx++) {
         for (let dz = -jumpRadius; dz <= jumpRadius; dz++) {
@@ -862,19 +873,53 @@ export class NavigationGraph {
             const other = targetBucket[i];
             if (other.id === node.id || other.isWater) continue;
 
+            const heightDiff = other.y - node.y;
+            if (heightDiff > 2.0 || heightDiff < -4.0) continue;
+
             const ddx = other.x - node.x;
             const ddz = other.z - node.z;
-            const distXZ = Math.sqrt(ddx * ddx + ddz * ddz);
-            const heightDiff = other.y - node.y;
+            const distSqXZ = ddx * ddx + ddz * ddz;
+            if (distSqXZ < 1.96 || distSqXZ > 38.44) continue;
+
+            // Fast ground-to-ground filter: flat ground jumps are only useful across water channels
+            if (isGroundOrigin && other.y <= 0.5 && Math.abs(heightDiff) <= 0.6) {
+              if (!originNearWater || !this.hasWaterBetween(node.gx, node.gz, other.gx, other.gz)) {
+                continue;
+              }
+            }
+
+            const distXZ = Math.sqrt(distSqXZ);
 
             // Enforce maximum safe physical jump limit calculated from gravity, jump velocity, and sprint speed
             const maxAchievableDist = calculateMaxJumpDistance(heightDiff);
             if (distXZ < 1.4 || distXZ > maxAchievableDist) continue;
-            if (heightDiff > 2.0 || heightDiff < -4.0) continue;
 
-            // If they are directly walkable on flat terrain with no gap or water, prefer normal walking edges
-            if (Math.abs(heightDiff) <= 0.6 && this.isDirectWalkable(node, other, collisionGrid)) {
-              continue;
+            // For elevated nodes (rooftops), only allow jumping from actual roof ledges in the jump direction
+            if (!isGroundOrigin && !node.id.startsWith('bldg_roof_')) {
+              const edgeProbeDist = 1.15;
+              const edgeProbeX = node.x + (ddx / distXZ) * edgeProbeDist;
+              const edgeProbeZ = node.z + (ddz / distXZ) * edgeProbeDist;
+              const aheadFloor = collisionGrid.getHighestTopBelow(edgeProbeX, edgeProbeZ, node.y + 0.6);
+              if (aheadFloor >= node.y - 0.8) {
+                continue;
+              }
+            }
+
+            // If they are directly walkable on flat/same-roof terrain with no gap or water, prefer walking edges
+            if (Math.abs(heightDiff) <= 0.6) {
+              if (!isGroundOrigin || other.y > 0.5) {
+                const minY = Math.min(node.y, other.y);
+                const maxY = Math.max(node.y, other.y);
+                const midX = node.x + ddx * 0.5;
+                const midZ = node.z + ddz * 0.5;
+                const midFloor = collisionGrid.getHighestTopBelow(midX, midZ, maxY + 0.6);
+                const hasGapAtMid = midFloor < minY - 0.8;
+                if (!hasGapAtMid && this.isDirectWalkable(node, other, collisionGrid)) {
+                  continue;
+                }
+              } else if (this.isDirectWalkable(node, other, collisionGrid)) {
+                continue;
+              }
             }
 
             // Check clear air trajectory between node and other
@@ -896,7 +941,7 @@ export class NavigationGraph {
             if (!trajectoryBlocked) {
               node.isEdge = true;
               other.isEdge = true;
-              const cost = distXZ * 1.1 + 1.5;
+              const cost = distXZ * 1.6 + 1.5;
               edgeList.push({ target: other, type: 'jump', cost });
             }
           }
@@ -942,7 +987,7 @@ export class NavigationGraph {
       } else if (edgeType === 'ladder') {
         stepCost += 10.0 + Math.abs(dy) * 2.5;
       } else if (edgeType === 'jump') {
-        stepCost += dist * 1.1 + 2.0;
+        stepCost += dist * 1.6 + 2.0;
       } else if (edgeType === 'drop') {
         stepCost += Math.abs(dy) * 0.2;
       }
@@ -961,17 +1006,7 @@ export class NavigationGraph {
     pos: { x: number; y: number; z: number },
     maxDistance: number = 25.0,
   ): {
-    zone: {
-      minX: number;
-      minY: number;
-      minZ: number;
-      maxX: number;
-      maxY: number;
-      maxZ: number;
-      faceAngle: number;
-      railX: number;
-      railZ: number;
-    };
+    zone: LadderZone;
     index: number;
     groundNode: NavNode | null;
     footNode: NavNode | null;
@@ -980,7 +1015,7 @@ export class NavigationGraph {
   } | null {
     if (!this.ladderZones || this.ladderZones.length === 0) return null;
 
-    let bestZone: any = null;
+    let bestZone: LadderZone | null = null;
     let bestIndex = -1;
     let bestDist = Infinity;
 
@@ -1021,9 +1056,6 @@ export class NavigationGraph {
     const gx = worldToIndex(pos.x, this.halfSize, this.worldSize);
     const gz = worldToIndex(pos.z, this.halfSize, this.worldSize);
 
-    const scratchP = new THREE.Vector3();
-    const scratchN = new THREE.Vector3();
-
     // Ring search around lookup cell (up to 8 cells distance in O(1))
     for (let r = 0; r <= 8; r++) {
       let foundInRing = false;
@@ -1045,9 +1077,9 @@ export class NavigationGraph {
                 // Penalize nodes separated from pos by a building wall
                 let losPenalty = 0;
                 if (this.collisionGrid && Math.abs(dy) <= 1.0) {
-                  scratchP.set(pos.x, pos.y + 0.5, pos.z);
-                  scratchN.set(node.x, node.y + 0.5, node.z);
-                  if (!checkLineOfSight(scratchP, scratchN, this.collisionGrid)) {
+                  scratchPosA.set(pos.x, pos.y + 0.5, pos.z);
+                  scratchPosB.set(node.x, node.y + 0.5, node.z);
+                  if (!checkLineOfSight(scratchPosA, scratchPosB, this.collisionGrid)) {
                     losPenalty = 2000.0;
                   }
                 }
@@ -1076,9 +1108,9 @@ export class NavigationGraph {
 
         let losPenalty = 0;
         if (this.collisionGrid && Math.abs(dy) <= 1.0) {
-          scratchP.set(pos.x, pos.y + 0.5, pos.z);
-          scratchN.set(node.x, node.y + 0.5, node.z);
-          if (!checkLineOfSight(scratchP, scratchN, this.collisionGrid)) {
+          scratchPosA.set(pos.x, pos.y + 0.5, pos.z);
+          scratchPosB.set(node.x, node.y + 0.5, node.z);
+          if (!checkLineOfSight(scratchPosA, scratchPosB, this.collisionGrid)) {
             losPenalty = 2000.0;
           }
         }
@@ -1138,9 +1170,9 @@ export class NavigationGraph {
       if (closedSet.has(current.id)) continue;
       closedSet.add(current.id);
 
-      // Target reached! Reconstruct path.
+      // Target reached! Reconstruct path without mutating shared graph nodes.
       if (current.id === endNode.id) {
-        const path: NavNode[] = [current];
+        const rawPath: NavNode[] = [current];
         let currId = current.id;
         const visitedInPath = new Set<string>([currId]);
         while (cameFrom.has(currId)) {
@@ -1149,7 +1181,7 @@ export class NavigationGraph {
             break; // Prevent infinite cycle
           }
           visitedInPath.add(parent.id);
-          path.unshift(parent);
+          rawPath.unshift(parent);
           currId = parent.id;
         }
 
@@ -1157,23 +1189,26 @@ export class NavigationGraph {
         // 1. Objects and surfaces with height difference <= 1 floor (<= MAX_SCALABLE_HEIGHT) are scalable via wall vault/climb.
         // 2. Vertical steps > 1 floor (> MAX_SCALABLE_HEIGHT) are ONLY accessible via ladders or rooftop jumps.
         // 3. If any step scales > MAX_SCALABLE_HEIGHT without a ladder, discard route.
-        for (let i = 0; i < path.length - 1; i++) {
-          const fromNode = path[i];
-          const toNode = path[i + 1];
+        const path: NavNode[] = [{ ...rawPath[0], edgeType: 'walk' }];
+        for (let i = 0; i < rawPath.length - 1; i++) {
+          const fromNode = rawPath[i];
+          const toNode = rawPath[i + 1];
           const edgeType = this.getEdgeType(fromNode, toNode);
-          toNode.edgeType =
-            edgeType ??
-            (toNode.y < fromNode.y - 1.0
-              ? 'drop'
-              : toNode.y > fromNode.y + CLIMB_THRESHOLD
-                ? 'climb'
-                : 'walk');
           const heightDiff = toNode.y - fromNode.y;
 
           // Scaling higher than 1-story step height without a ladder is prohibited
           if (heightDiff > MAX_SCALABLE_HEIGHT && edgeType !== 'ladder') {
             return null; // Discard invalid route!
           }
+
+          const resolvedEdgeType: EdgeType =
+            edgeType ??
+            (toNode.y < fromNode.y - 1.0
+              ? 'drop'
+              : toNode.y > fromNode.y + CLIMB_THRESHOLD
+                ? 'climb'
+                : 'walk');
+          path.push({ ...toNode, edgeType: resolvedEdgeType });
         }
 
         return path;
@@ -1245,16 +1280,12 @@ export class NavigationGraph {
     const dist = Math.hypot(dx, dz);
     if (dist < 0.1) return true;
 
-    // 1. Raycast Line of Sight check at torso and knee height to detect any intersecting building boxes or fences
-    const startEye = new THREE.Vector3(from.x, from.y + 1.2, from.z);
-    const endEye = new THREE.Vector3(to.x, to.y + 1.2, to.z);
-    if (!checkLineOfSight(startEye, endEye, collisionGrid)) {
+    // 1. Zero-allocation Raycast Line of Sight check at torso and knee height
+    if (!collisionGrid.hasLineOfSight3D(from.x, from.y + 1.2, from.z, to.x, to.y + 1.2, to.z)) {
       return false; // Obstacle or building blocks direct line of sight!
     }
 
-    const startKnee = new THREE.Vector3(from.x, from.y + 0.4, from.z);
-    const endKnee = new THREE.Vector3(to.x, to.y + 0.4, to.z);
-    if (!checkLineOfSight(startKnee, endKnee, collisionGrid)) {
+    if (!collisionGrid.hasLineOfSight3D(from.x, from.y + 0.4, from.z, to.x, to.y + 0.4, to.z)) {
       return false; // Low obstacle blocks direct line of sight!
     }
 
@@ -1279,13 +1310,16 @@ export class NavigationGraph {
         return false;
       }
 
-      // Check building grid (bGrid) footprint
+      // Check building grid (bGrid) and solid building interior footprint
       const ix = worldToIndex(px, this.halfSize, this.worldSize);
       const iz = worldToIndex(pz, this.halfSize, this.worldSize);
       if (this.bGrid && this.bGrid[ix]?.[iz] !== undefined && this.bGrid[ix][iz] > 0.5) {
         if (py < this.bGrid[ix][iz] - 0.1) {
           return false; // Point intersects building footprint!
         }
+      }
+      if (this.solidRoofGrid[ix]?.[iz] > 0.5 && py < this.solidRoofGrid[ix][iz] - 0.1) {
+        return false; // Point intersects solid building footprint!
       }
 
       // Check obstacle collisions with player clearance to prevent corner clipping
@@ -1374,40 +1408,77 @@ export class NavigationGraph {
 
   /**
    * Evaluates and selects the best hiding spot for a Hider AI based on:
-   * 1. Distance from seeker (further is safer)
-   * 2. Line of sight blockage (breaking LOS gives huge bonus)
-   * 3. Elevation & rooftop cover
-   * 4. Escape safety (not trapped in corners)
+   * 1. Distance from seeker and avoiding running toward the seeker
+   * 2. Avoiding seeker's predicted movement trajectory
+   * 3. Deep Line-of-Sight blockage (cover even against slight seeker peeks)
+   * 4. Elevation, rooftop cover & escape routes (penalizing dead ends/map corners)
    */
   public evaluateHidingSpots(
     seekerPos: THREE.Vector3,
     currentAiPos: THREE.Vector3,
     collisionGrid: SpatialHashGrid,
+    seekerVel?: THREE.Vector3,
   ): NavNode | null {
     if (this.nodes.size === 0) return null;
+
+    // Direction from AI to Seeker (normalized XZ)
+    const toSeekerX = seekerPos.x - currentAiPos.x;
+    const toSeekerZ = seekerPos.z - currentAiPos.z;
+    const distBetween = Math.hypot(toSeekerX, toSeekerZ);
+    const dirToSeekerX = distBetween > 0.01 ? toSeekerX / distBetween : 0;
+    const dirToSeekerZ = distBetween > 0.01 ? toSeekerZ / distBetween : 0;
+
+    // Seeker predicted position 2 seconds ahead
+    const hasSeekerVel = seekerVel && (seekerVel.x * seekerVel.x + seekerVel.z * seekerVel.z) > 0.25;
+    const predSeekerX = hasSeekerVel ? seekerPos.x + seekerVel!.x * 2.0 : seekerPos.x;
+    const predSeekerZ = hasSeekerVel ? seekerPos.z + seekerVel!.z * 2.0 : seekerPos.z;
 
     // Fast pass 1: Score all nodes geometrically without expensive raycasting
     const candidates: { node: NavNode; initialScore: number }[] = [];
 
     this.nodes.forEach((node) => {
+      const edges = this.edges.get(node.id);
+      if (!edges || edges.length === 0) return;
+
       const distToSeeker = Math.hypot(node.x - seekerPos.x, node.z - seekerPos.z);
       if (distToSeeker < 6.0) return;
 
-      const distToAi = Math.hypot(node.x - currentAiPos.x, node.z - currentAiPos.z);
+      const dxAi = node.x - currentAiPos.x;
+      const dzAi = node.z - currentAiPos.z;
+      const distToAi = Math.hypot(dxAi, dzAi);
 
       let score = 0;
       score += Math.min(distToSeeker, 40.0) * 4.0;
       score -= distToAi * 0.35;
 
+      // Penalize running towards the seeker when seeker is nearby
+      if (distToAi > 1.0 && distBetween > 0.5 && distBetween < 26.0) {
+        const dotTowardsSeeker = (dxAi / distToAi) * dirToSeekerX + (dzAi / distToAi) * dirToSeekerZ;
+        if (dotTowardsSeeker > 0.3) {
+          score -= dotTowardsSeeker * 90.0;
+        }
+      }
+
+      // Penalize spots lying along seeker's projected intercept vector
+      if (hasSeekerVel) {
+        const distToPred = Math.hypot(node.x - predSeekerX, node.z - predSeekerZ);
+        if (distToPred < 8.0) {
+          score -= (8.0 - distToPred) * 8.0;
+        }
+      }
+
       if (node.y >= 2.5) score += 30.0;
       if (node.isCorner) score += 20.0;
-      if (node.isWater) score -= 40.0;
+      if (node.isWater) score -= 45.0;
 
-      const distToBorder = Math.min(
-        this.halfSize - Math.abs(node.x),
-        this.halfSize - Math.abs(node.z),
-      );
-      if (distToBorder < 2.5) score -= 30.0;
+      // Penalize dead ends / low escape connectivity
+      if (edges.length <= 2) score -= 25.0;
+      else if (edges.length >= 5) score += 10.0;
+
+      const marginX = this.halfSize - Math.abs(node.x);
+      const marginZ = this.halfSize - Math.abs(node.z);
+      if (marginX < 2.5 && marginZ < 2.5) score -= 65.0; // Trapped map corner
+      else if (Math.min(marginX, marginZ) < 2.5) score -= 30.0;
 
       candidates.push({ node, initialScore: score });
     });
@@ -1418,17 +1489,52 @@ export class NavigationGraph {
     candidates.sort((a, b) => b.initialScore - a.initialScore);
     const topCandidates = candidates.slice(0, 24);
 
-    // Fast pass 2: Run Line of Sight check ONLY on top candidates
-    const seekerEye = new THREE.Vector3(seekerPos.x, seekerPos.y + 1.5, seekerPos.z);
+    // Fast pass 2: Run 3D Line of Sight & deep cover check ONLY on top candidates
     let bestNode: NavNode | null = topCandidates[0].node;
     let highestFinalScore = -Infinity;
 
     for (let i = 0; i < topCandidates.length; i++) {
       const { node, initialScore } = topCandidates[i];
-      const nodeEye = new THREE.Vector3(node.x, node.y + 1.0, node.z);
-      const hasLOS = checkLineOfSight(seekerEye, nodeEye, collisionGrid);
+      const hasDirectLOS = collisionGrid.hasLineOfSight3D(
+        seekerPos.x,
+        seekerPos.y + 1.5,
+        seekerPos.z,
+        node.x,
+        node.y + 1.0,
+        node.z,
+      );
 
-      const finalScore = initialScore + (!hasLOS ? 120.0 : -80.0);
+      let coverBonus = !hasDirectLOS ? 120.0 : -80.0;
+
+      // Check lateral peek angles (±2.5m perpendicular to seeker->node vector) for true deep cover
+      if (!hasDirectLOS) {
+        const vx = node.x - seekerPos.x;
+        const vz = node.z - seekerPos.z;
+        const len = Math.hypot(vx, vz) || 1;
+        const perpX = (-vz / len) * 2.5;
+        const perpZ = (vx / len) * 2.5;
+        const peekLeftBlocked = !collisionGrid.hasLineOfSight3D(
+          seekerPos.x + perpX,
+          seekerPos.y + 1.5,
+          seekerPos.z + perpZ,
+          node.x,
+          node.y + 1.0,
+          node.z,
+        );
+        const peekRightBlocked = !collisionGrid.hasLineOfSight3D(
+          seekerPos.x - perpX,
+          seekerPos.y + 1.5,
+          seekerPos.z - perpZ,
+          node.x,
+          node.y + 1.0,
+          node.z,
+        );
+        if (peekLeftBlocked && peekRightBlocked) {
+          coverBonus += 45.0; // Deep solid cover
+        }
+      }
+
+      const finalScore = initialScore + coverBonus;
       if (finalScore > highestFinalScore) {
         highestFinalScore = finalScore;
         bestNode = node;
@@ -1474,13 +1580,18 @@ export class NavigationGraph {
       if (candidates.length > 0) {
         candidates.sort((a, b) => b.score - a.score);
         const top = candidates.slice(0, 8);
-        const targetEye = new THREE.Vector3(lastKnownPos.x, lastKnownPos.y + 1.0, lastKnownPos.z);
 
         let bestNode: NavNode | null = top[0].node;
         let highest = -Infinity;
         for (const item of top) {
-          const nodeEye = new THREE.Vector3(item.node.x, item.node.y + 1.5, item.node.z);
-          const hasLOS = checkLineOfSight(nodeEye, targetEye, collisionGrid);
+          const hasLOS = collisionGrid.hasLineOfSight3D(
+            item.node.x,
+            item.node.y + 1.5,
+            item.node.z,
+            lastKnownPos.x,
+            lastKnownPos.y + 1.0,
+            lastKnownPos.z,
+          );
           const finalScore = item.score + (hasLOS ? 50.0 : 0);
           if (finalScore > highest) {
             highest = finalScore;
@@ -1581,8 +1692,8 @@ export class NavigationGraph {
     const topCandidates = candidates.slice(0, 12);
     for (let i = 0; i < topCandidates.length; i++) {
       const candidate = topCandidates[i].node;
-      const targetPos = new THREE.Vector3(candidate.x, candidate.y, candidate.z);
-      const rawPath = this.findPath(currentPos, targetPos);
+      scratchPatrolTarget.set(candidate.x, candidate.y, candidate.z);
+      const rawPath = this.findPath(currentPos, scratchPatrolTarget);
       if (rawPath && rawPath.length > 1) {
         const smoothedPath = this.smoothPath(rawPath, collisionGrid);
         return { target: candidate, path: smoothedPath };
@@ -1601,8 +1712,19 @@ export class NavigationGraph {
     minRadius: number = 3.0,
     maxRadius: number = 18.0,
     excludeNodeIds?: Set<string>,
+    preferredDir?: THREE.Vector3,
   ): NavNode[] {
     if (this.nodes.size === 0) return [];
+
+    const hasPreferredDir =
+      preferredDir && (preferredDir.x * preferredDir.x + preferredDir.z * preferredDir.z) > 0.01;
+    let prefX = 0;
+    let prefZ = 0;
+    if (hasPreferredDir && preferredDir) {
+      const len = Math.hypot(preferredDir.x, preferredDir.z) || 1;
+      prefX = preferredDir.x / len;
+      prefZ = preferredDir.z / len;
+    }
 
     const candidates: { node: NavNode; score: number }[] = [];
 
@@ -1612,7 +1734,9 @@ export class NavigationGraph {
       const edges = this.edges.get(node.id);
       if (!edges || edges.length === 0) return;
 
-      const dist = Math.hypot(node.x - searchOrigin.x, node.z - searchOrigin.z);
+      const dx = node.x - searchOrigin.x;
+      const dz = node.z - searchOrigin.z;
+      const dist = Math.hypot(dx, dz);
       if (dist < minRadius || dist > maxRadius) return;
 
       let score = 0;
@@ -1622,6 +1746,12 @@ export class NavigationGraph {
 
       // Distance score: prefer moderate distances (5m - 14m)
       score += (1.0 - Math.abs(dist - 8.0) / maxRadius) * 20.0;
+
+      // Directional sweep bonus along last known movement direction
+      if (hasPreferredDir && dist > 0.5) {
+        const dot = (dx / dist) * prefX + (dz / dist) * prefZ;
+        if (dot > 0) score += dot * 35.0;
+      }
 
       candidates.push({ node, score });
     });

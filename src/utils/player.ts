@@ -15,6 +15,13 @@ const globalLadderState: LadderState = {
   wallClimbDir: new THREE.Vector2(0, 0),
 };
 const playerDirScratch = new THREE.Vector3();
+const inputDirScratch = new THREE.Vector3();
+const camForwardScratch = new THREE.Vector3();
+const camRightScratch = new THREE.Vector3();
+const wallClimbDirScratch = new THREE.Vector2();
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const coyoteTimers = new WeakMap<THREE.Vector3, number>();
+const COYOTE_TIME_DURATION = 0.1;
 
 export const updatePlayerPhysics = (
   dt: number,
@@ -73,7 +80,7 @@ export const updatePlayerPhysics = (
   const activeLadderState = ladderStateRef?.current ?? globalLadderState;
 
   // 1. Calculate Input Direction
-  const inputDir = new THREE.Vector3(0, 0, 0);
+  const inputDir = inputDirScratch.set(0, 0, 0);
   let isAnalogRunning = false;
 
   if (canMove && !stunned && rollTimer.current <= 0) {
@@ -84,14 +91,12 @@ export const updatePlayerPhysics = (
       if (inputDir.lengthSq() > 1) inputDir.normalize();
     } else {
       // Get Camera Direction projected to XZ plane
-      const camForward = new THREE.Vector3();
-      camera.getWorldDirection(camForward);
-      camForward.y = 0;
-      camForward.normalize();
+      camera.getWorldDirection(camForwardScratch);
+      camForwardScratch.y = 0;
+      camForwardScratch.normalize();
 
       // Calculate Right Vector (Forward x Up)
-      const camRight = new THREE.Vector3();
-      camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+      camRightScratch.crossVectors(camForwardScratch, WORLD_UP).normalize();
 
       // Analog Input Priority
       const analogInput = keys.current.analog as { x: number; y: number } | undefined;
@@ -104,14 +109,14 @@ export const updatePlayerPhysics = (
         if (mag > 0.9) isAnalogRunning = true;
 
         // In screen space, Up (-Y) means Forward. Right (+X) means Right.
-        inputDir.addScaledVector(camForward, joyY);
-        inputDir.addScaledVector(camRight, joyX);
+        inputDir.addScaledVector(camForwardScratch, joyY);
+        inputDir.addScaledVector(camRightScratch, joyX);
       } else {
         // Keyboard Fallback
-        if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForward);
-        if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForward);
-        if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRight);
-        if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRight);
+        if (keys.current['w'] || keys.current['arrowup']) inputDir.add(camForwardScratch);
+        if (keys.current['s'] || keys.current['arrowdown']) inputDir.sub(camForwardScratch);
+        if (keys.current['d'] || keys.current['arrowright']) inputDir.add(camRightScratch);
+        if (keys.current['a'] || keys.current['arrowleft']) inputDir.sub(camRightScratch);
       }
 
       if (inputDir.lengthSq() > 0) {
@@ -149,29 +154,45 @@ export const updatePlayerPhysics = (
     if (jumpBufferTimer.current < 0) jumpBufferTimer.current = 0;
   }
 
-  // Capture previous grounded state
+  // Capture previous grounded state & update Coyote Time
   const wasGrounded = isGrounded.current;
-
-  // --- PRE-JUMP LOGIC ---
-  if (
-    justPressedJump &&
-    isGrounded.current &&
-    jumpDelayTimer.current <= 0 &&
-    !stunned &&
-    rollTimer.current <= 0
-  ) {
-    jumpDelayTimer.current = 0.05;
+  let coyoteRemaining = coyoteTimers.get(pos) ?? 0;
+  if (isGrounded.current) {
+    coyoteRemaining = COYOTE_TIME_DURATION;
+  } else {
+    coyoteRemaining = Math.max(0, coyoteRemaining - dt);
   }
+  coyoteTimers.set(pos, coyoteRemaining);
 
+  const canCoyoteJump = coyoteRemaining > 0 && velocity.y <= 0.5;
   let performJump = false;
   let isVisualPreJumping = false;
 
-  if (jumpDelayTimer.current > 0) {
-    isVisualPreJumping = true;
-    jumpDelayTimer.current -= dt;
-    if (jumpDelayTimer.current <= 0) {
+  // --- PRE-JUMP LOGIC ---
+  if (aiInput) {
+    // AI jumps immediately when requesting jump on ground/ledge without 50ms pre-jump delay
+    if (justPressedJump && (isGrounded.current || canCoyoteJump) && !stunned && rollTimer.current <= 0) {
       performJump = true;
       jumpDelayTimer.current = 0;
+    }
+  } else {
+    if (
+      justPressedJump &&
+      (isGrounded.current || canCoyoteJump) &&
+      jumpDelayTimer.current <= 0 &&
+      !stunned &&
+      rollTimer.current <= 0
+    ) {
+      jumpDelayTimer.current = 0.05;
+    }
+
+    if (jumpDelayTimer.current > 0) {
+      isVisualPreJumping = true;
+      jumpDelayTimer.current -= dt;
+      if (jumpDelayTimer.current <= 0) {
+        performJump = true;
+        jumpDelayTimer.current = 0;
+      }
     }
   }
 
@@ -205,28 +226,25 @@ export const updatePlayerPhysics = (
     ladderMountTimer: activeLadderState.ladderMountTimer,
     isWallClimbing: activeLadderState.isWallClimbing,
     wallClimbProgress: activeLadderState.wallClimbProgress,
-    wallClimbDir: activeLadderState.wallClimbDir.clone(),
+    wallClimbDir: wallClimbDirScratch.copy(activeLadderState.wallClimbDir),
   };
 
   const analogIn = keys.current.analog as { x: number; y: number } | null | undefined;
   const isJoyUp = analogIn && analogIn.y < -0.3; // y < 0 is UP on thumbstick
   const isJoyDown = analogIn && analogIn.y > 0.3;
 
+  const isLadderState =
+    currentState.isClimbing || currentState.isLadderSliding || currentState.isLadderHanging;
+
   const inputs = {
     dt: dt,
     moveDir: inputDir,
     actions: {
       jump:
-        currentState.isGrounded
-          ? ((performJump &&
-              !currentState.isClimbing &&
-              !currentState.isLadderSliding &&
-              !currentState.isLadderHanging) ||
-             (justPressedJump &&
-              (currentState.isClimbing ||
-                currentState.isLadderSliding ||
-                currentState.isLadderHanging)))
+        currentState.isGrounded || canCoyoteJump
+          ? (performJump && !isLadderState) || (justPressedJump && isLadderState)
           : isJumpDown,
+      allowCoyoteJump: canCoyoteJump && !isLadderState,
       charge: !!(aiInput ? aiInput.charge : keys.current['c']),
       climb: !!(aiInput ? aiInput.climb : isJumpDown),
       run: !!((keys.current['shift'] && !aiInput) || isAnalogRunning || (aiInput && aiInput.run)),
@@ -253,6 +271,11 @@ export const updatePlayerPhysics = (
 
   // 4. Run Physics Engine
   const nextState = updateEntityPhysics(currentState, inputs);
+
+  // Consume coyote timer once airborne with upward velocity
+  if (!nextState.isGrounded && nextState.vel.y > 1.0) {
+    coyoteTimers.set(pos, 0);
+  }
 
   // Update Input History
   jumpPressedPrev.current = isJumpDown;

@@ -54,7 +54,9 @@ const GameLayout: React.FC<{
     gameInterfaceProps,
   }) => {
     const [matchTimer, setMatchTimer] = useState(0);
-    const { devSettings } = useGameStore();
+    const setDevSettings = useGameStore((state) => state.setDevSettings);
+    const initialDevSettingsRef = useRef(useGameStore.getState().devSettings);
+    const initialDevSettings = initialDevSettingsRef.current;
 
     const handleRoundEndRef = useRef(handleRoundEnd);
     handleRoundEndRef.current = handleRoundEnd;
@@ -85,40 +87,39 @@ const GameLayout: React.FC<{
         devToolsWidth,
         devToolsOpacity,
       },
-      setLeva,
     ] = useLevaControls(() => ({
       'Ambiente & Performance': folder(
         {
           ambientIntensity: {
-            value: devSettings.ambientIntensity,
+            value: initialDevSettings.ambientIntensity,
             min: 0,
             max: 2,
             step: 0.05,
             label: 'Luz Ambiente',
           },
           sunIntensity: {
-            value: devSettings.sunIntensity,
+            value: initialDevSettings.sunIntensity,
             min: 0,
             max: 5,
             step: 0.1,
             label: 'Luz Solar',
           },
           sunAzimuth: {
-            value: devSettings.sunAzimuth,
+            value: initialDevSettings.sunAzimuth,
             min: 0,
             max: 360,
             step: 1,
             label: 'Direção do Sol (°)',
           },
           sunElevation: {
-            value: devSettings.sunElevation,
+            value: initialDevSettings.sunElevation,
             min: 5,
             max: 90,
             step: 1,
             label: 'Elevação do Sol (°)',
           },
           showPerfMonitor: {
-            value: true,
+            value: initialDevSettings.showPerfMonitor,
             label: 'Monitor FPS/GPU',
           },
         },
@@ -127,14 +128,14 @@ const GameLayout: React.FC<{
       'Câmera': folder(
         {
           cameraZoom: {
-            value: settings.cameraZoom,
+            value: initialDevSettings.cameraZoom,
             min: 10,
             max: 100,
             step: 5,
             label: 'Zoom da Câmera',
           },
           cameraFollow: {
-            value: settings.cameraFollow,
+            value: initialDevSettings.cameraFollow,
             label: 'Seguir Jogador',
           },
         },
@@ -143,27 +144,27 @@ const GameLayout: React.FC<{
       'Depuração Visual': folder(
         {
           showGrid: {
-            value: true,
+            value: initialDevSettings.showGrid,
             label: 'Grade do Mapa',
           },
           showCollision: {
-            value: false,
+            value: initialDevSettings.showCollision,
             label: 'Caixas de Colisão',
           },
           showOcclusion: {
-            value: false,
+            value: initialDevSettings.showOcclusion,
             label: 'Pontos de Visão (Rua)',
           },
           showAIPath: {
-            value: true,
+            value: initialDevSettings.showAIPath,
             label: 'Rota e Alvo da IA',
           },
           alwaysShowAI: {
-            value: false,
+            value: initialDevSettings.alwaysShowAI,
             label: 'Visão Permanente da IA',
           },
           showWireframe: {
-            value: true,
+            value: initialDevSettings.showWireframe,
             label: 'Wireframe ao Ocultar',
           },
         },
@@ -172,7 +173,7 @@ const GameLayout: React.FC<{
       'Waypath da IA': folder(
         {
           addDestinationMode: {
-            value: false,
+            value: initialDevSettings.addDestinationMode,
             label: 'Adicionar Destino',
           },
           'Limpar Caminho': button(() => {
@@ -197,11 +198,11 @@ const GameLayout: React.FC<{
       'Jogabilidade & Trapaças': folder(
         {
           godMode: {
-            value: true,
+            value: initialDevSettings.godMode,
             label: 'Modo Deus (Invencível)',
           },
           freezeTimer: {
-            value: true,
+            value: initialDevSettings.freezeTimer,
             label: 'Congelar Tempo',
           },
         },
@@ -210,14 +211,14 @@ const GameLayout: React.FC<{
       'Interface DevTools': folder(
         {
           devToolsWidth: {
-            value: 380,
+            value: initialDevSettings.devToolsWidth,
             min: 280,
             max: 600,
             step: 10,
             label: 'Largura Painel (px)',
           },
           devToolsOpacity: {
-            value: 1.0,
+            value: initialDevSettings.devToolsOpacity,
             min: 0.15,
             max: 1.0,
             step: 0.05,
@@ -236,6 +237,49 @@ const GameLayout: React.FC<{
         { collapsed: false },
       ),
     }));
+
+    useEffect(() => {
+      setDevSettings({
+        ambientIntensity,
+        sunIntensity,
+        sunAzimuth,
+        sunElevation,
+        showPerfMonitor,
+        cameraZoom,
+        cameraFollow,
+        showGrid,
+        showCollision,
+        showOcclusion,
+        showAIPath,
+        alwaysShowAI,
+        showWireframe,
+        addDestinationMode,
+        godMode,
+        freezeTimer,
+        devToolsWidth,
+        devToolsOpacity,
+      });
+    }, [
+      ambientIntensity,
+      sunIntensity,
+      sunAzimuth,
+      sunElevation,
+      showPerfMonitor,
+      cameraZoom,
+      cameraFollow,
+      showGrid,
+      showCollision,
+      showOcclusion,
+      showAIPath,
+      alwaysShowAI,
+      showWireframe,
+      addDestinationMode,
+      godMode,
+      freezeTimer,
+      devToolsWidth,
+      devToolsOpacity,
+      setDevSettings,
+    ]);
 
     useEffect(() => {
       if (status === GameStatus.PREP) {
@@ -413,36 +457,39 @@ const GameLayout: React.FC<{
 );
 
 const App: React.FC = () => {
-  const [gameState, setGameState] = useState<GameState>({
-    status: GameStatus.IDLE,
-    mode: GameMode.FREE,
-    match: {
-      currentRound: 1,
-      maxRounds: 4,
-      scorePlayer: 0,
-      timer: 0,
-    },
-    taunt: 'Pratique seu parkour!',
-    hint: 'Use obstáculos para ganhar altura.',
-    settings: {
-      worldSize: 50,
-      playerSpeed: 0.85,
-      staminaDuration: 2.0,
-      cameraZoom: 15,
-      cameraFollow: false,
-      ratios: {
-        farm: 0,
-        house: 45,
-        highrise: 0,
-        factory: 0,
-        ruins: 0,
-        foliage: 0,
+  const [gameState, setGameState] = useState<GameState>(() => {
+    const initialDev = useGameStore.getState().devSettings;
+    return {
+      status: GameStatus.IDLE,
+      mode: GameMode.FREE,
+      match: {
+        currentRound: 1,
+        maxRounds: 4,
+        scorePlayer: 0,
+        timer: 0,
       },
-      riverWidth: 0,
-      riverFlow: 3,
-    },
-    mapId: 0,
-    lastRoundResult: '',
+      taunt: 'Pratique seu parkour!',
+      hint: 'Use obstáculos para ganhar altura.',
+      settings: {
+        worldSize: 50,
+        playerSpeed: 0.85,
+        staminaDuration: 2.0,
+        cameraZoom: initialDev.cameraZoom,
+        cameraFollow: initialDev.cameraFollow,
+        ratios: {
+          farm: 0,
+          house: 45,
+          highrise: 0,
+          factory: 0,
+          ruins: 0,
+          foliage: 0,
+        },
+        riverWidth: 0,
+        riverFlow: 3,
+      },
+      mapId: 0,
+      lastRoundResult: '',
+    };
   });
 
   const [showMission, setShowMission] = useState(false);

@@ -2,6 +2,15 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { NavigationGraph, NavNode, MinBinaryHeap } from './navigation';
 import { SpatialHashGrid } from './physics';
+import { GameMode, GameStatus, LadderState, VisualState } from '../types';
+import {
+  AIContext,
+  AIWaypoint,
+  WhiskerHit,
+  resetAIStateForRound,
+  updateAIDecisionAndInput,
+} from './aiController';
+import { updatePlayerPhysics } from './player';
 
 describe('NavigationGraph - Rooftop Jump Connections', () => {
   it('creates jump edges between adjacent rooftop nodes across gaps', () => {
@@ -1422,7 +1431,6 @@ describe('NavigationGraph - Corner and Wall Clearance', () => {
       .map(() => Array(worldSize).fill(0));
 
     // Fill bGrid for the building
-    const halfSize = worldSize / 2;
     for (let gx = 14; gx <= 26; gx++) {
       for (let gz = 14; gz <= 26; gz++) {
         bGrid[gx][gz] = 8.0;
@@ -1751,7 +1759,6 @@ describe('MinBinaryHeap Priority Queue', () => {
 describe('NavigationGraph - River Jumping & Water Avoidance', () => {
   it('creates jump edges across a river and chooses jump over swimming', () => {
     const worldSize = 40;
-    const halfSize = 20;
     const collisionGrid = new SpatialHashGrid(worldSize);
 
     const bGrid: number[][] = Array(worldSize)
@@ -1811,6 +1818,514 @@ describe('NavigationGraph - River Jumping & Water Avoidance', () => {
     expect(touchedWater).toBe(false);
   });
 });
+
+function createTestAIContext(spawn: THREE.Vector3): AIContext {
+  return {
+    pos: { current: spawn.clone() },
+    vel: { current: new THREE.Vector3(0, 0, 0) },
+    lastDir: { current: new THREE.Vector2(0, 1) },
+    isGrounded: { current: true },
+    isCharging: { current: false },
+    isRolling: { current: false },
+    stamina: { current: 100 },
+    isExhausted: { current: false },
+    stunTimer: { current: 0 },
+    jumpDelayTimer: { current: 0 },
+    airTimeHighPoint: { current: spawn.y },
+    jumpPressedPrev: { current: false },
+    rollTimer: { current: 0 },
+    jumpBufferTimer: { current: 0 },
+    stumbleTimer: { current: 0 },
+    stumbleVelocity: { current: new THREE.Vector3(0, 0, 0) },
+    landingAnimTimer: { current: 0 },
+    lastFallDist: { current: 0 },
+    prevPos: { current: spawn.clone() },
+    smoothedMoveSpeed: { current: 0 },
+    ladderState: {
+      current: {
+        isClimbing: false,
+        isLadderSliding: false,
+        isLadderHanging: false,
+        isLadderMounting: false,
+        ladderMountTimer: 0,
+        isWallClimbing: false,
+        wallClimbProgress: 0,
+        wallClimbDir: new THREE.Vector2(0, 0),
+      } as LadderState,
+    },
+    noiseLevelRef: { current: 0 },
+    path: { current: [] as AIWaypoint[] },
+    pathIndex: { current: 0 },
+    pathRecalcTimer: { current: 0 },
+    lastPathTarget: { current: new THREE.Vector3(Infinity, Infinity, Infinity) },
+    hidingSpot: { current: new THREE.Vector3(0, 0, 0) },
+    targetPosRef: { current: new THREE.Vector3(0, 0, 0) },
+    lastKnownPlayerPos: { current: new THREE.Vector3(0, 0, 0) },
+    playerLastVel: { current: new THREE.Vector3(0, 0, 0) },
+    lastKnownPlayerDir: { current: new THREE.Vector3(0, 0, 0) },
+    hasLastKnownPlayerPos: { current: false },
+    heardEmojiTimer: { current: 0 },
+    localSearchCount: { current: 0 },
+    searchedSpotIds: { current: new Set<string>() },
+    wanderTarget: { current: new THREE.Vector3(0, 0, 0) },
+    wanderTargetTimer: { current: 0 },
+    visitedQuadrants: { current: new Set<number>() },
+    searchTimer: { current: 0 },
+    fleeTimer: { current: 0 },
+    wasPursuingPlayer: { current: false },
+    isCustomDestination: { current: false },
+    stillTimer: { current: 0 },
+    searchLookTimer: { current: 0 },
+    stuckTimer: { current: 0 },
+    waypointTimer: { current: 0 },
+    lateralDetourDir: { current: new THREE.Vector3(0, 0, 0) },
+    lateralDetourTimer: { current: 0 },
+    longStuckTimer: { current: 0 },
+    longStuckPos: { current: spawn.clone() },
+    lastProgressPos: { current: spawn.clone() },
+    lastRouteSig: { current: '' },
+    routeRepeatCount: { current: 0 },
+    avoidNodeIds: { current: new Set<string>() },
+    ladderStuckTimer: { current: 0 },
+    prevLadderY: { current: spawn.y },
+    whiskerCenterHit: { current: null as WhiskerHit | null },
+    whiskerLeftHit: { current: null as WhiskerHit | null },
+    whiskerRightHit: { current: null as WhiskerHit | null },
+    whiskerCenterDir: { current: new THREE.Vector3(0, 0, 1) },
+    whiskerLeftDir: { current: new THREE.Vector3(0, 0, 1) },
+    whiskerRightDir: { current: new THREE.Vector3(0, 0, 1) },
+    whiskerCenterLen: { current: 2.5 },
+    whiskerSideLen: { current: 1.5 },
+    visualStateRef: { current: {} as Partial<VisualState> },
+    lookAtTarget: { current: null },
+    emojiRef: { current: '🤖' },
+  };
+}
+
+describe('AIController - 1-Story Wall Climbing & Stamina Management', () => {
+  it('waits to recover stamina at the wall base when low and climbs a 1-story building (6.3m) to the roof', () => {
+    const worldSize = 40;
+    const collisionGrid = new SpatialHashGrid(worldSize);
+    const roofHeight = 6.3;
+
+    // 1-story building (6.0m height + 0.3m roof = 6.3m), no ladder
+    collisionGrid.insert({
+      minX: -4,
+      maxX: 4,
+      minY: 0,
+      maxY: roofHeight,
+      minZ: 2,
+      maxZ: 8,
+    });
+
+    const bGrid: number[][] = Array(worldSize)
+      .fill(0)
+      .map(() => Array(worldSize).fill(0));
+    const wGrid = bGrid;
+    const sGrid = bGrid;
+    const tGrid = bGrid;
+
+    const mapData = {
+      objects: [],
+      collisionGrid,
+      bGrid,
+      wGrid,
+      sGrid,
+      tGrid,
+      ladderZones: [],
+      worldSize,
+    };
+
+    const graph = new NavigationGraph(mapData);
+    const aiSpawn = new THREE.Vector3(0, 0, -6);
+    const ai = createTestAIContext(aiSpawn);
+    resetAIStateForRound(ai, aiSpawn, graph);
+
+    // Start with very low stamina near a 1-story wall while chasing a visible player on the rooftop
+    ai.stamina.current = 12;
+    const playerRoofPos = new THREE.Vector3(0, roofHeight, 2.5);
+    const playerVel = new THREE.Vector3(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera();
+    const dummyKeys = { current: {} };
+
+    const dt = 1 / 60;
+    let maxReachedY = 0;
+    let jumpedDuringApproach = false;
+
+    // Simulate up to 6 seconds (360 frames)
+    for (let frame = 0; frame < 360; frame++) {
+      const decision = updateAIDecisionAndInput(ai, {
+        dt,
+        status: GameStatus.PLAYING,
+        mode: GameMode.HIDE_AND_SEEK,
+        currentRound: 1, // AI is Seeker
+        worldSize,
+        addDestinationMode: false,
+        playerPos: playerRoofPos,
+        playerVel,
+        playerNoiseLevel: 0,
+        collisionGrid,
+        bGrid,
+        wGrid,
+        ladderZones: [],
+        navGraph: graph,
+        onEmojiChange: () => {},
+      });
+
+      if (decision.aiInput.jump) {
+        jumpedDuringApproach = true;
+      }
+
+      updatePlayerPhysics(
+        dt,
+        ai.pos.current,
+        ai.vel.current,
+        ai.isGrounded,
+        ai.isCharging,
+        ai.landingAnimTimer,
+        ai.jumpDelayTimer,
+        ai.airTimeHighPoint,
+        ai.stamina,
+        ai.stunTimer,
+        ai.stunTimer.current > 0,
+        dummyKeys,
+        ai.lastDir,
+        ai.jumpPressedPrev,
+        0.85,
+        collisionGrid,
+        bGrid,
+        wGrid,
+        worldSize,
+        decision.aiCanMove,
+        ai.rollTimer,
+        ai.jumpBufferTimer,
+        ai.isRolling,
+        ai.stumbleTimer,
+        ai.stumbleVelocity,
+        camera,
+        ai.lastFallDist,
+        -1,
+        0,
+        [],
+        decision.aiInput,
+        ai.ladderState,
+      );
+
+      if (ai.pos.current.y > maxReachedY) {
+        maxReachedY = ai.pos.current.y;
+      }
+
+      if (ai.isGrounded.current && ai.pos.current.y >= roofHeight - 0.1 && ai.pos.current.z >= 2.2) {
+        break;
+      }
+    }
+
+    expect(jumpedDuringApproach).toBe(false);
+    expect(maxReachedY).toBeGreaterThanOrEqual(roofHeight - 0.1);
+    expect(ai.isGrounded.current).toBe(true);
+    expect(ai.pos.current.y).toBeGreaterThanOrEqual(roofHeight - 0.1);
+    expect(ai.pos.current.z).toBeGreaterThanOrEqual(2.0);
+  });
+
+  it('climbs a 1-story building with custom destination even when starting with zero stamina', () => {
+    const worldSize = 40;
+    const collisionGrid = new SpatialHashGrid(worldSize);
+    const roofHeight = 6.3;
+
+    collisionGrid.insert({
+      minX: -4,
+      maxX: 4,
+      minY: 0,
+      maxY: roofHeight,
+      minZ: 2,
+      maxZ: 8,
+    });
+
+    const bGrid: number[][] = Array(worldSize)
+      .fill(0)
+      .map(() => Array(worldSize).fill(0));
+
+    const mapData = {
+      objects: [],
+      collisionGrid,
+      bGrid,
+      wGrid: bGrid,
+      sGrid: bGrid,
+      tGrid: bGrid,
+      ladderZones: [],
+      worldSize,
+    };
+
+    const graph = new NavigationGraph(mapData);
+    const aiSpawn = new THREE.Vector3(0, 0, -2.5);
+    const ai = createTestAIContext(aiSpawn);
+    resetAIStateForRound(ai, aiSpawn, graph);
+
+    ai.isCustomDestination.current = true;
+    ai.hidingSpot.current.set(0, roofHeight, 5);
+    ai.stamina.current = 0;
+
+    const playerPos = new THREE.Vector3(-15, 0, -15);
+    const playerVel = new THREE.Vector3(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera();
+    const dummyKeys = { current: {} };
+    const dt = 1 / 60;
+
+    for (let frame = 0; frame < 360; frame++) {
+      const decision = updateAIDecisionAndInput(ai, {
+        dt,
+        status: GameStatus.PLAYING,
+        mode: GameMode.FREE,
+        currentRound: 1,
+        worldSize,
+        addDestinationMode: true,
+        playerPos,
+        playerVel,
+        playerNoiseLevel: 0,
+        collisionGrid,
+        bGrid,
+        wGrid: bGrid,
+        ladderZones: [],
+        navGraph: graph,
+        onEmojiChange: () => {},
+      });
+
+      updatePlayerPhysics(
+        dt,
+        ai.pos.current,
+        ai.vel.current,
+        ai.isGrounded,
+        ai.isCharging,
+        ai.landingAnimTimer,
+        ai.jumpDelayTimer,
+        ai.airTimeHighPoint,
+        ai.stamina,
+        ai.stunTimer,
+        ai.stunTimer.current > 0,
+        dummyKeys,
+        ai.lastDir,
+        ai.jumpPressedPrev,
+        0.85,
+        collisionGrid,
+        bGrid,
+        bGrid,
+        worldSize,
+        decision.aiCanMove,
+        ai.rollTimer,
+        ai.jumpBufferTimer,
+        ai.isRolling,
+        ai.stumbleTimer,
+        ai.stumbleVelocity,
+        camera,
+        ai.lastFallDist,
+        -1,
+        0,
+        [],
+        decision.aiInput,
+        ai.ladderState,
+      );
+
+      if (ai.isGrounded.current && ai.pos.current.y >= roofHeight - 0.1 && ai.pos.current.z >= 2.2) {
+        break;
+      }
+    }
+
+    expect(ai.isGrounded.current).toBe(true);
+    expect(ai.pos.current.y).toBeGreaterThanOrEqual(roofHeight - 0.1);
+    expect(ai.pos.current.z).toBeGreaterThanOrEqual(2.0);
+  });
+});
+
+describe('AIController - Rooftop-to-Rooftop Jumping', () => {
+  const runRooftopJumpSimulation = (options: {
+    roofHeightA: number;
+    roofHeightB: number;
+    gap: number;
+    zOffsetB?: number;
+    initialStamina?: number;
+    maxFrames?: number;
+  }) => {
+    const {
+      roofHeightA,
+      roofHeightB,
+      gap,
+      zOffsetB = 0,
+      initialStamina = 100,
+      maxFrames = 360,
+    } = options;
+
+    const worldSize = 50;
+    const collisionGrid = new SpatialHashGrid(worldSize);
+
+    // Building A: x in [-10, -2], z in [-4, 4]
+    collisionGrid.insert({
+      minX: -10,
+      maxX: -2,
+      minY: 0,
+      maxY: roofHeightA,
+      minZ: -4,
+      maxZ: 4,
+    });
+
+    // Building B across gap: x in [-2 + gap, 6 + gap], z in [-4 + zOffsetB, 4 + zOffsetB]
+    const bMinX = -2 + gap;
+    const bMaxX = 6 + gap;
+    collisionGrid.insert({
+      minX: bMinX,
+      maxX: bMaxX,
+      minY: 0,
+      maxY: roofHeightB,
+      minZ: -4 + zOffsetB,
+      maxZ: 4 + zOffsetB,
+    });
+
+    const bGrid: number[][] = Array(worldSize)
+      .fill(0)
+      .map(() => Array(worldSize).fill(0));
+    const mapData = {
+      objects: [],
+      collisionGrid,
+      bGrid,
+      wGrid: bGrid,
+      sGrid: bGrid,
+      tGrid: bGrid,
+      ladderZones: [],
+      worldSize,
+    };
+
+    const graph = new NavigationGraph(mapData);
+    // Start in the middle of Building A roof
+    const aiSpawn = new THREE.Vector3(-6, roofHeightA, 0);
+    const ai = createTestAIContext(aiSpawn);
+    resetAIStateForRound(ai, aiSpawn, graph);
+
+    ai.stamina.current = initialStamina;
+    ai.isCustomDestination.current = true;
+    ai.hidingSpot.current.set(bMinX + 4, roofHeightB, zOffsetB);
+
+    const playerPos = new THREE.Vector3(-20, 0, -20);
+    const playerVel = new THREE.Vector3(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera();
+    const dummyKeys = { current: {} };
+    const dt = 1 / 60;
+
+    let minYSeen = roofHeightA;
+    let landedOnTarget = false;
+
+    for (let frame = 0; frame < maxFrames; frame++) {
+      const decision = updateAIDecisionAndInput(ai, {
+        dt,
+        status: GameStatus.PLAYING,
+        mode: GameMode.FREE,
+        currentRound: 1,
+        worldSize,
+        addDestinationMode: true,
+        playerPos,
+        playerVel,
+        playerNoiseLevel: 0,
+        collisionGrid,
+        bGrid,
+        wGrid: bGrid,
+        ladderZones: [],
+        navGraph: graph,
+        onEmojiChange: () => {},
+      });
+
+      updatePlayerPhysics(
+        dt,
+        ai.pos.current,
+        ai.vel.current,
+        ai.isGrounded,
+        ai.isCharging,
+        ai.landingAnimTimer,
+        ai.jumpDelayTimer,
+        ai.airTimeHighPoint,
+        ai.stamina,
+        ai.stunTimer,
+        ai.stunTimer.current > 0,
+        dummyKeys,
+        ai.lastDir,
+        ai.jumpPressedPrev,
+        0.85,
+        collisionGrid,
+        bGrid,
+        bGrid,
+        worldSize,
+        decision.aiCanMove,
+        ai.rollTimer,
+        ai.jumpBufferTimer,
+        ai.isRolling,
+        ai.stumbleTimer,
+        ai.stumbleVelocity,
+        camera,
+        ai.lastFallDist,
+        -1,
+        0,
+        [],
+        decision.aiInput,
+        ai.ladderState,
+      );
+
+      if (ai.pos.current.y < minYSeen) {
+        minYSeen = ai.pos.current.y;
+      }
+
+      if (
+        ai.isGrounded.current &&
+        Math.abs(ai.pos.current.y - roofHeightB) < 0.2 &&
+        ai.pos.current.x >= bMinX + 0.5
+      ) {
+        landedOnTarget = true;
+        break;
+      }
+    }
+
+    return { ai, minYSeen, landedOnTarget, bMinX };
+  };
+
+  it('jumps cleanly from the middle of a 1-story roof (6.3m) across a 3.0m gap without falling', () => {
+    const res = runRooftopJumpSimulation({
+      roofHeightA: 6.3,
+      roofHeightB: 6.3,
+      gap: 3.0,
+      initialStamina: 100,
+    });
+
+    expect(res.minYSeen).toBeGreaterThanOrEqual(5.0);
+    expect(res.landedOnTarget).toBe(true);
+    expect(res.ai.pos.current.x).toBeGreaterThanOrEqual(res.bMinX);
+  });
+
+  it('recovers stamina if low and jumps from a 2-story roof (12.3m) across a 4.0m gap without falling', () => {
+    const res = runRooftopJumpSimulation({
+      roofHeightA: 12.3,
+      roofHeightB: 12.3,
+      gap: 4.0,
+      initialStamina: 15,
+      maxFrames: 420,
+    });
+
+    expect(res.minYSeen).toBeGreaterThanOrEqual(10.5);
+    expect(res.landedOnTarget).toBe(true);
+    expect(res.ai.pos.current.x).toBeGreaterThanOrEqual(res.bMinX);
+  });
+
+  it('jumps cleanly across a 3.0m gap with lateral offset and slight +1.0m elevation gain', () => {
+    const res = runRooftopJumpSimulation({
+      roofHeightA: 6.3,
+      roofHeightB: 7.3,
+      gap: 3.0,
+      zOffsetB: 2.0,
+      initialStamina: 100,
+      maxFrames: 360,
+    });
+
+    expect(res.minYSeen).toBeGreaterThanOrEqual(5.0);
+    expect(res.landedOnTarget).toBe(true);
+    expect(res.ai.pos.current.x).toBeGreaterThanOrEqual(res.bMinX);
+  });
+});
+
 
 
 

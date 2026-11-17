@@ -278,17 +278,21 @@ export const VoxelWater: React.FC<{
     currentMaxFoam,
   ]);
 
+  const foamDummy = useMemo(() => new THREE.Object3D(), []);
+  const foamRotation = useMemo(() => new THREE.Euler(), []);
+  const foamScale = useMemo(() => new THREE.Vector3(), []);
+
   useFrame((state, delta) => {
     if (!foamRef.current || !waterGrid) return;
-    const dummy = new THREE.Object3D();
+    const dummy = foamDummy;
 
     const waterTiles = waterTilesRef.current;
     const sourceTiles = sourceTilesRef.current;
     const exitTiles = exitTilesRef.current;
 
     const flowStrength = Math.max(1.0, riverFlow);
-    const currentRotation = new THREE.Euler();
-    const currentScale = new THREE.Vector3();
+    const currentRotation = foamRotation;
+    const currentScale = foamScale;
 
     if (foamRef.current.count !== currentMaxFoam) {
       foamRef.current.count = currentMaxFoam;

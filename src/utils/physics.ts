@@ -83,8 +83,24 @@ export interface CollisionBox {
 // --- SPATIAL HASH GRID ---
 const CELL_SIZE = 4; // Each spatial cell covers 4x4 world units (XZ)
 const staticQuerySet = new Set<CollisionBox>();
-const scratchVec1 = new THREE.Vector3();
-const scratchVec2 = new THREE.Vector3();
+const scratchMoveDir = new THREE.Vector3();
+
+const WATER_CHECK_POINTS: readonly [number, number][] = [
+  [0, 0],
+  [PLAYER_RADIUS * 0.7, 0],
+  [-PLAYER_RADIUS * 0.7, 0],
+  [0, PLAYER_RADIUS * 0.7],
+  [0, -PLAYER_RADIUS * 0.7],
+  [PLAYER_RADIUS * 0.5, PLAYER_RADIUS * 0.5],
+  [-PLAYER_RADIUS * 0.5, PLAYER_RADIUS * 0.5],
+  [PLAYER_RADIUS * 0.5, -PLAYER_RADIUS * 0.5],
+  [-PLAYER_RADIUS * 0.5, -PLAYER_RADIUS * 0.5],
+];
+
+const EDGE_CHECK_DIRS: readonly [number, number][] = Array.from({ length: 8 }, (_, i) => {
+  const angle = (i * Math.PI) / 4;
+  return [Math.cos(angle), Math.sin(angle)] as const;
+});
 
 export class SpatialHashGrid {
   private cells: Map<number, CollisionBox[]> = new Map();
@@ -165,6 +181,117 @@ export class SpatialHashGrid {
     return result;
   }
 
+  /** Zero-allocation lookup for the highest box top at (x, z) with top <= maxTopY */
+  getHighestTopBelow(x: number, z: number, maxTopY: number): number {
+    const cx = Math.floor((x + this.worldHalf) / CELL_SIZE);
+    const cz = Math.floor((z + this.worldHalf) / CELL_SIZE);
+    const list = this.cells.get(this.key(cx, cz));
+    if (!list) return -Infinity;
+
+    let bestGround = -Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const box = list[i];
+      if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+      if (box.maxY <= maxTopY && box.maxY > bestGround) {
+        bestGround = box.maxY;
+      }
+    }
+    return bestGround;
+  }
+
+  /** Zero-allocation lookup for the lowest box bottom at (x, z) with bottom > minBottomY */
+  getLowestBottomAbove(x: number, z: number, minBottomY: number): number {
+    const cx = Math.floor((x + this.worldHalf) / CELL_SIZE);
+    const cz = Math.floor((z + this.worldHalf) / CELL_SIZE);
+    const list = this.cells.get(this.key(cx, cz));
+    if (!list) return Infinity;
+
+    let ceiling = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const box = list[i];
+      if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
+      if (box.minY > minBottomY && box.minY < ceiling) {
+        ceiling = box.minY;
+      }
+    }
+    return ceiling;
+  }
+
+  /** Zero-allocation 3D line-of-sight check across spatial cells overlapped by segment AABB */
+  hasLineOfSight3D(
+    x1: number,
+    y1: number,
+    z1: number,
+    x2: number,
+    y2: number,
+    z2: number,
+    margin: number = 0.05,
+  ): boolean {
+    const segMinX = Math.min(x1, x2) - margin;
+    const segMaxX = Math.max(x1, x2) + margin;
+    const segMinZ = Math.min(z1, z2) - margin;
+    const segMaxZ = Math.max(z1, z2) + margin;
+
+    const x0 = Math.floor((segMinX + this.worldHalf) / CELL_SIZE);
+    const x1c = Math.floor((segMaxX + this.worldHalf) / CELL_SIZE);
+    const z0 = Math.floor((segMinZ + this.worldHalf) / CELL_SIZE);
+    const z1c = Math.floor((segMaxZ + this.worldHalf) / CELL_SIZE);
+
+    for (let cx = x0; cx <= x1c; cx++) {
+      for (let cz = z0; cz <= z1c; cz++) {
+        const list = this.cells.get(this.key(cx, cz));
+        if (!list) continue;
+        for (let i = 0; i < list.length; i++) {
+          if (segmentIntersectsAABB3D(x1, y1, z1, x2, y2, z2, list[i], margin)) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Zero-allocation check for frontal 3D wall height along X or Z movement pass */
+  getFrontalWallTop(
+    targetX: number,
+    targetZ: number,
+    feetY: number,
+    radius: number,
+    isXAxis: boolean,
+  ): number {
+    const r = radius + 0.5;
+    const x0 = Math.floor((targetX - r + this.worldHalf) / CELL_SIZE);
+    const x1 = Math.floor((targetX + r + this.worldHalf) / CELL_SIZE);
+    const z0 = Math.floor((targetZ - r + this.worldHalf) / CELL_SIZE);
+    const z1 = Math.floor((targetZ + r + this.worldHalf) / CELL_SIZE);
+    const radSq = radius * radius;
+
+    let wallTopHeight = -Infinity;
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const list = this.cells.get(this.key(cx, cz));
+        if (!list) continue;
+        for (let i = 0; i < list.length; i++) {
+          const box = list[i];
+          if (feetY + CLIMB_THRESHOLD >= box.maxY || feetY + PLAYER_HEIGHT <= box.minY) continue;
+          const cX = Math.max(box.minX, Math.min(targetX, box.maxX));
+          const cZ = Math.max(box.minZ, Math.min(targetZ, box.maxZ));
+          const ddx = targetX - cX;
+          const ddz = targetZ - cZ;
+          if (ddx * ddx + ddz * ddz < radSq) {
+            const isFrontal = isXAxis
+              ? Math.abs(ddx) >= Math.abs(ddz) - 0.001
+              : Math.abs(ddz) >= Math.abs(ddx) - 0.001;
+            if (isFrontal && box.maxY > wallTopHeight) {
+              wallTopHeight = box.maxY;
+            }
+          }
+        }
+      }
+    }
+    return wallTopHeight;
+  }
+
   /** Zero-allocation check if a position is blocked by any solid collision box */
   isBlocked(x: number, y: number, z: number, checkRadius: number = PLAYER_RADIUS): boolean {
     const r = checkRadius + 0.1;
@@ -193,6 +320,86 @@ export class SpatialHashGrid {
       }
     }
     return false;
+  }
+
+  /** Zero-allocation cylinder vs AABB wall collision resolution */
+  resolveCylinderCollision(pos: THREE.Vector3, vel: THREE.Vector3, radius: number = PLAYER_RADIUS): boolean {
+    const r = radius + 0.2;
+    const x0 = Math.floor((pos.x - r + this.worldHalf) / CELL_SIZE);
+    const x1 = Math.floor((pos.x + r + this.worldHalf) / CELL_SIZE);
+    const z0 = Math.floor((pos.z - r + this.worldHalf) / CELL_SIZE);
+    const z1 = Math.floor((pos.z + r + this.worldHalf) / CELL_SIZE);
+    const radSq = radius * radius;
+    const feetY = pos.y;
+    const headY = pos.y + PLAYER_HEIGHT;
+    let pushed = false;
+
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const list = this.cells.get(this.key(cx, cz));
+        if (!list) continue;
+        for (let i = 0; i < list.length; i++) {
+          const box = list[i];
+          if (feetY >= box.maxY - 2.0 || headY <= box.minY) continue;
+
+          const closeX = Math.max(box.minX, Math.min(pos.x, box.maxX));
+          const closeZ = Math.max(box.minZ, Math.min(pos.z, box.maxZ));
+          const dx = pos.x - closeX;
+          const dz = pos.z - closeZ;
+          const distSq = dx * dx + dz * dz;
+
+          if (distSq < radSq) {
+            if (distSq > 0.00001) {
+              const dist = Math.sqrt(distSq);
+              const penetration = radius - dist;
+              const nx = dx / dist;
+              const nz = dz / dist;
+              pos.x += nx * penetration;
+              pos.z += nz * penetration;
+
+              const velDot = vel.x * nx + vel.z * nz;
+              if (velDot < 0) {
+                vel.x -= velDot * nx;
+                vel.z -= velDot * nz;
+              }
+              pushed = true;
+            } else {
+              const dPosX = box.maxX - pos.x + radius;
+              const dNegX = pos.x - box.minX + radius;
+              const dPosZ = box.maxZ - pos.z + radius;
+              const dNegZ = pos.z - box.minZ + radius;
+              let minDist = dPosX;
+              let axisIsX = true;
+              let dir = 1;
+              if (dNegX < minDist) {
+                minDist = dNegX;
+                axisIsX = true;
+                dir = -1;
+              }
+              if (dPosZ < minDist) {
+                minDist = dPosZ;
+                axisIsX = false;
+                dir = 1;
+              }
+              if (dNegZ < minDist) {
+                minDist = dNegZ;
+                axisIsX = false;
+                dir = -1;
+              }
+              if (axisIsX) {
+                pos.x += dir * minDist;
+                if (dir * vel.x < 0) vel.x = 0;
+              } else {
+                pos.z += dir * minDist;
+                if (dir * vel.z < 0) vel.z = 0;
+              }
+              pushed = true;
+            }
+          }
+        }
+      }
+    }
+    return pushed;
   }
 }
 
@@ -227,25 +434,8 @@ export const getTerrainHeight = (
   const bridgeH = bridgeGrid[ix]?.[iz] || 0;
   const isWater = waterGrid[ix]?.[iz] === 1;
 
-  // Query nearby boxes
-  const nearby = collisionGrid.query(x, z, 0.5);
-  let bestGround = 0; // default ground is 0
-
-  for (const box of nearby) {
-    // Check XZ overlap: player point must be inside box XZ footprint
-    if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
-
-    // The top of this box could be our ground if we're standing on it or near it
-    const boxTop = box.maxY;
-
-    // Consider boxes whose top is below us (we can stand on them)
-    // Use a generous threshold so falling players don't miss building tops
-    if (boxTop <= currentY + threshold + 0.1) {
-      if (boxTop > bestGround) {
-        bestGround = boxTop;
-      }
-    }
-  }
+  // Zero-allocation query for highest ground box below feet + threshold
+  const bestGround = Math.max(0, collisionGrid.getHighestTopBelow(x, z, currentY + threshold + 0.1));
 
   // Bridge Logic (legacy bridge grid still used for bridges)
   if (bridgeH > 0) {
@@ -284,21 +474,8 @@ export const getCeilingHeight = (
     return bridgeH;
   }
 
-  // Query boxes that could be above the player
-  const nearby = collisionGrid.query(x, z, 0.5);
-  let ceiling = Infinity;
-
-  for (const box of nearby) {
-    if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue;
-    // Box is above player's feet
-    if (box.minY > currentY) {
-      if (box.minY < ceiling) {
-        ceiling = box.minY;
-      }
-    }
-  }
-
-  return ceiling;
+  // Zero-allocation query for lowest box bottom above player's feet
+  return collisionGrid.getLowestBottomAbove(x, z, currentY);
 };
 
 /**
@@ -454,23 +631,8 @@ export const checkLineOfSight = (
   collisionGrid: SpatialHashGrid,
   checkMargin: number = 0.05,
 ): boolean => {
-  const dist = start.distanceTo(end);
-  if (dist <= 0) return true;
-
-  // Query all collision boxes along the 2D bounding circle
-  const midX = (start.x + end.x) / 2;
-  const midZ = (start.z + end.z) / 2;
-  const radius = Math.hypot(end.x - start.x, end.z - start.z) / 2 + 1.0;
-  const boxes = collisionGrid.query(midX, midZ, radius);
-
-  for (let i = 0; i < boxes.length; i++) {
-    const box = boxes[i];
-    if (segmentIntersectsAABB3D(start.x, start.y, start.z, end.x, end.y, end.z, box, checkMargin)) {
-      return false; // Obstacle/building blocks true 3D line of sight!
-    }
-  }
-
-  return true;
+  if (start.distanceToSquared(end) <= 0) return true;
+  return collisionGrid.hasLineOfSight3D(start.x, start.y, start.z, end.x, end.y, end.z, checkMargin);
 };
 
 /**
@@ -496,67 +658,7 @@ const resolveWallCollisions = (
   vel: THREE.Vector3,
   world: { collisionGrid: SpatialHashGrid; bGrid: number[][]; wGrid: number[][]; size: number },
 ) => {
-  const radius = PLAYER_RADIUS;
-  const feetY = pos.y;
-  const headY = pos.y + PLAYER_HEIGHT;
-
-  // Query all boxes near the player
-  const nearby = world.collisionGrid.query(pos.x, pos.z, radius + 1.0);
-  let pushed = false;
-
-  for (const box of nearby) {
-    // 1. Vertical overlap check: player cylinder [feetY, headY] vs box [minY, maxY]
-    // Use a 2.0 epsilon so falling fast doesn't trigger side-ward push
-    if (feetY >= box.maxY - 2.0 || headY <= box.minY) continue;
-
-    // 2. Horizontal: closest point on box XZ to player center, then circle test
-    const closeX = Math.max(box.minX, Math.min(pos.x, box.maxX));
-    const closeZ = Math.max(box.minZ, Math.min(pos.z, box.maxZ));
-
-    const dx = pos.x - closeX;
-    const dz = pos.z - closeZ;
-    const distSq = dx * dx + dz * dz;
-
-    if (distSq < radius * radius) {
-      if (distSq > 0.00001) {
-        // Push out horizontally
-        const dist = Math.sqrt(distSq);
-        const penetration = radius - dist;
-        const nx = dx / dist;
-        const nz = dz / dist;
-        pos.x += nx * penetration;
-        pos.z += nz * penetration;
-
-        // Zero out velocity component going INTO the wall
-        const velDot = vel.x * nx + vel.z * nz;
-        if (velDot < 0) {
-          vel.x -= velDot * nx;
-          vel.z -= velDot * nz;
-        }
-
-        pushed = true;
-      } else {
-        // Player center is exactly inside the box – pick smallest push axis
-        const pushDistances = [
-          { axis: 'x', dir: 1, dist: box.maxX - pos.x + radius },
-          { axis: 'x', dir: -1, dist: pos.x - box.minX + radius },
-          { axis: 'z', dir: 1, dist: box.maxZ - pos.z + radius },
-          { axis: 'z', dir: -1, dist: pos.z - box.minZ + radius },
-        ];
-        pushDistances.sort((a, b) => a.dist - b.dist);
-        const best = pushDistances[0];
-        if (best.axis === 'x') {
-          pos.x += best.dir * best.dist;
-          if (best.dir * vel.x < 0) vel.x = 0;
-        } else {
-          pos.z += best.dir * best.dist;
-          if (best.dir * vel.z < 0) vel.z = 0;
-        }
-        pushed = true;
-      }
-    }
-  }
-  return pushed;
+  return world.collisionGrid.resolveCylinderCollision(pos, vel, PLAYER_RADIUS);
 };
 
 // --- PHYSICS ENGINE ---
@@ -599,6 +701,7 @@ interface PhysicsInput {
     ladderUp: boolean;
     ladderDown: boolean;
     grabLadder: boolean;
+    allowCoyoteJump?: boolean;
   };
   stats: { speed: number; climbSpeed: number };
   world: {
@@ -625,6 +728,7 @@ interface PhysicsInput {
 export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput): PhysicsState => {
   const next = current; // Mutate current state directly to avoid GC allocations
   next.noiseLevel = NOISE_IDLE;
+  const wasWallClimbing = current.isWallClimbing;
   // Reset wall climbing state each frame; it will be re-set if a ledge is actively being scaled
   next.isWallClimbing = false;
   const { dt, moveDir, actions, stats, world } = input;
@@ -632,20 +736,10 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
   // 0. Environment Check
   const radius = PLAYER_RADIUS;
   const halfSize = Math.floor(world.size / 2);
-  const checkPoints = [
-    [0, 0],
-    [radius * 0.7, 0],
-    [-radius * 0.7, 0],
-    [0, radius * 0.7],
-    [0, -radius * 0.7],
-    [radius * 0.5, radius * 0.5],
-    [-radius * 0.5, radius * 0.5],
-    [radius * 0.5, -radius * 0.5],
-    [-radius * 0.5, -radius * 0.5],
-  ];
 
   let pointsInWater = 0;
-  for (const [ox, oz] of checkPoints) {
+  for (let i = 0; i < WATER_CHECK_POINTS.length; i++) {
+    const [ox, oz] = WATER_CHECK_POINTS[i];
     const ix = worldToIndex(next.pos.x + ox, halfSize, world.size);
     const iz = worldToIndex(next.pos.z + oz, halfSize, world.size);
     if (world.wGrid[ix]?.[iz] === 1) {
@@ -653,7 +747,7 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     }
   }
 
-  const waterRatio = pointsInWater / checkPoints.length;
+  const waterRatio = pointsInWater / WATER_CHECK_POINTS.length;
   const isInWater = waterRatio > 0 && next.pos.y < -0.3;
   const wasInWater = !!current.isInWater;
   next.isInWater = isInWater;
@@ -802,14 +896,17 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
 
   // Jump — suppress if player is grabbing a ladder (SPACE to grab instead of jump)
   const suppressJumpForLadder = onLadder && actions.grabLadder && !alreadyOnLadder;
-  if (actions.jump && next.isGrounded && !next.isRolling && !suppressJumpForLadder) {
+  const canJumpSurface = next.isGrounded || (!!actions.allowCoyoteJump && next.vel.y <= 0.5);
+  if (actions.jump && canJumpSurface && !next.isRolling && !suppressJumpForLadder) {
     if (next.pos.y + PLAYER_HEIGHT + 0.5 < ceilingH) {
       if (next.stamina >= STAMINA_JUMP_COST) {
         // Dampened jump in water
         const jumpForce = isInWater ? JUMP_FORCE * WATER_JUMP_DAMPING : JUMP_FORCE;
 
-        // If jumping while stationary, clear lastDir so jump is purely vertical
-        if (moveDir.lengthSq() < 0.01) {
+        // Align jump trajectory immediately with input direction (or clear lastDir if stationary)
+        if (moveDir.lengthSq() >= 0.01) {
+          next.lastDir.set(moveDir.x, moveDir.z).normalize();
+        } else {
           next.lastDir.set(0, 0);
         }
 
@@ -953,15 +1050,31 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
   const moveSpeedMult = isInWater ? WATER_MOVE_SPEED_MULT : 1.0;
 
   let speed = stats.speed * MOVE_SPEED_BASE * moveSpeedMult * dt;
-  const currentMoveDir = moveDir.clone();
+  const currentMoveDir = scratchMoveDir.copy(moveDir);
 
   if (next.isRolling) {
     currentMoveDir.set(next.lastDir.x, 0, next.lastDir.y).normalize();
     speed *= ROLL_SPEED_MULT;
   } else if (!next.isGrounded && !next.isClimbing && !next.isLadderSliding && !next.isLadderHanging && !next.isWallClimbing) {
-    // Air Control Lock: cannot change movement direction while airborne in jump/fall
-    currentMoveDir.set(next.lastDir.x, 0, next.lastDir.y);
-    if (currentMoveDir.lengthSq() > 0) currentMoveDir.normalize();
+    // Allow smooth directional steering/correction in air while preserving takeoff momentum
+    if (moveDir.lengthSq() > 0.01) {
+      const mLen = Math.hypot(moveDir.x, moveDir.z);
+      const targetDirX = mLen > 0.001 ? moveDir.x / mLen : next.lastDir.x;
+      const targetDirZ = mLen > 0.001 ? moveDir.z / mLen : next.lastDir.y;
+      if (next.lastDir.lengthSq() < 0.01 || wasWallClimbing) {
+        next.lastDir.set(targetDirX, targetDirZ);
+      } else {
+        const steerAlpha = Math.min(1.0, dt * 8.0);
+        next.lastDir.x += (targetDirX - next.lastDir.x) * steerAlpha;
+        next.lastDir.y += (targetDirZ - next.lastDir.y) * steerAlpha;
+        if (next.lastDir.lengthSq() > 0.0001) next.lastDir.normalize();
+      }
+      currentMoveDir.set(next.lastDir.x, 0, next.lastDir.y);
+      if (currentMoveDir.lengthSq() > 0) currentMoveDir.normalize();
+    } else {
+      currentMoveDir.set(next.lastDir.x, 0, next.lastDir.y);
+      if (currentMoveDir.lengthSq() > 0) currentMoveDir.normalize();
+    }
   }
 
   let isRunning = false;
@@ -969,13 +1082,17 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
   const isLadderState = next.isClimbing || next.isLadderSliding || next.isLadderHanging;
 
   // Running in water drains stamina but doesn't give much speed boost
-  if (!isLadderState) {
+  if (!isLadderState && !current.isWallClimbing) {
     if (actions.run && next.stamina > 0 && isMoving && !next.isCharging && !next.isRolling) {
-      // Scale speed boost based on stamina: 100% -> 1.5x, 0% -> 1.0x
-      const staminaFactor = next.stamina / 100.0;
-      speed *= 1.0 + 0.5 * staminaFactor;
-
-      next.stamina -= STAMINA_RUN_COST * dt;
+      if (!next.isGrounded) {
+        // Maintain consistent sprint jump horizontal speed in air without extra stamina drain
+        speed *= 1.55;
+      } else {
+        // Scale speed boost based on stamina: 100% -> 1.5x, 0% -> 1.0x
+        const staminaFactor = next.stamina / 100.0;
+        speed *= 1.0 + 0.5 * staminaFactor;
+        next.stamina -= STAMINA_RUN_COST * dt;
+      }
       isRunning = true;
     } else {
       const recoveryRate = isMoving ? STAMINA_RECOVERY_WALK : STAMINA_RECOVERY_IDLE;
@@ -987,6 +1104,8 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     next.noiseLevel = isRunning ? NOISE_RUN : NOISE_WALK;
     if (next.isRolling) next.noiseLevel = NOISE_RUN;
   }
+
+  let steppedUpH = -Infinity;
 
   if (isMoving) {
     if (!next.isRolling) {
@@ -1043,31 +1162,10 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
       const isWaterExit =
         isInWater && heightDiff > 0 && heightDiff <= Math.abs(WATER_DEPTH_LEVEL) + 1.0;
 
-      // 3D Wall Check: query collision boxes at the target position
-      let isBlockedBy3DWall = false;
-      let wallTopHeight = 0;
-      const nearbyBoxes = cGrid.query(targetX, targetZ, radius);
-      for (const box of nearbyBoxes) {
-        // Ignore boxes that are short enough to step onto automatically
-        if (next.pos.y + CLIMB_THRESHOLD >= box.maxY || next.pos.y + PLAYER_HEIGHT <= box.minY)
-          continue;
-        const cX = Math.max(box.minX, Math.min(targetX, box.maxX));
-        const cZ = Math.max(box.minZ, Math.min(targetZ, box.maxZ));
-        const ddx = targetX - cX;
-        const ddz = targetZ - cZ;
-        if (ddx * ddx + ddz * ddz < radius * radius) {
-          // Check if collision is frontal in the current axis of movement.
-          // If moving along X, only block if targetZ is aligned with the box's Z footprint.
-          // If moving along Z, only block if targetX is aligned with the box's X footprint.
-          const isFrontal = isXAxis
-            ? Math.abs(cZ - targetZ) < 0.0001
-            : Math.abs(cX - targetX) < 0.0001;
-          if (isFrontal) {
-            isBlockedBy3DWall = true;
-            if (box.maxY > wallTopHeight) wallTopHeight = box.maxY;
-          }
-        }
-      }
+      // 3D Wall Check: zero-allocation query of frontal collision boxes at the target position
+      const wallTopHeightRaw = cGrid.getFrontalWallTop(targetX, targetZ, next.pos.y, radius, isXAxis);
+      const isBlockedBy3DWall = wallTopHeightRaw !== -Infinity;
+      const wallTopHeight = isBlockedBy3DWall ? Math.max(0, wallTopHeightRaw) : 0;
 
       // If 3D wall detected, use the actual wall top for height difference
       // But skip this override during water exit — the shore is not a "wall"
@@ -1115,15 +1213,15 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
 
       if (climbingLedge) {
         next.vel.y = Math.max(next.vel.y, CLIMB_SPEED);
-        next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
+        if (!next.isWallClimbing) {
+          next.stamina = Math.max(0, next.stamina - STAMINA_CLIMB_COST * dt);
+        }
         // Track wall climbing state for animation
         next.isWallClimbing = true;
         next.wallClimbProgress = Math.min(1.0, next.wallClimbProgress + dt * 3.0);
         if (isXAxis) {
-          next.lastDir.set(Math.sign(axisVal), 0);
           next.wallClimbDir.set(Math.sign(axisVal), 0);
         } else {
-          next.lastDir.set(0, Math.sign(axisVal));
           next.wallClimbDir.set(0, Math.sign(axisVal));
         }
       }
@@ -1167,8 +1265,16 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
             next.isGrounded = true;
           }
         }
-        next.pos.x = targetX;
-        next.pos.z = targetZ;
+        if (canStepUp && effectiveTargetH >= next.pos.y - 0.15 && effectiveTargetH > 0.5 && !isWaterExit) {
+          steppedUpH = Math.max(steppedUpH, effectiveTargetH);
+          next.pos.y = Math.max(next.pos.y, effectiveTargetH);
+          next.vel.y = Math.min(0, next.vel.y);
+          next.isGrounded = true;
+        }
+        if (!climbingLedge || canStepUp) {
+          next.pos.x = targetX;
+          next.pos.z = targetZ;
+        }
       }
     }
 
@@ -1208,6 +1314,32 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     world.size,
     onLadder ? -0.1 : 2.0,
   );
+
+  if (isMoving && next.vel.y <= 2.0) {
+    const frontX = next.pos.x + currentMoveDir.x * (PLAYER_RADIUS * 0.75);
+    const frontZ = next.pos.z + currentMoveDir.z * (PLAYER_RADIUS * 0.75);
+    const frontGroundH = getTerrainHeight(
+      frontX,
+      frontZ,
+      next.pos.y,
+      cGrid,
+      world.bGrid,
+      world.wGrid,
+      world.size,
+      onLadder ? -0.1 : 2.0,
+    );
+    if (
+      frontGroundH > groundH &&
+      frontGroundH <= next.pos.y + 1.2 &&
+      next.pos.y >= frontGroundH - 1.2
+    ) {
+      groundH = frontGroundH;
+    }
+  }
+
+  if (steppedUpH > groundH) {
+    groundH = steppedUpH;
+  }
 
   // Prevent snapping up to walls while moving
   if (groundH > next.pos.y + 1.2) {
@@ -1264,31 +1396,22 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     // Only apply when NOT moving — if moving, the player is likely trying to exit.
     if (safeGround <= WATER_DEPTH_LEVEL + 0.1 && moveDir.lengthSq() === 0) {
       const edgeCheckDist = radius + 0.2;
-      const edgeAngles = [
-        0,
-        Math.PI / 4,
-        Math.PI / 2,
-        (3 * Math.PI) / 4,
-        Math.PI,
-        (5 * Math.PI) / 4,
-        (3 * Math.PI) / 2,
-        (7 * Math.PI) / 4,
-      ];
       let pushX = 0;
       let pushZ = 0;
       let landCount = 0;
 
-      for (const angle of edgeAngles) {
-        const checkX = next.pos.x + Math.cos(angle) * edgeCheckDist;
-        const checkZ = next.pos.z + Math.sin(angle) * edgeCheckDist;
+      for (let i = 0; i < EDGE_CHECK_DIRS.length; i++) {
+        const [cosA, sinA] = EDGE_CHECK_DIRS[i];
+        const checkX = next.pos.x + cosA * edgeCheckDist;
+        const checkZ = next.pos.z + sinA * edgeCheckDist;
         const edgeIx = worldToIndex(checkX, halfSize, world.size);
         const edgeIz = worldToIndex(checkZ, halfSize, world.size);
         const edgeIsWater = world.wGrid[edgeIx]?.[edgeIz] === 1;
 
         if (!edgeIsWater) {
           // This direction has dry land — accumulate push away from it
-          pushX -= Math.cos(angle);
-          pushZ -= Math.sin(angle);
+          pushX -= cosA;
+          pushZ -= sinA;
           landCount++;
         }
       }
@@ -1318,18 +1441,14 @@ export const updateEntityPhysics = (current: PhysicsState, input: PhysicsInput):
     // Average p.speed is 2.5, so average speed is 3.5 * (Math.max(1.0, riverFlow) / 3.0)
     const flowStrength = Math.max(1.0, world.riverFlow) * (3.5 / 3.0) * waterRatio;
 
-    const push = new THREE.Vector3(0, 0, 0);
     if (world.riverOrientation === 0)
-      push.z = flowStrength * dt; // N->S
+      next.pos.z += flowStrength * dt; // N->S
     else if (world.riverOrientation === 2)
-      push.z = -flowStrength * dt; // S->N
+      next.pos.z -= flowStrength * dt; // S->N
     else if (world.riverOrientation === 3)
-      push.x = flowStrength * dt; // W->E
-    else if (world.riverOrientation === 1) push.x = -flowStrength * dt; // E->W
-
-    // Buoyancy removed to prevent grounding oscillation
-
-    next.pos.add(push);
+      next.pos.x += flowStrength * dt; // W->E
+    else if (world.riverOrientation === 1)
+      next.pos.x -= flowStrength * dt; // E->W
 
     // Resolve multiple times to prevent corner sticking when pushed by current
     for (let i = 0; i < 3; i++) {
